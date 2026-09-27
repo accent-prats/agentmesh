@@ -1,0 +1,164 @@
+from __future__ import annotations
+
+from dataclasses import dataclass, field
+from datetime import datetime, timezone
+from typing import Any
+
+from culprit.models.evidence import EvidenceBundle, MachineIdentity, OSFamily, PatchOutcome, Source, TimelineEvent
+from culprit.models.taxonomy import CauseFamily
+from culprit.pipeline.fingerprint import cluster_run
+from culprit.pipeline.rca_agent import DeepRCAAgent, _TOOL_NAME
+
+
+@dataclass
+class FakeBlock:
+    type: str
+    name: str | None = None
+    input: dict | None = None
+    text: str | None = None
+
+
+@dataclass
+class FakeResponse:
+    content: list[FakeBlock]
+    stop_reason: str = "tool_use"
+
+
+@dataclass
+class FakeMessagesAPI:
+    next_response: FakeResponse
+    last_kwargs: dict = field(default_factory=dict)
+
+    def create(self, **kwargs) -> FakeResponse:
+        self.last_kwargs = kwargs
+        return self.next_response
+
+
+class FakeAnthropicClient:
+    def __init__(self, response: FakeResponse):
+        self.messages = FakeMessagesAPI(next_response=response)
+
+
+def _bundle() -> EvidenceBundle:
+    machine = MachineIdentity(
+        vm_id="/subscriptions/s/resourceGroups/rg/providers/Microsoft.Compute/virtualMachines/vm-1",
+        vm_name="vm-1", resource_group="rg", subscription_id="s", os_family=OSFamily.LINUX,
+    )
+    outcome = PatchOutcome(status="Failed", error_code="MaintenanceWindowExceeded")
+    events = [
+        TimelineEvent(
+            ts=datetime.now(timezone.utc), source=Source.AZURE_CONTROL_PLANE, kind="patch_result",
+            summary="window exceeded", detail={}, raw_ref="ref-1",
+        )
+    ]
+    return EvidenceBundle(run_id="run-1", machine=machine, outcome=outcome, timeline=events, collection_started_at=datetime.now(timezone.utc))
+
+
+def _cluster(bundle):
+    return cluster_run("run-1", [bundle])[0]
+
+
+_VALID_INPUT: dict[str, Any] = {
+    "cause_family": "window_scheduling",
+    "title": "Backlog too large for the window",
+    "causal_chain": [{"order": 1, "statement": "Backlog accumulated over months", "evidence_refs": ["ref-1"]}],
+    "ruled_out": [],
+    "confidence": 0.7,
+    "missing_evidence": [],
+    "immediate_fix_steps": [{"order": 1, "instruction": "Run an extended window", "expected_result": "compliant"}],
+    "immediate_risk": "low",
+    "immediate_scope": "per_machine",
+    "preventive_fix": "Investigate schedule drift",
+    "preventive_risk": "medium",
+    "rollback": "",
+    "phase2_candidate": False,
+    "phase2_rationale": "",
+}
+
+
+def test_valid_tool_call_parses_into_rca_result():
+    response = FakeResponse(content=[FakeBlock(type="tool_use", name=_TOOL_NAME, input=dict(_VALID_INPUT))])
+    agent = DeepRCAAgent(client=FakeAnthropicClient(response))
+    bundle = _bundle()
+    result = agent.diagnose(_cluster(bundle), bundle)
+    assert result.cause_family == CauseFamily.WINDOW_SCHEDULING
+    assert result.confidence == 0.7
+    assert result.causal_chain[0].evidence_refs == ["ref-1"]
+
+
+def test_missing_tool_call_downgrades_to_unresolved():
+    response = FakeResponse(content=[FakeBlock(type="text", text="I'm not sure.")])
+    agent = DeepRCAAgent(client=FakeAnthropicClient(response))
+    bundle = _bundle()
+    result = agent.diagnose(_cluster(bundle), bundle)
+    assert result.cause_family == CauseFamily.UNRESOLVED
+    assert result.confidence == 0.0
+    assert result.missing_evidence
+
+
+def test_confident_result_with_empty_causal_chain_is_rejected_and_downgraded():
+    """The hard constraint: a confident answer MUST cite evidence. If the
+    model (hypothetically) returns confidence >= 0.5 with no causal steps,
+    Pydantic validation must reject it and the agent must not propagate a
+    'confident nothing' result."""
+    bad_input = dict(_VALID_INPUT)
+    bad_input["causal_chain"] = []
+    bad_input["confidence"] = 0.8
+    response = FakeResponse(content=[FakeBlock(type="tool_use", name=_TOOL_NAME, input=bad_input)])
+    agent = DeepRCAAgent(client=FakeAnthropicClient(response))
+    bundle = _bundle()
+    result = agent.diagnose(_cluster(bundle), bundle)
+    assert result.cause_family == CauseFamily.UNRESOLVED
+    assert "validation" in result.missing_evidence[0].lower()
+
+
+def test_blank_evidence_ref_is_rejected():
+    bad_input = dict(_VALID_INPUT)
+    bad_input["causal_chain"] = [{"order": 1, "statement": "x", "evidence_refs": ["   "]}]
+    response = FakeResponse(content=[FakeBlock(type="tool_use", name=_TOOL_NAME, input=bad_input)])
+    agent = DeepRCAAgent(client=FakeAnthropicClient(response))
+    bundle = _bundle()
+    result = agent.diagnose(_cluster(bundle), bundle)
+    assert result.cause_family == CauseFamily.UNRESOLVED
+
+
+def test_fabricated_evidence_ref_is_rejected_even_though_well_formed():
+    """Found in review 2026-09-27: the non-empty check on evidence_refs
+    passes a hallucinated-but-well-formed raw_ref cleanly - 'no citation,
+    no claim' was only ever a presence check, not an accuracy check. This
+    is the actual cross-reference-against-the-bundle fix."""
+    bad_input = dict(_VALID_INPUT)
+    bad_input["causal_chain"] = [
+        {"order": 1, "statement": "Plausible-sounding but invented", "evidence_refs": ["ref-that-does-not-exist"]}
+    ]
+    response = FakeResponse(content=[FakeBlock(type="tool_use", name=_TOOL_NAME, input=bad_input)])
+    agent = DeepRCAAgent(client=FakeAnthropicClient(response))
+    bundle = _bundle()  # only ever produces raw_ref="ref-1"
+    result = agent.diagnose(_cluster(bundle), bundle)
+    assert result.cause_family == CauseFamily.UNRESOLVED
+    assert "ref-that-does-not-exist" in result.missing_evidence[0]
+
+
+def test_a_mix_of_real_and_fabricated_refs_still_gets_rejected():
+    bad_input = dict(_VALID_INPUT)
+    bad_input["causal_chain"] = [
+        {"order": 1, "statement": "Half real, half invented", "evidence_refs": ["ref-1", "ref-fake"]}
+    ]
+    response = FakeResponse(content=[FakeBlock(type="tool_use", name=_TOOL_NAME, input=bad_input)])
+    agent = DeepRCAAgent(client=FakeAnthropicClient(response))
+    bundle = _bundle()
+    result = agent.diagnose(_cluster(bundle), bundle)
+    assert result.cause_family == CauseFamily.UNRESOLVED
+
+
+def test_request_includes_model_and_tool_schema():
+    response = FakeResponse(content=[FakeBlock(type="tool_use", name=_TOOL_NAME, input=dict(_VALID_INPUT))])
+    client = FakeAnthropicClient(response)
+    agent = DeepRCAAgent(client=client, model="claude-opus-5")
+    bundle = _bundle()
+    agent.diagnose(_cluster(bundle), bundle, near_misses=["disk rule abstained"], retrieval_context="some vendor doc")
+    kwargs = client.messages.last_kwargs
+    assert kwargs["model"] == "claude-opus-5"
+    assert kwargs["tools"][0]["name"] == _TOOL_NAME
+    assert "disk rule abstained" in kwargs["messages"][0]["content"]
+    assert "some vendor doc" in kwargs["messages"][0]["content"]

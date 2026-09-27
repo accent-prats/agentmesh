@@ -1,0 +1,84 @@
+{% extends "base.html.j2" %}
+{% block title %}{{ member.vm_name }}{% endblock %}
+
+{% block content %}
+<div class="max-w-3xl mx-auto px-8 py-10">
+
+  <a href="../../../runs/{{ cluster.run_id }}/report.html" class="inline-flex items-center gap-1.5 text-xs text-gray-400 hover:text-brand mb-4">
+    <i data-lucide="arrow-left" class="w-3 h-3"></i> Back to fleet report
+  </a>
+
+  <h1 class="text-2xl font-bold text-gray-900 tracking-tight">{{ member.vm_name }}</h1>
+  <p class="text-sm text-gray-500 mt-1 mb-6">{{ member.vm_id }}</p>
+
+  <div class="bg-white rounded-2xl shadow-sm border border-gray-100 p-6 mb-4">
+    <h6 class="text-[10px] font-semibold uppercase tracking-wide text-gray-400 mb-2">What failed</h6>
+    {% if outcome %}
+    <div class="flex flex-wrap items-center gap-1.5 mb-3">
+      {% set st = outcome.status|lower %}
+      {% if st == 'failed' %}
+      <span class="text-[10px] font-semibold uppercase tracking-wide px-2 py-0.5 rounded-full bg-red-50 text-red-600 border border-red-200">{{ outcome.status }}</span>
+      {% elif st == 'succeeded' %}
+      <span class="text-[10px] font-semibold uppercase tracking-wide px-2 py-0.5 rounded-full bg-emerald-50 text-emerald-700 border border-emerald-200">{{ outcome.status }}</span>
+      {% elif st == 'completedwithwarnings' %}
+      <span class="text-[10px] font-semibold uppercase tracking-wide px-2 py-0.5 rounded-full bg-amber-50 text-amber-700 border border-amber-200">{{ outcome.status }}</span>
+      {% else %}
+      <span class="text-[10px] font-semibold uppercase tracking-wide px-2 py-0.5 rounded-full bg-gray-50 text-gray-600 border border-gray-200">{{ outcome.status }}</span>
+      {% endif %}
+      {% if outcome.error_code %}
+      <span class="text-[10px] font-mono px-2 py-0.5 rounded-full bg-gray-50 text-gray-600 border border-gray-200">{{ outcome.error_code }}</span>
+      {% endif %}
+    </div>
+    {% if outcome.error_message %}
+    <p class="text-sm text-gray-700 mb-3">{{ outcome.error_message }}</p>
+    {% endif %}
+    <div class="grid grid-cols-2 gap-x-6 gap-y-2 text-xs text-gray-500">
+      {% if outcome.kbs_failed %}
+      <div><span class="text-gray-400">Failed KB(s):</span> <span class="font-mono text-gray-700">{{ outcome.kbs_failed | join(', ') }}</span></div>
+      {% endif %}
+      {% if outcome.packages_failed %}
+      <div><span class="text-gray-400">Failed package(s):</span> <span class="font-mono text-gray-700">{{ outcome.packages_failed | join(', ') }}</span></div>
+      {% endif %}
+      {% if outcome.reboot_status %}
+      <div><span class="text-gray-400">Reboot status:</span> {{ outcome.reboot_status }}</div>
+      {% endif %}
+      {% if outcome.started_at %}
+      <div>
+        <span class="text-gray-400">Window:</span>
+        {{ outcome.started_at.strftime('%Y-%m-%d %H:%M UTC') }}{% if outcome.ended_at %} &ndash; {{ outcome.ended_at.strftime('%H:%M UTC') }}{% endif %}{% if outcome.window_minutes %} ({{ outcome.window_minutes }} min){% endif %}
+      </div>
+      {% endif %}
+    </div>
+    {% if collection_gaps %}
+    <p class="text-xs text-amber-600 mt-3">&#9888; Incomplete evidence: {{ collection_gaps | join('; ') }}</p>
+    {% endif %}
+    {% else %}
+    <p class="text-sm text-gray-400">No structured outcome recorded for this machine - this run predates per-machine outcome tracking. See the cluster's shared finding below.</p>
+    {% endif %}
+  </div>
+
+  <div class="bg-white rounded-2xl shadow-sm border border-gray-100 p-6 mb-4">
+    <h6 class="text-[10px] font-semibold uppercase tracking-wide text-gray-400 mb-2">Cluster</h6>
+    {% if result %}
+    <p class="text-sm text-gray-800 font-medium">{{ result.title }}</p>
+    <p class="text-xs text-gray-400 mt-1">Cause family: {{ result.cause_family.value }} &middot; confidence {{ '%.0f' % (result.confidence * 100) }}% &middot; {{ cluster.size }} machine{{ 's' if cluster.size != 1 else '' }} in this cluster</p>
+    {% else %}
+    <p class="text-sm text-gray-400">This cluster has not been diagnosed yet.</p>
+    {% endif %}
+  </div>
+
+  <div class="bg-white rounded-2xl shadow-sm border border-gray-100 p-6">
+    <h6 class="text-[10px] font-semibold uppercase tracking-wide text-gray-400 mb-2">How this machine differs from the cluster's representative</h6>
+    {% if member.vm_id == cluster.representative_vm_id %}
+    <p class="text-sm text-gray-500">This machine <em>is</em> the cluster's representative member - its evidence bundle is what the RCA above was diagnosed from directly.</p>
+    {% elif member.deviation_notes %}
+    <ul class="list-disc pl-4 text-sm text-gray-600 space-y-1">
+      {% for note in member.deviation_notes %}<li>{{ note }}</li>{% endfor %}
+    </ul>
+    {% else %}
+    <p class="text-sm text-gray-500">No deviations recorded - this machine's evidence matched the cluster's representative closely enough that the same finding applies to it directly.</p>
+    {% endif %}
+  </div>
+
+</div>
+{% endblock %}

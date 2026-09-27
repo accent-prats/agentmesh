@@ -1,0 +1,265 @@
+{% extends "base.html.j2" %}
+{% block title %}Settings{% endblock %}
+
+{% block content %}
+<div class="max-w-2xl mx-auto px-8 py-12">
+
+  <h1 class="text-2xl font-bold text-gray-900 tracking-tight">Settings</h1>
+  <p class="text-gray-500 text-sm mt-1.5 mb-8">
+    Azure and Datadog credentials Culprit uses to diagnose real patch failures.
+    Nothing here is required to run the demo scenario. The deep RCA agent's own AI provider is
+    configured platform-wide from the AgentMesh Portal's Admin &rarr; AI Providers screen, not here.
+  </p>
+
+  <!-- Azure -->
+  <div class="bg-white rounded-2xl shadow-sm border border-gray-100 p-7 mb-5">
+    <div class="flex items-center gap-3 mb-1">
+      <div class="w-9 h-9 rounded-xl bg-sky-50 flex items-center justify-center shrink-0">
+        <i data-lucide="cloud" class="w-4 h-4 text-sky-600"></i>
+      </div>
+      <h2 class="font-semibold text-gray-900">Azure</h2>
+    </div>
+    <p class="text-sm text-gray-500 mt-2 mb-5">
+      Resource Graph, Activity Log, Log Analytics, and Run Command. Leave tenant/client/secret
+      blank to use a managed identity instead of a service principal.
+    </p>
+
+    <div class="space-y-4">
+      <div>
+        <label class="block text-xs font-medium text-gray-600 mb-1.5">Subscription IDs</label>
+        <textarea id="az-subs" rows="2" placeholder="one per line, or comma-separated"
+          class="w-full border border-gray-300 rounded-lg px-3 py-2 text-sm font-mono focus:ring-2 focus:ring-brand focus:border-brand focus:outline-none"></textarea>
+      </div>
+      <div class="grid grid-cols-2 gap-4">
+        <div>
+          <label class="block text-xs font-medium text-gray-600 mb-1.5">Log Analytics workspace ID</label>
+          <input id="az-workspace" placeholder="00000000-0000-0000-0000-000000000000"
+            class="w-full border border-gray-300 rounded-lg px-3 py-2 text-sm focus:ring-2 focus:ring-brand focus:border-brand focus:outline-none">
+        </div>
+        <div>
+          <label class="block text-xs font-medium text-gray-600 mb-1.5">Tenant ID <span class="text-gray-400 font-normal">(optional)</span></label>
+          <input id="az-tenant" placeholder="00000000-0000-0000-0000-000000000000"
+            class="w-full border border-gray-300 rounded-lg px-3 py-2 text-sm focus:ring-2 focus:ring-brand focus:border-brand focus:outline-none">
+        </div>
+      </div>
+      <div class="grid grid-cols-2 gap-4">
+        <div>
+          <label class="block text-xs font-medium text-gray-600 mb-1.5">Client ID</label>
+          <input id="az-client" placeholder="00000000-0000-0000-0000-000000000000"
+            class="w-full border border-gray-300 rounded-lg px-3 py-2 text-sm focus:ring-2 focus:ring-brand focus:border-brand focus:outline-none">
+        </div>
+        <div>
+          <label class="block text-xs font-medium text-gray-600 mb-1.5">Client secret</label>
+          <input id="az-secret" type="password" placeholder="leave blank to keep saved secret"
+            class="w-full border border-gray-300 rounded-lg px-3 py-2 text-sm focus:ring-2 focus:ring-brand focus:border-brand focus:outline-none">
+        </div>
+      </div>
+      <p id="az-secret-hint" class="text-xs text-gray-400"></p>
+    </div>
+
+    <div class="flex items-center gap-3 mt-5 pt-5 border-t border-gray-100">
+      <button onclick="saveAzure()" class="bg-brand hover:bg-brand-dark text-white text-sm font-medium px-4 py-2 rounded-lg transition-colors">Save</button>
+      <button onclick="testAzure()" class="bg-gray-100 hover:bg-gray-200 text-gray-700 text-sm font-medium px-4 py-2 rounded-lg transition-colors">Test connection</button>
+      <span class="text-sm" id="az-result"></span>
+    </div>
+    <div class="text-xs text-gray-400 mt-3" id="az-status">Loading&hellip;</div>
+  </div>
+
+  <!-- Datadog -->
+  <div class="bg-white rounded-2xl shadow-sm border border-gray-100 p-7 mb-5">
+    <div class="flex items-center gap-3 mb-1">
+      <div class="w-9 h-9 rounded-xl bg-violet-50 flex items-center justify-center shrink-0">
+        <i data-lucide="activity" class="w-4 h-4 text-violet-600"></i>
+      </div>
+      <h2 class="font-semibold text-gray-900">Datadog</h2>
+    </div>
+    <p class="text-sm text-gray-500 mt-2 mb-5">
+      Metrics, monitor state, and post-reboot regression signals. Read-only API scope is enough.
+    </p>
+
+    <div class="space-y-4">
+      <div>
+        <label class="block text-xs font-medium text-gray-600 mb-1.5">Site</label>
+        <input id="dd-site" placeholder="datadoghq.com"
+          class="w-full border border-gray-300 rounded-lg px-3 py-2 text-sm focus:ring-2 focus:ring-brand focus:border-brand focus:outline-none">
+      </div>
+      <div class="grid grid-cols-2 gap-4">
+        <div>
+          <label class="block text-xs font-medium text-gray-600 mb-1.5">API key</label>
+          <input id="dd-api" type="password" placeholder="leave blank to keep saved key"
+            class="w-full border border-gray-300 rounded-lg px-3 py-2 text-sm focus:ring-2 focus:ring-brand focus:border-brand focus:outline-none">
+        </div>
+        <div>
+          <label class="block text-xs font-medium text-gray-600 mb-1.5">App key</label>
+          <input id="dd-app" type="password" placeholder="leave blank to keep saved key"
+            class="w-full border border-gray-300 rounded-lg px-3 py-2 text-sm focus:ring-2 focus:ring-brand focus:border-brand focus:outline-none">
+        </div>
+      </div>
+    </div>
+
+    <div class="flex items-center gap-3 mt-5 pt-5 border-t border-gray-100">
+      <button onclick="saveDatadog()" class="bg-brand hover:bg-brand-dark text-white text-sm font-medium px-4 py-2 rounded-lg transition-colors">Save</button>
+      <button onclick="testDatadog()" class="bg-gray-100 hover:bg-gray-200 text-gray-700 text-sm font-medium px-4 py-2 rounded-lg transition-colors">Test connection</button>
+      <span class="text-sm" id="dd-result"></span>
+    </div>
+    <div class="text-xs text-gray-400 mt-3" id="dd-status">Loading&hellip;</div>
+  </div>
+
+  <!-- Live run -->
+  <div class="bg-white rounded-2xl shadow-sm border border-gray-100 p-7">
+    <div class="flex items-center gap-3 mb-1">
+      <div class="w-9 h-9 rounded-xl bg-emerald-50 flex items-center justify-center shrink-0">
+        <i data-lucide="radar" class="w-4 h-4 text-emerald-600"></i>
+      </div>
+      <h2 class="font-semibold text-gray-900">Run a live analysis</h2>
+    </div>
+    <p class="text-sm text-gray-500 mt-2 mb-5">
+      Discovers every machine with a failed patch result in the window below and diagnoses
+      it for real, using the settings saved above.
+    </p>
+    <div class="flex items-end gap-4">
+      <div>
+        <label class="block text-xs font-medium text-gray-600 mb-1.5">Window (hours back)</label>
+        <input id="live-hours" type="number" value="24" min="1" max="720"
+          class="w-28 border border-gray-300 rounded-lg px-3 py-2 text-sm focus:ring-2 focus:ring-brand focus:border-brand focus:outline-none">
+      </div>
+      <button onclick="runLive()" class="bg-brand hover:bg-brand-dark text-white text-sm font-medium px-4 py-2 rounded-lg transition-colors">Run live analysis</button>
+      <span class="text-sm" id="live-result"></span>
+    </div>
+  </div>
+
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+// Builds the status line with DOM nodes only - no innerHTML, no string-
+// concatenated HTML. view.last_test_message is provider-supplied error
+// text (an Azure/Datadog SDK exception message); it was previously
+// concatenated straight into an innerHTML assignment, which was a stored-
+// XSS vector via a crafted subscription id or Datadog site value that
+// ends up echoed back in an error message. textContent/createTextNode
+// never parse their input as HTML, so this is XSS-proof regardless of
+// what that message contains.
+function renderStatus(elId, view, testedLabel) {
+  const el = document.getElementById(elId);
+  el.textContent = '';
+
+  if (!view.configured) {
+    const span = document.createElement('span');
+    span.className = 'text-gray-400';
+    span.textContent = 'Not configured yet.';
+    el.appendChild(span);
+    return;
+  }
+
+  let dotColor = 'bg-gray-300', text = 'not tested yet';
+  if (view.last_test_ok === true)  { dotColor = 'bg-emerald-500'; text = 'last test passed'; }
+  if (view.last_test_ok === false) { dotColor = 'bg-red-500';     text = 'last test failed: ' + view.last_test_message; }
+  const when = view.last_tested_at ? ' (' + new Date(view.last_tested_at).toLocaleString() + ')' : '';
+
+  const dot = document.createElement('span');
+  dot.className = 'inline-block w-1.5 h-1.5 rounded-full mr-1.5 align-middle ' + dotColor;
+  el.appendChild(dot);
+  el.appendChild(document.createTextNode(testedLabel + ' — ' + text + when));
+}
+
+async function loadAzure() {
+  const view = await (await fetch('settings/azure')).json();
+  document.getElementById('az-subs').value = (view.subscription_ids || []).join('\n');
+  document.getElementById('az-workspace').value = view.log_analytics_workspace_id || '';
+  document.getElementById('az-tenant').value = view.tenant_id || '';
+  document.getElementById('az-client').value = view.client_id || '';
+  document.getElementById('az-secret-hint').textContent = view.client_secret_configured
+    ? 'A secret is currently saved.' : 'No secret saved yet.';
+  renderStatus('az-status', view, 'Azure');
+}
+
+async function loadDatadog() {
+  const view = await (await fetch('settings/datadog')).json();
+  document.getElementById('dd-site').value = view.site || 'datadoghq.com';
+  renderStatus('dd-status', view, 'Datadog');
+}
+
+function parseSubs() {
+  return document.getElementById('az-subs').value
+    .split(/[\n,]/).map(s => s.trim()).filter(Boolean);
+}
+
+function setResult(id, text, ok) {
+  const el = document.getElementById(id);
+  el.textContent = text;
+  el.className = 'text-sm ' + (ok === true ? 'text-emerald-600' : ok === false ? 'text-red-600' : 'text-gray-500');
+}
+
+async function saveAzure() {
+  const body = {
+    subscription_ids: parseSubs(),
+    log_analytics_workspace_id: document.getElementById('az-workspace').value.trim(),
+    tenant_id: document.getElementById('az-tenant').value.trim(),
+    client_id: document.getElementById('az-client').value.trim(),
+    client_secret: document.getElementById('az-secret').value,
+  };
+  await fetch('settings/azure', { method: 'PUT', headers: {'Content-Type':'application/json'}, body: JSON.stringify(body) });
+  document.getElementById('az-secret').value = '';
+  setResult('az-result', 'Saved.', true);
+  loadAzure();
+}
+
+async function testAzure() {
+  setResult('az-result', 'Testing…', null);
+  const body = {
+    subscription_ids: parseSubs(),
+    log_analytics_workspace_id: document.getElementById('az-workspace').value.trim(),
+    tenant_id: document.getElementById('az-tenant').value.trim(),
+    client_id: document.getElementById('az-client').value.trim(),
+    client_secret: document.getElementById('az-secret').value,
+  };
+  const res = await (await fetch('settings/azure/test', { method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify(body) })).json();
+  setResult('az-result', res.message, res.ok);
+  loadAzure();
+}
+
+async function saveDatadog() {
+  const body = {
+    site: document.getElementById('dd-site').value.trim() || 'datadoghq.com',
+    api_key: document.getElementById('dd-api').value,
+    app_key: document.getElementById('dd-app').value,
+  };
+  await fetch('settings/datadog', { method: 'PUT', headers: {'Content-Type':'application/json'}, body: JSON.stringify(body) });
+  document.getElementById('dd-api').value = '';
+  document.getElementById('dd-app').value = '';
+  setResult('dd-result', 'Saved.', true);
+  loadDatadog();
+}
+
+async function testDatadog() {
+  setResult('dd-result', 'Testing…', null);
+  const body = {
+    site: document.getElementById('dd-site').value.trim() || 'datadoghq.com',
+    api_key: document.getElementById('dd-api').value,
+    app_key: document.getElementById('dd-app').value,
+  };
+  const res = await (await fetch('settings/datadog/test', { method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify(body) })).json();
+  setResult('dd-result', res.message, res.ok);
+  loadDatadog();
+}
+
+async function runLive() {
+  setResult('live-result', 'Discovering failed machines and diagnosing…', null);
+  try {
+    const hours = parseInt(document.getElementById('live-hours').value, 10) || 24;
+    const res = await fetch('runs/live', { method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify({ window_hours: hours, scope_name: 'live' }) });
+    if (!res.ok) { const err = await res.json(); throw new Error(err.detail || ('HTTP ' + res.status)); }
+    const report = await res.json();
+    setResult('live-result', report.total_failed + '/' + report.total_machines + ' machines failed. Opening report…', true);
+    window.location.href = 'runs/' + report.run.run_id + '/report.html';
+  } catch (err) {
+    setResult('live-result', 'Failed: ' + err.message, false);
+  }
+}
+
+loadAzure();
+loadDatadog();
+</script>
+{% endblock %}

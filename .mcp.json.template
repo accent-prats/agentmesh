@@ -1,0 +1,39 @@
+{
+  "_readme": [
+    "Copy this file to .mcp.json and fill in the placeholder values.",
+    ".mcp.json is git-ignored — never commit credentials.",
+    "Restart Claude Code after editing .mcp.json for changes to take effect."
+  ],
+
+  "mcpServers": {
+
+    "postgres": {
+      "_comment": "Direct read access to the Portal database. Use the same DB URL as your .env DATABASE_URL.",
+      "command": "npx",
+      "args": [
+        "-y",
+        "@modelcontextprotocol/server-postgres",
+        "postgresql://portal:YOUR_PASSWORD@localhost:5432/portal"
+      ]
+    },
+
+    "filesystem": {
+      "_comment": "Scoped to the repo root — lets Claude Code read and write project files.",
+      "command": "npx",
+      "args": [
+        "-y",
+        "@modelcontextprotocol/server-filesystem",
+        "."
+      ]
+    },
+
+    "fetch": {
+      "_comment": "HTTP fetch — useful for hitting the local Portal API (http://localhost:8000) during development.",
+      "command": "npx",
+      "args": [
+        "-y",
+        "@modelcontextprotocol/server-fetch"
+      ]
+    }
+  }
+}

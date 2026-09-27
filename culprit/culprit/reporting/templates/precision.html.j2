@@ -1,0 +1,54 @@
+{% extends "base.html.j2" %}
+{% block title %}Precision & Phase 2 gate{% endblock %}
+
+{% block content %}
+<div class="max-w-4xl mx-auto px-8 py-10">
+
+  <h1 class="text-2xl font-bold text-gray-900 tracking-tight">Precision &amp; the Phase 2 gate</h1>
+  <p class="text-sm text-gray-500 mt-1 mb-6 max-w-2xl">
+    Automated remediation unlocks one cause family at a time, only once that family has sustained
+    <b>&ge;{{ '%.0f' % (precision.threshold * 100) }}% precision over at least {{ precision.min_sample }}
+    reviewed instances</b> &mdash; and only with a human sign-off on top. Submit a verdict on any
+    finding from its report card to contribute to these numbers.
+  </p>
+
+  {% if precision.families %}
+  <div class="bg-white rounded-2xl shadow-sm border border-gray-100 overflow-hidden">
+    <table class="w-full text-sm">
+      <thead class="bg-gray-50 text-[11px] text-gray-500 uppercase tracking-wide">
+        <tr>
+          <th class="px-5 py-3 text-left">Cause family</th>
+          <th class="px-5 py-3 text-right">Reviewed</th>
+          <th class="px-5 py-3 text-right">Precision</th>
+          <th class="px-5 py-3 text-right">Clean precision</th>
+          <th class="px-5 py-3 text-left">Phase 2 status</th>
+        </tr>
+      </thead>
+      <tbody class="divide-y divide-gray-100">
+        {% for family, fp in precision.families.items() %}
+        <tr>
+          <td class="px-5 py-3.5 font-medium text-gray-900">{{ family.replace('_', ' ') }}</td>
+          <td class="px-5 py-3.5 text-right tabular-nums text-gray-600">{{ fp.sample_size }}</td>
+          <td class="px-5 py-3.5 text-right tabular-nums text-gray-600">{{ '%.0f' % (fp.precision * 100) }}%</td>
+          <td class="px-5 py-3.5 text-right tabular-nums text-gray-400">{{ '%.0f' % (fp.clean_precision * 100) }}%</td>
+          <td class="px-5 py-3.5">
+            {% if fp.meets_promotion_bar %}
+            <span class="text-[10px] font-semibold uppercase tracking-wide px-2 py-0.5 rounded-full bg-emerald-50 text-emerald-700 border border-emerald-200">Clears the gate</span>
+            {% else %}
+            <span class="text-[10px] font-semibold uppercase tracking-wide px-2 py-0.5 rounded-full bg-gray-50 text-gray-500 border border-gray-200">Not yet ({{ fp.sample_size }}/{{ precision.min_sample }})</span>
+            {% endif %}
+          </td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+  {% else %}
+  <div class="bg-white rounded-2xl shadow-sm border border-gray-100 p-8 text-center text-gray-400 text-sm">
+    No verdicts recorded yet. Submit "Correct" / "Partially correct" / "Wrong" on a finding from its
+    report card to start tracking precision here.
+  </div>
+  {% endif %}
+
+</div>
+{% endblock %}

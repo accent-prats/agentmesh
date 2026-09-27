@@ -1,0 +1,31 @@
+{
+  "Name": "Culprit Reader",
+  "IsCustom": true,
+  "Description": "Read-only access for the Culprit patch-failure RCA agent. Grants exactly what collection needs (Resource Graph, Activity Log, Log Analytics, and read-only Run Command) and nothing that can change a resource. Phase 1 grants only this role - no Contributor, no Owner, on any scope.",
+  "Actions": [
+    "Microsoft.Resources/subscriptions/resourceGroups/read",
+    "Microsoft.Compute/virtualMachines/read",
+    "Microsoft.Compute/virtualMachines/instanceView/read",
+    "Microsoft.Compute/virtualMachines/runCommands/read",
+    "Microsoft.HybridCompute/machines/read",
+    "Microsoft.Maintenance/maintenanceConfigurations/read",
+    "Microsoft.Maintenance/applyUpdates/read",
+    "Microsoft.Maintenance/configurationAssignments/read",
+    "Microsoft.Insights/ActivityLogAlerts/read",
+    "Microsoft.Insights/eventtypes/values/read",
+    "Microsoft.OperationalInsights/workspaces/read",
+    "Microsoft.OperationalInsights/workspaces/query/read",
+    "Microsoft.Authorization/policyAssignments/read",
+    "Microsoft.Authorization/locks/read"
+  ],
+  "NotActions": [],
+  "DataActions": [
+    "Microsoft.Compute/virtualMachines/runCommands/action"
+  ],
+  "NotDataActions": [],
+  "AssignableScopes": [
+    "/subscriptions/<subscription-id>"
+  ],
+  "_comment_run_command_action": "The DataAction above is what actually invokes Run Command. It is scoped down further at the application layer, not just RBAC: culprit/collectors/guest_linux.py and guest_windows.py hard-code a fixed, reviewed, read-only script - there is no code path in this repository that accepts an arbitrary script to run. Extending the allow-listed commands requires a code change and review, not a config change.",
+  "_comment_no_write": "There is deliberately no Microsoft.Compute/*/write, Microsoft.Maintenance/*/write, or any Contributor-equivalent action anywhere in this role. Phase 1 is read-only by construction (proposal Section 3/12): Culprit cannot change a resource even if a bug or a prompt-injected instruction told it to, because the credential it runs as has no write permission to invoke."
+}

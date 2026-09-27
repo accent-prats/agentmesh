@@ -1,0 +1,79 @@
+{% extends "base.html.j2" %}
+{% block title %}Culprit{% endblock %}
+
+{% block content %}
+<div class="max-w-3xl mx-auto px-8 py-12">
+
+  <div class="flex items-center gap-2 mb-1">
+    <span class="text-[11px] font-semibold tracking-wide uppercase text-brand bg-brand/10 px-2 py-0.5 rounded-full">Phase 1 &middot; read-only</span>
+  </div>
+  <h1 class="text-3xl font-bold text-gray-900 tracking-tight mt-3">Culprit</h1>
+  <p class="text-sm font-medium text-brand mt-1">Every failed patch has a culprit.</p>
+  <p class="text-gray-500 text-sm leading-relaxed mt-4 max-w-xl">
+    Autonomous root-cause analysis for failed Azure Update Manager patch deployments &mdash;
+    collapses hundreds of failures into a handful of distinct causes, settles the obvious
+    ones with a deterministic rule engine, and hands the ambiguous tail to Claude for deep
+    reasoning and remediation guidance.
+  </p>
+
+  <div class="bg-white rounded-2xl shadow-sm border border-gray-100 p-7 mt-8">
+    <div class="flex items-center gap-3 mb-1">
+      <div class="w-9 h-9 rounded-xl bg-brand/10 flex items-center justify-center shrink-0">
+        <i data-lucide="play" class="w-4 h-4 text-brand"></i>
+      </div>
+      <h2 class="font-semibold text-gray-900">Demo scenario</h2>
+    </div>
+    <p class="text-sm text-gray-500 mt-2 mb-5">
+      Runs the full pipeline against a synthetic 312-machine fleet with 47 realistic
+      failures &mdash; no Azure or Datadog credentials required.
+    </p>
+    <button id="run-btn" onclick="runDemo()"
+      class="flex items-center gap-2 bg-brand hover:bg-brand-dark text-white text-sm font-medium
+             px-5 py-2.5 rounded-lg transition-colors disabled:opacity-50 disabled:cursor-not-allowed">
+      <i data-lucide="zap" class="w-4 h-4"></i>
+      Run patch-failure analysis
+    </button>
+    <div id="status" class="text-sm text-gray-500 mt-3 min-h-[20px]"></div>
+  </div>
+
+  <div class="bg-white rounded-2xl shadow-sm border border-gray-100 p-7 mt-5">
+    <div class="flex items-center gap-3 mb-1">
+      <div class="w-9 h-9 rounded-xl bg-gray-100 flex items-center justify-center shrink-0">
+        <i data-lucide="plug" class="w-4 h-4 text-gray-500"></i>
+      </div>
+      <h2 class="font-semibold text-gray-900">Live analysis</h2>
+    </div>
+    <p class="text-sm text-gray-500 mt-2 mb-4">
+      Diagnose real patch failures from your own Azure subscription and Datadog org.
+    </p>
+    <a href="settings" class="inline-flex items-center gap-1.5 text-sm font-medium text-brand hover:text-brand-dark">
+      Configure Azure &amp; Datadog access <i data-lucide="arrow-right" class="w-3.5 h-3.5"></i>
+    </a>
+  </div>
+
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+async function runDemo() {
+  const btn = document.getElementById('run-btn');
+  const status = document.getElementById('status');
+  btn.disabled = true;
+  status.className = 'text-sm text-gray-500 mt-3 min-h-[20px]';
+  status.textContent = 'Collecting evidence, clustering, diagnosing…';
+  try {
+    const res = await fetch('runs/demo', { method: 'POST' });
+    if (!res.ok) throw new Error('HTTP ' + res.status);
+    const report = await res.json();
+    status.textContent = report.total_failed + '/' + report.total_machines +
+      ' machines failed, ' + report.total_clusters + ' distinct causes. Opening report…';
+    window.location.href = 'runs/' + report.run.run_id + '/report.html';
+  } catch (err) {
+    status.className = 'text-sm text-red-600 mt-3 min-h-[20px]';
+    status.textContent = 'Run failed: ' + err.message;
+    btn.disabled = false;
+  }
+}
+</script>
+{% endblock %}

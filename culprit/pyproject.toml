@@ -1,0 +1,67 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "culprit"
+version = "0.1.0"
+description = "Autonomous root-cause analysis for failed Azure Update Manager patch deployments."
+requires-python = ">=3.11"
+readme = "README.md"
+dependencies = [
+    "pydantic>=2.7",
+    "SQLAlchemy>=2.0",
+    "fastapi>=0.110",
+    "uvicorn[standard]>=0.29",
+    "httpx>=0.27",
+    "Jinja2>=3.1",
+    "APScheduler>=3.10",
+    "anthropic>=0.34",
+    "cryptography>=42.0",
+    "python-multipart>=0.0.9",  # required by Starlette's Request.form() - the /login POST route
+    "python-jose[cryptography]==3.3.0",  # validates Portal's shared-secret JWT - see security/portal_jwt.py
+]
+
+[project.optional-dependencies]
+azure = [
+    "azure-identity>=1.16",
+    "azure-mgmt-resourcegraph>=8.0",
+    "azure-mgmt-monitor>=6.0",
+    "azure-mgmt-compute>=31.0",
+    "azure-monitor-query>=1.3",
+]
+datadog = [
+    "datadog-api-client>=2.23",
+]
+memory = [
+    # Agent memory (culprit/memory/) - self-hosted, on-disk Chroma + a
+    # local sentence-transformers embedder, no separate service, no new
+    # API key. The platform's `test` branch (shared/src/memory/) pins
+    # mem0ai==2.0.7 specifically to stay compatible with a *shared* Chroma
+    # 0.5.23 service other apps also use - that constraint doesn't apply
+    # here: Culprit's Chroma is its own on-disk instance, shared with
+    # nothing, so it's free to track mem0's current release instead of a
+    # two-year-old one. Verified end-to-end (remember + real semantic
+    # recall) against mem0ai 2.2.1 / chromadb 1.5.9 - let chromadb float to
+    # whatever mem0 itself depends on rather than pin it a second time.
+    #
+    # Unlike `azure`/`datadog` below, this extra is deliberately NOT also
+    # listed in requirements.txt (so it's never in the default Docker
+    # image): sentence-transformers pulls in PyTorch, hundreds of MB versus
+    # the Azure/Datadog SDKs' plain HTTP clients, and every memory feature
+    # is meant to ship opt-in in the first place (CULPRIT_MEMORY_ENABLED
+    # defaults to false) - baking the dependency in by default would fight
+    # that intent for no benefit the demo needs.
+    "mem0ai>=2.2,<3.0",
+    "sentence-transformers>=2.7",
+]
+dev = [
+    "pytest>=8.0",
+    "pytest-cov>=5.0",
+]
+
+[tool.setuptools.packages.find]
+include = ["culprit*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

@@ -1,0 +1,62 @@
+{% extends "base.html.j2" %}
+{% block title %}Runs{% endblock %}
+
+{% block content %}
+<div class="max-w-5xl mx-auto px-8 py-10">
+
+  <h1 class="text-2xl font-bold text-gray-900 tracking-tight">Runs</h1>
+  <p class="text-sm text-gray-500 mt-1 mb-6 max-w-2xl">
+    Every maintenance run Culprit has diagnosed - which update job, when, how many machines it
+    covered, and how many failed. Click a run for its full fleet report.
+  </p>
+
+  {% if runs %}
+  <div class="bg-white rounded-2xl shadow-sm border border-gray-100 overflow-hidden">
+    <table class="w-full text-sm table-fixed">
+      <thead class="bg-gray-50 text-[11px] text-gray-500 uppercase tracking-wide">
+        <tr>
+          <th class="px-5 py-3 text-left w-[30%]">Update job</th>
+          <th class="px-5 py-3 text-left w-[12%]">Trigger</th>
+          <th class="px-5 py-3 text-left w-[20%]">Started</th>
+          <th class="px-5 py-3 text-right w-[10%]">Machines</th>
+          <th class="px-5 py-3 text-right w-[10%]">Failed</th>
+          <th class="px-5 py-3 text-right w-[8%]">Causes</th>
+          <th class="px-5 py-3 text-left w-[10%]">Status</th>
+        </tr>
+      </thead>
+      <tbody class="divide-y divide-gray-100">
+        {% for run in runs %}
+        <tr class="hover:bg-gray-50/60 cursor-pointer" onclick="window.location.href='runs/{{ run.run_id }}/report.html'">
+          <td class="px-5 py-3.5 overflow-hidden">
+            <span class="font-medium text-gray-900">{{ run.scope_name }}</span>
+            <span class="block text-[11px] text-gray-400 mt-0.5 truncate" title="{{ run.maintenance_configuration_id }}">{{ run.maintenance_configuration_id }}</span>
+          </td>
+          <td class="px-5 py-3.5">
+            <span class="text-[10px] font-semibold uppercase tracking-wide px-2 py-0.5 rounded-full bg-gray-50 text-gray-600 border border-gray-200">{{ run.trigger_mode.replace('_', ' ') }}</span>
+          </td>
+          <td class="px-5 py-3.5 text-gray-600 whitespace-nowrap">{{ run.started_at.strftime('%Y-%m-%d %H:%M UTC') }}</td>
+          <td class="px-5 py-3.5 text-right tabular-nums text-gray-600">{{ run.total_machines }}</td>
+          <td class="px-5 py-3.5 text-right tabular-nums {{ 'text-red-600 font-semibold' if run.failed_machines else 'text-gray-400' }}">{{ run.failed_machines }}</td>
+          <td class="px-5 py-3.5 text-right tabular-nums text-gray-600">{{ run.total_clusters }}</td>
+          <td class="px-5 py-3.5">
+            {% if run.stage == 'complete' %}
+            <span class="text-[10px] font-semibold uppercase tracking-wide px-2 py-0.5 rounded-full bg-emerald-50 text-emerald-700 border border-emerald-200">Complete</span>
+            {% elif run.stage == 'failed' %}
+            <span class="text-[10px] font-semibold uppercase tracking-wide px-2 py-0.5 rounded-full bg-red-50 text-red-600 border border-red-200">Failed</span>
+            {% else %}
+            <span class="text-[10px] font-semibold uppercase tracking-wide px-2 py-0.5 rounded-full bg-amber-50 text-amber-700 border border-amber-200">{{ run.stage }}</span>
+            {% endif %}
+          </td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+  {% else %}
+  <div class="bg-white rounded-2xl shadow-sm border border-gray-100 p-8 text-center text-gray-400 text-sm">
+    No runs yet. Trigger the demo scenario or a live analysis from the <a href="." class="text-brand hover:text-brand-dark font-medium">Console</a> to see one here.
+  </div>
+  {% endif %}
+
+</div>
+{% endblock %}

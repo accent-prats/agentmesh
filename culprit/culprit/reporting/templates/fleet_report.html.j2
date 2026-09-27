@@ -1,0 +1,195 @@
+{% extends "base.html.j2" %}
+{% block title %}{{ report.run.scope_name }} report{% endblock %}
+
+{% block content %}
+<div class="max-w-4xl mx-auto px-8 py-10">
+
+  <a href="../.." class="inline-flex items-center gap-1.5 text-xs text-gray-400 hover:text-brand mb-4">
+    <i data-lucide="arrow-left" class="w-3 h-3"></i> Console
+  </a>
+
+  <h1 class="text-2xl font-bold text-gray-900 tracking-tight">Fleet report</h1>
+  <p class="text-sm text-gray-500 mt-1 mb-6">
+    {{ report.run.scope_name }} &middot; run {{ report.run.run_id }} &middot;
+    {{ report.run.started_at.strftime('%Y-%m-%d %H:%M UTC') }}
+  </p>
+
+  <div class="grid grid-cols-3 sm:grid-cols-6 gap-px bg-gray-100 border border-gray-100 rounded-xl overflow-hidden mb-2">
+    <div class="bg-white px-4 py-3.5"><b class="block text-2xl font-bold text-gray-900 tabular-nums">{{ report.total_machines }}</b><span class="block text-[11px] text-gray-400 mt-1">Total machines</span></div>
+    <div class="bg-white px-4 py-3.5">
+      <b class="block text-2xl font-bold text-gray-900 tabular-nums">{{ report.total_failed }}</b>
+      <span class="block text-[11px] text-gray-400 mt-1">
+        Failed
+        {% if report.trend %}
+          {% if report.trend.failed_delta < 0 %}<span class="text-emerald-600 font-semibold">&darr;{{ -report.trend.failed_delta }}</span>
+          {% elif report.trend.failed_delta > 0 %}<span class="text-red-600 font-semibold">&uarr;{{ report.trend.failed_delta }}</span>
+          {% else %}<span class="text-gray-400">&middot; flat</span>{% endif %}
+        {% endif %}
+      </span>
+    </div>
+    <div class="bg-white px-4 py-3.5"><b class="block text-2xl font-bold text-gray-900 tabular-nums">{{ report.total_clusters }}</b><span class="block text-[11px] text-gray-400 mt-1">Distinct causes</span></div>
+    <div class="bg-white px-4 py-3.5">
+      <b class="block text-2xl font-bold text-gray-900 tabular-nums">{{ report.compliance_pct }}%</b>
+      <span class="block text-[11px] text-gray-400 mt-1">
+        Compliance
+        {% if report.trend %}
+          {% if report.trend.compliance_delta_pct > 0 %}<span class="text-emerald-600 font-semibold">&uarr;{{ report.trend.compliance_delta_pct }}</span>
+          {% elif report.trend.compliance_delta_pct < 0 %}<span class="text-red-600 font-semibold">&darr;{{ -report.trend.compliance_delta_pct }}</span>
+          {% else %}<span class="text-gray-400">&middot; flat</span>{% endif %}
+        {% endif %}
+      </span>
+    </div>
+    <div class="bg-white px-4 py-3.5"><b class="block text-2xl font-bold text-gray-900 tabular-nums">{{ report.repeat_offender_count }}</b><span class="block text-[11px] text-gray-400 mt-1">Repeat offenders</span></div>
+    <div class="bg-white px-4 py-3.5"><b class="block text-2xl font-bold text-gray-900 tabular-nums">{{ report.unresolved_count }}</b><span class="block text-[11px] text-gray-400 mt-1">Unresolved</span></div>
+  </div>
+  {% if report.trend %}
+  <p class="text-xs text-gray-400 mb-6">vs. previous cycle ({{ report.trend.previous_run_id }}): {{ report.trend.previous_total_failed }} failed, {{ report.trend.previous_compliance_pct }}% compliance, {{ report.trend.previous_repeat_offender_count }} repeat offender{{ 's' if report.trend.previous_repeat_offender_count != 1 else '' }}.</p>
+  {% else %}
+  <p class="text-xs text-gray-400 mb-6">No prior completed cycle for "{{ report.run.scope_name }}" yet to trend against.</p>
+  {% endif %}
+
+  <div class="space-y-4">
+  {% for entry in report.entries %}
+  {% set conf = entry.result.confidence %}
+  <div class="bg-white rounded-2xl shadow-sm border border-gray-100 overflow-hidden">
+    <div class="px-6 py-5 border-b border-gray-100">
+      <div class="flex flex-wrap items-center gap-1.5 mb-2.5">
+        {% if conf >= 0.8 %}
+          <span class="text-[10px] font-semibold uppercase tracking-wide px-2 py-0.5 rounded-full bg-emerald-50 text-emerald-700 border border-emerald-200">High confidence</span>
+        {% elif conf >= 0.5 %}
+          <span class="text-[10px] font-semibold uppercase tracking-wide px-2 py-0.5 rounded-full bg-amber-50 text-amber-700 border border-amber-200">Medium confidence</span>
+        {% else %}
+          <span class="text-[10px] font-semibold uppercase tracking-wide px-2 py-0.5 rounded-full bg-red-50 text-red-600 border border-red-200">Low confidence</span>
+        {% endif %}
+        <span class="text-[10px] font-semibold uppercase tracking-wide px-2 py-0.5 rounded-full bg-sky-50 text-sky-700 border border-sky-200">{{ entry.cluster.size }} machine{{ 's' if entry.cluster.size != 1 else '' }}</span>
+        <span class="text-[10px] font-semibold uppercase tracking-wide px-2 py-0.5 rounded-full bg-gray-50 text-gray-600 border border-gray-200">{{ '%.0f' % (conf * 100) }}% confidence</span>
+        {% if entry.recurrence_badge %}
+          <span class="text-[10px] font-semibold uppercase tracking-wide px-2 py-0.5 rounded-full bg-red-50 text-red-600 border border-red-200">{{ entry.recurrence_badge }}</span>
+        {% endif %}
+      </div>
+      <h3 class="font-semibold text-gray-900 text-base leading-snug">{{ entry.result.title }}</h3>
+      <p class="text-xs text-gray-400 mt-1">Cause family: {{ entry.result.cause_family.value }} &middot; origin: {{ entry.result.origin.value }}</p>
+    </div>
+
+    <div class="px-6 py-5 text-sm">
+      {% if entry.result.causal_chain %}
+      <h6 class="text-[10px] font-semibold uppercase tracking-wide text-gray-400 mb-2">Causal chain</h6>
+      <ol class="space-y-1.5 mb-4 font-mono text-[12.5px] text-gray-600">
+        {% for step in entry.result.causal_chain %}
+        <li class="pl-3 border-l-2 border-gray-200">
+          {{ step.statement }}
+          <span class="block text-[10.5px] text-gray-400 mt-0.5">evidence: {{ step.evidence_refs|join(', ') }}</span>
+        </li>
+        {% endfor %}
+      </ol>
+      {% endif %}
+
+      {% if entry.result.ruled_out %}
+      <h6 class="text-[10px] font-semibold uppercase tracking-wide text-gray-400 mb-2">Ruled out</h6>
+      <ul class="list-disc pl-4 mb-4 text-gray-600 space-y-1">
+        {% for r in entry.result.ruled_out %}
+        <li><b class="font-medium text-gray-700">{{ r.candidate }}</b> &mdash; {{ r.reason }}{% if r.evidence_refs %} <span class="text-[10.5px] text-gray-400">(evidence: {{ r.evidence_refs|join(', ') }})</span>{% endif %}</li>
+        {% endfor %}
+      </ul>
+      {% endif %}
+
+      {% if entry.result.missing_evidence %}
+      <h6 class="text-[10px] font-semibold uppercase tracking-wide text-gray-400 mb-2">Missing evidence</h6>
+      <ul class="list-disc pl-4 mb-4 text-gray-600 space-y-1">{% for m in entry.result.missing_evidence %}<li>{{ m }}</li>{% endfor %}</ul>
+      {% endif %}
+
+      {% if entry.result.remediation and entry.result.remediation.immediate_fix %}
+      <h6 class="text-[10px] font-semibold uppercase tracking-wide text-gray-400 mb-2 flex items-center gap-1.5">
+        Immediate fix
+        <span class="text-[9px] font-semibold uppercase px-1.5 py-0.5 rounded bg-emerald-50 text-emerald-700 border border-emerald-200">{{ entry.result.remediation.immediate_risk.value }} risk</span>
+        <span class="text-[9px] font-semibold uppercase px-1.5 py-0.5 rounded bg-sky-50 text-sky-700 border border-sky-200">{{ entry.result.remediation.immediate_scope }}</span>
+      </h6>
+      <ol class="list-decimal pl-4 mb-4 text-gray-600 space-y-1">{% for step in entry.result.remediation.immediate_fix %}<li>{{ step.instruction }}</li>{% endfor %}</ol>
+      {% endif %}
+
+      {% if entry.result.remediation and entry.result.remediation.preventive_fix %}
+      <h6 class="text-[10px] font-semibold uppercase tracking-wide text-gray-400 mb-2 flex items-center gap-1.5">
+        Preventive fix
+        <span class="text-[9px] font-semibold uppercase px-1.5 py-0.5 rounded bg-amber-50 text-amber-700 border border-amber-200">{{ entry.result.remediation.preventive_risk.value }} risk</span>
+      </h6>
+      <p class="text-gray-600 mb-4">{{ entry.result.remediation.preventive_fix }}</p>
+      {% endif %}
+
+      {% if entry.result.remediation %}
+      <h6 class="text-[10px] font-semibold uppercase tracking-wide text-gray-400 mb-2">Phase 2 automation candidate</h6>
+      <p class="text-gray-600 mb-4">
+        {% if entry.result.remediation.phase2_candidate %}
+          <span class="text-[9px] font-semibold uppercase px-1.5 py-0.5 rounded bg-emerald-50 text-emerald-700 border border-emerald-200">Yes</span>
+        {% else %}
+          <span class="text-[9px] font-semibold uppercase px-1.5 py-0.5 rounded bg-amber-50 text-amber-700 border border-amber-200">No</span>
+        {% endif %}
+        {{ entry.result.remediation.phase2_rationale }}
+      </p>
+      {% endif %}
+
+      <p class="text-xs text-gray-400 pt-3 mt-1 border-t border-gray-100">
+        Affected:
+        {% for m in entry.cluster.members[:8] %}<a href="{{ report.run.run_id }}/machines/{{ m.vm_name }}.html" class="text-brand hover:underline">{{ m.vm_name }}</a>{% if not loop.last %}, {% endif %}{% endfor %}{% if entry.cluster.size > 8 %} &hellip; +{{ entry.cluster.size - 8 }} more{% endif %}
+      </p>
+
+      <div class="verdict-widget mt-4 pt-4 border-t border-gray-100" data-cluster-id="{{ entry.cluster.cluster_id }}" data-cause-family="{{ entry.result.cause_family.value }}">
+        <h6 class="text-[10px] font-semibold uppercase tracking-wide text-gray-400 mb-2">Was this finding right?</h6>
+        <div class="flex flex-wrap items-center gap-2">
+          <input type="text" class="reviewer-input border border-gray-200 rounded-lg px-2.5 py-1.5 text-xs w-40" placeholder="your email">
+          <button type="button" class="verdict-btn px-3 py-1.5 rounded-lg text-xs font-medium bg-emerald-50 text-emerald-700 border border-emerald-200 hover:bg-emerald-100" data-verdict="correct">Correct</button>
+          <button type="button" class="verdict-btn px-3 py-1.5 rounded-lg text-xs font-medium bg-amber-50 text-amber-700 border border-amber-200 hover:bg-amber-100" data-verdict="partially_correct">Partially correct</button>
+          <button type="button" class="verdict-btn px-3 py-1.5 rounded-lg text-xs font-medium bg-red-50 text-red-600 border border-red-200 hover:bg-red-100" data-verdict="wrong">Wrong</button>
+          <span class="verdict-status text-xs text-gray-400"></span>
+        </div>
+      </div>
+    </div>
+  </div>
+  {% endfor %}
+  </div>
+
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+document.querySelectorAll('.verdict-widget').forEach(function (widget) {
+  const clusterId = widget.dataset.clusterId;
+  const causeFamily = widget.dataset.causeFamily;
+  const status = widget.querySelector('.verdict-status');
+  const reviewerInput = widget.querySelector('.reviewer-input');
+
+  widget.querySelectorAll('.verdict-btn').forEach(function (btn) {
+    btn.addEventListener('click', async function () {
+      const reviewer = reviewerInput.value.trim();
+      if (!reviewer) {
+        status.className = 'verdict-status text-xs text-red-600';
+        status.textContent = 'Enter your email first.';
+        return;
+      }
+      widget.querySelectorAll('.verdict-btn').forEach(b => b.disabled = true);
+      status.className = 'verdict-status text-xs text-gray-400';
+      status.textContent = 'Recording…';
+      try {
+        const res = await fetch('../../verdicts', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            cluster_id: clusterId,
+            cause_family: causeFamily,
+            verdict: btn.dataset.verdict,
+            reviewer: reviewer,
+          }),
+        });
+        if (!res.ok) throw new Error('HTTP ' + res.status);
+        status.className = 'verdict-status text-xs text-emerald-600';
+        status.textContent = 'Recorded - thank you.';
+      } catch (err) {
+        status.className = 'verdict-status text-xs text-red-600';
+        status.textContent = 'Failed: ' + err.message;
+        widget.querySelectorAll('.verdict-btn').forEach(b => b.disabled = false);
+      }
+    });
+  });
+});
+</script>
+{% endblock %}

@@ -1,0 +1,193 @@
+# ─────────────────────────────────────────────────────────────
+# AgentMesh platform — unified stack
+# Services: postgres, portal-api, portal-ui, culprit-api,
+#           nginx, mongo + growthbook (feature flags)
+# ─────────────────────────────────────────────────────────────
+
+x-api-env: &api-env
+  DATABASE_URL:  postgresql+asyncpg://${DB_USER:-portal}:${DB_PASS:-portal}@postgres:5432/${DB_NAME:-portal}
+  SECRET_KEY:    ${SECRET_KEY:-change-me-in-production}
+  LOG_LEVEL:     ${LOG_LEVEL:-info}
+  # GrowthBook — feature flags
+  GROWTHBOOK_API_HOST:          ${GROWTHBOOK_API_HOST:-http://growthbook:3100}
+  GROWTHBOOK_CLIENT_KEY:        ${GROWTHBOOK_CLIENT_KEY:-sdk-}
+  GROWTHBOOK_REFRESH_INTERVAL:  ${GROWTHBOOK_REFRESH_INTERVAL:-60}
+  ENVIRONMENT:                  ${ENVIRONMENT:-production}
+
+services:
+
+  # ── Infrastructure ────────────────────────────────────────
+
+  # MongoDB — used exclusively by GrowthBook (separate from the platform PostgreSQL)
+  mongo:
+    image: mongo:7
+    restart: unless-stopped
+    # Config file sets per-component verbosity -1 for NETWORK, ACCESS, and COMMAND
+    # to suppress the flood of INFO connection logs from GrowthBook's Mongoose pool
+    # and Docker health checks. WARNING and ERROR messages are still shown.
+    command: ["mongod", "--config", "/etc/mongod.conf"]
+    volumes:
+      - ./infrastructure/mongodb/mongod.conf:/etc/mongod.conf:ro
+      - mongo_data:/data/db
+    networks: [platform]
+    healthcheck:
+      # TCP-level probe — avoids spawning mongosh (Node.js runtime) which opens
+      # multiple connections and floods logs with NETWORK/ACCESS INFO messages.
+      # bash /dev/tcp is available in the mongo:7 image and verifies the port
+      # is open without triggering connection-lifecycle log events.
+      test: ["CMD-SHELL", "bash -c 'cat < /dev/null > /dev/tcp/127.0.0.1/27017' 2>/dev/null"]
+      interval: 30s
+      timeout: 5s
+      retries: 5
+
+  # GrowthBook — open-source feature flagging & A/B experimentation
+  # Admin UI : https://growthbook.local  (container port 3000, proxied by nginx)
+  # SDK API  : http://growthbook:3100    (container port 3100 — used by backend SDKs)
+  growthbook:
+    image: growthbook/growthbook:latest
+    restart: unless-stopped
+    ports:
+      - "3100:3000"   # Admin UI  (host 3100 → container 3000) — direct fallback access
+      - "3101:3100"   # SDK API   (host 3101 → container 3100) — direct fallback access
+    environment:
+      MONGODB_URI: mongodb://mongo:27017/growthbook
+      APP_ORIGIN:       ${GROWTHBOOK_URL:-https://growthbook.local}
+      # API_HOST must be an intra-container URL (not the public domain) so that
+      # Next.js SSR data-fetching calls go directly to Express (localhost:3100)
+      # without needing to resolve growthbook.local, which is only in the host
+      # /etc/hosts and is NOT resolvable by Docker's internal DNS.
+      API_HOST:         http://localhost:3100
+      JWT_SECRET:       ${SECRET_KEY:-change-me-in-production}
+      ENCRYPTION_KEY:   ${GROWTHBOOK_ENCRYPTION_KEY:?GROWTHBOOK_ENCRYPTION_KEY must be set in .env}
+      TOKEN_REFRESH_AGE: 2592000
+      NODE_ENV:         production
+      # Suppress INFO-level request completion logs (pino level 30).
+      # warn (40) keeps errors and warnings only.
+      LOG_LEVEL:        warn
+    depends_on:
+      mongo:
+        condition: service_healthy
+    volumes:
+      - growthbook_uploads:/usr/local/src/app/packages/back-end/uploads
+    networks: [platform]
+
+  postgres:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER:     ${DB_USER:-portal}
+      POSTGRES_PASSWORD: ${DB_PASS:-portal}
+      POSTGRES_DB:       ${DB_NAME:-portal}
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${DB_USER:-portal} -d ${DB_NAME:-portal}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks: [platform]
+
+  # ── Portal API ────────────────────────────────────────────
+  # Owns its own users table — creates its schema and seeds a first
+  # admin account on startup (portal/db.py::bootstrap).
+
+  portal-api:
+    build:
+      context: .
+      dockerfile: portal/Dockerfile
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      <<: *api-env
+      PORTAL_ADMIN_EMAIL:    ${PORTAL_ADMIN_EMAIL:-admin@example.com}
+      PORTAL_ADMIN_PASSWORD: ${PORTAL_ADMIN_PASSWORD:-ChangeMe123!}
+      CULPRIT_PUBLIC_URL:    ${CULPRIT_PUBLIC_URL:-/culprit/}
+      # Encrypts AI provider secrets saved on Admin -> AI Providers at rest -
+      # see portal/crypto.py and api/routers/ai_providers.py. Falls back to
+      # an insecure, clearly-marked dev-only key otherwise.
+      PORTAL_ENCRYPTION_KEY: ${PORTAL_ENCRYPTION_KEY:-}
+    networks: [platform]
+
+  # ── Culprit API ───────────────────────────────────────────
+  # Autonomous RCA for failed Azure Update Manager patch deployments.
+  # Deliberately kept off the shared Postgres instance (its own SQLite
+  # file in culprit_data) so it can't collide with the Portal's DB.
+  # Proxied through nginx at /culprit/ (see infrastructure/nginx); the
+  # 8010 port below is a direct fallback for local development.
+
+  culprit-api:
+    build:
+      context: .
+      dockerfile: culprit/Dockerfile
+    restart: unless-stopped
+    ports:
+      - "8010:8000"   # direct fallback access — http://<host>:8010/docs
+    environment:
+      CULPRIT_DATABASE_URL: sqlite:////app/data/culprit.db
+      ANTHROPIC_API_KEY:    ${ANTHROPIC_API_KEY:-}
+      CULPRIT_RCA_MODEL:    ${CULPRIT_RCA_MODEL:-claude-opus-5}
+      # Encrypts the Azure/Datadog secrets saved on the /settings screen at
+      # rest - set a real value here for anything beyond a demo; falls back
+      # to an insecure, clearly-marked dev-only key otherwise.
+      CULPRIT_ENCRYPTION_KEY: ${CULPRIT_ENCRYPTION_KEY:-}
+      # Gates every route behind this shared token (browser cookie via
+      # /login, or Authorization: Bearer for scripts). Unset = no
+      # authentication at all, anywhere - fine only until this holds real
+      # credentials or runs against a real subscription. See SECURITY.md.
+      CULPRIT_API_TOKEN: ${CULPRIT_API_TOKEN:-}
+      # Same signing secret as Portal's SECRET_KEY - lets an already-
+      # authenticated AgentMesh user launch straight into Culprit instead
+      # of hitting the separate CULPRIT_API_TOKEN wall. Also used to mint a
+      # short-lived service token for the AI-provider lookup below.
+      CULPRIT_PORTAL_JWT_SECRET: ${SECRET_KEY:-change-me-in-production}
+      # In-cluster Portal address - api/deps.py::get_rca_agent fetches
+      # which AI provider is active (Admin -> AI Providers) from here.
+      # Default already matches the portal-api service name below; only
+      # override for a non-standard topology.
+      CULPRIT_PORTAL_INTERNAL_URL: ${CULPRIT_PORTAL_INTERNAL_URL:-http://portal-api:8000}
+    volumes:
+      - culprit_data:/app/data
+    networks: [platform]
+
+  # ── Portal UI ─────────────────────────────────────────────
+
+  portal-ui:
+    build:
+      context: portal/ui
+      dockerfile: Dockerfile
+      args:
+        VITE_PORTAL_URL: ${PORTAL_PUBLIC_URL:-https://portal.local}
+        VITE_GROWTHBOOK_API_HOST: ${GROWTHBOOK_CLIENT_KEY:+https://growthbook.local}
+        VITE_GROWTHBOOK_CLIENT_KEY: ${GROWTHBOOK_CLIENT_KEY:-}
+    restart: unless-stopped
+    networks: [platform]
+
+  # ── Nginx reverse proxy ───────────────────────────────────
+
+  nginx:
+    image: nginx:1.27-alpine
+    restart: unless-stopped
+    depends_on:
+      - portal-api
+      - portal-ui
+      - culprit-api
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./infrastructure/nginx/nginx.conf:/etc/nginx/nginx.conf:ro
+      - ./infrastructure/nginx/conf.d:/etc/nginx/conf.d:ro
+      - ./infrastructure/nginx/certs:/etc/nginx/certs:ro
+    networks: [platform]
+
+networks:
+  platform:
+    driver: bridge
+
+volumes:
+  postgres_data:
+  mongo_data:
+  growthbook_uploads:
+  culprit_data:

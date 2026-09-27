@@ -1,0 +1,192 @@
+"""FastAPI application entry point.
+
+    uvicorn culprit.api.main:app --reload
+
+Every route here is additive over the pipeline modules - the API layer
+holds no pipeline logic of its own, it only wires HTTP to
+culprit.pipeline / culprit.db / culprit.reporting.
+"""
+from __future__ import annotations
+
+import logging
+from contextlib import asynccontextmanager
+
+from fastapi import FastAPI, Request
+from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import HTMLResponse, RedirectResponse
+
+from culprit import config
+from culprit.api.auth_middleware import SESSION_COOKIE, RequireApiTokenMiddleware, is_authenticated
+from culprit.api.root_path_middleware import RootPathFromHeaderMiddleware, root_path
+from culprit.api.routes_chat import router as chat_router
+from culprit.api.routes_preflight import router as preflight_router
+from culprit.api.routes_runs import router as runs_router
+from culprit.api.routes_settings import router as settings_router
+from culprit.api.routes_verdicts import router as verdicts_router
+from culprit.reporting.render import render_console_html, render_login_html, render_runs_html, render_settings_html
+from culprit.scheduler.events import router as events_router
+
+log = logging.getLogger(__name__)
+
+
+@asynccontextmanager
+async def _lifespan(_app: FastAPI):
+    # Loud, unmissable warnings for settings that silently degrade to an
+    # insecure default otherwise - found in review 2026-09-27: none of
+    # these were ever flagged anywhere before this, including at runtime.
+    if not config.settings.api_token and not config.settings.portal_jwt_secret:
+        log.warning(
+            "Neither CULPRIT_API_TOKEN nor CULPRIT_PORTAL_JWT_SECRET is set - every route is open "
+            "to anyone who can reach this process (no login, no bearer token, no Portal SSO "
+            "required). Fine for the offline demo; set at least one before this holds real "
+            "Azure/Datadog credentials or runs against a real subscription."
+        )
+    elif not config.settings.api_token:
+        log.info(
+            "CULPRIT_API_TOKEN is not set - relying solely on Portal SSO (CULPRIT_PORTAL_JWT_SECRET) "
+            "for authentication. Direct script/curl access has no fallback credential."
+        )
+    if not config.settings.encryption_key:
+        log.warning(
+            "CULPRIT_ENCRYPTION_KEY is not set - settings screen secrets are being encrypted with "
+            "a hardcoded, source-visible dev-only key (see culprit/security/crypto.py), which is "
+            "no real protection at all. Set it before saving real Azure/Datadog credentials."
+        )
+
+    scheduler = None
+    if config.settings.scheduler_enabled:
+        from culprit.scheduler.cron import build_scheduler
+
+        scheduler = build_scheduler(
+            cron_expression=config.settings.scheduled_cron,
+            pre_flight_interval_minutes=config.settings.preflight_interval_minutes,
+        )
+        scheduler.start()
+        log.info(
+            "In-process scheduler started - scheduled_cycle on '%s', pre_flight_check every %d min",
+            config.settings.scheduled_cron, config.settings.preflight_interval_minutes,
+        )
+
+    yield
+
+    if scheduler is not None:
+        scheduler.shutdown(wait=False)
+
+
+app = FastAPI(
+    title="Culprit",
+    description="Autonomous root-cause analysis for failed Azure Update Manager patch deployments.",
+    version="0.1.0",
+    lifespan=_lifespan,
+)
+
+
+# Wide-open origins are safe here specifically because allow_credentials is
+# NOT set (defaults to False in Starlette) - a cross-origin page cannot get
+# our session cookie sent along with its requests, so it can only reach an
+# authenticated route if it already somehow knows the bearer token. Scope
+# this down to a real origin anyway if a separate frontend is ever added.
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+app.add_middleware(RequireApiTokenMiddleware)
+
+app.include_router(runs_router)
+app.include_router(settings_router)
+app.include_router(verdicts_router)
+app.include_router(chat_router)
+app.include_router(events_router)
+app.include_router(preflight_router)
+
+
+@app.get("/health")
+def health() -> dict:
+    return {"status": "ok"}
+
+
+@app.get("/", response_class=HTMLResponse)
+def console() -> str:
+    """The AgentMesh launcher's 'Launch' target for Culprit - a one-button
+    console that triggers the demo scenario and hands off to the rendered
+    fleet report. Everything it calls (POST /runs/demo, GET /runs/{id}/report.html)
+    is a route already defined above; this page adds no pipeline logic of
+    its own."""
+    return render_console_html()
+
+
+@app.get("/settings", response_class=HTMLResponse)
+def settings_page() -> str:
+    """Azure/Datadog connection settings - see culprit/api/routes_settings.py
+    for the API this page reads and writes."""
+    return render_settings_html()
+
+
+@app.get("/runs.html", response_class=HTMLResponse)
+def runs_page() -> str:
+    """Every run Culprit has diagnosed, most recent first - "which update
+    jobs is Culprit monitoring" (culprit/db/repository.py::list_runs)."""
+    from culprit.api import deps
+    from culprit.db import repository
+
+    with deps.get_session_factory()() as session:
+        runs = repository.list_runs(session)
+    return render_runs_html(runs)
+
+
+@app.get("/login", response_model=None)
+def login_page(request: Request, next: str = "/") -> HTMLResponse | RedirectResponse:
+    auth_disabled = not config.settings.api_token and not config.settings.portal_jwt_secret
+    already_in = is_authenticated(request, config.settings.api_token, config.settings.portal_jwt_secret)
+    if auth_disabled or already_in:
+        # Nothing to protect, or already signed in (shared token or Portal
+        # SSO) - don't make either case sit at a login form with nothing
+        # useful to do. Note this does NOT cover the one-time
+        # ?auth_token=<jwt> handoff - that's the middleware's job
+        # (auth_middleware.py), since it also needs to set a cookie.
+        return RedirectResponse(url=f"{root_path(request)}{next}", status_code=303)
+    return HTMLResponse(render_login_html(next_path=next))
+
+
+@app.post("/login", response_model=None)
+async def login_submit(request: Request) -> HTMLResponse | RedirectResponse:
+    form = await request.form()
+    next_path = str(form.get("next") or "/")
+    prefix = root_path(request)
+    if not config.settings.api_token:
+        return RedirectResponse(url=f"{prefix}{next_path}", status_code=303)
+
+    submitted = str(form.get("token") or "")
+    if submitted != config.settings.api_token:
+        return HTMLResponse(
+            render_login_html(next_path=next_path, error="Incorrect token."), status_code=401
+        )
+
+    response = RedirectResponse(url=f"{prefix}{next_path}", status_code=303)
+    response.set_cookie(
+        SESSION_COOKIE,
+        config.settings.api_token,
+        httponly=True,
+        samesite="lax",
+        max_age=60 * 60 * 24 * 30,  # 30 days - this is a shared operator token, not a per-user login
+    )
+    return response
+
+
+@app.get("/logout")
+def logout(request: Request) -> RedirectResponse:
+    response = RedirectResponse(url=f"{root_path(request)}/login", status_code=303)
+    response.delete_cookie(SESSION_COOKIE)
+    return response
+
+
+# Must be the outermost ASGI layer, added last, after every route and
+# middleware above is registered on the FastAPI instance itself - see
+# root_path_middleware.py for why this exists (fixes /docs under the
+# nginx-proxied /culprit/ mount). Rebinds the module-level `app` name that
+# `uvicorn culprit.api.main:app` and every test's `from culprit.api.main
+# import app` resolve, from the FastAPI instance to this wrapper - both are
+# valid ASGI callables, so nothing above this line needs to change.
+app = RootPathFromHeaderMiddleware(app)

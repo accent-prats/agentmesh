@@ -1,0 +1,81 @@
+"""Render a FleetReport to HTML."""
+from __future__ import annotations
+
+from pathlib import Path
+
+from jinja2 import Environment, FileSystemLoader, select_autoescape
+
+from culprit.models.report import FleetReport
+
+_TEMPLATE_DIR = Path(__file__).parent / "templates"
+
+
+def _env() -> Environment:
+    return Environment(loader=FileSystemLoader(str(_TEMPLATE_DIR)), autoescape=select_autoescape(["html"]))
+
+
+def render_fleet_report_html(report: FleetReport) -> str:
+    template = _env().get_template("fleet_report.html.j2")
+    # This page lives two levels below the app root (runs/{id}/report.html),
+    # unlike every other page here - nav_prefix corrects the shared sidebar's
+    # otherwise-root-relative links (base.html.j2) so they still resolve
+    # correctly from this depth.
+    return template.render(report=report, active="console", nav_prefix="../../")
+
+
+def render_runs_html(runs) -> str:
+    """The Runs list page - "which update jobs is Culprit monitoring",
+    most recent first (culprit/db/repository.py::list_runs). Root-level,
+    same depth as console/settings/precision.html."""
+    template = _env().get_template("runs.html.j2")
+    return template.render(runs=runs, active="runs")
+
+
+def render_console_html() -> str:
+    """The app's landing page - what the AgentMesh launcher's 'Launch'
+    button sends people to. `active` just drives which sidebar nav item
+    (in base.html.j2, shared with every Culprit page) is highlighted;
+    the page has no report data of its own to render."""
+    template = _env().get_template("console.html.j2")
+    return template.render(active="console")
+
+
+def render_settings_html() -> str:
+    """The Azure/Datadog connection settings screen - reads and writes
+    culprit/api/routes_settings.py entirely client-side via fetch()."""
+    template = _env().get_template("settings.html.j2")
+    return template.render(active="settings")
+
+
+def render_machine_html(cluster, member, result, outcome=None, collection_gaps=None) -> str:
+    """The third report altitude (proposal Section 8): one machine's own
+    timeline deviation from its cluster's representative, plus its own
+    `PatchOutcome` (status, error, failed KB/package) when this run saved
+    one - see MachineOutcomeRecord; `outcome` is None for runs diagnosed
+    before that existed, not an error. Lives three levels below the app
+    root (runs/{id}/machines/{vm_id}.html), hence the deeper nav_prefix -
+    see render_fleet_report_html's comment."""
+    template = _env().get_template("machine.html.j2")
+    return template.render(
+        cluster=cluster, member=member, result=result, outcome=outcome, collection_gaps=collection_gaps or [],
+        active="console", nav_prefix="../../../",
+    )
+
+
+def render_precision_html(precision: dict) -> str:
+    """The Phase 2 promotion gate (proposal Section 11), rendered - per-
+    family precision, sample size, and whether each family currently
+    clears the promotion bar."""
+    template = _env().get_template("precision.html.j2")
+    return template.render(active="precision", precision=precision)
+
+
+def render_login_html(next_path: str = "/", error: str = "") -> str:
+    """The shared-token sign-in page (culprit/api/auth_middleware.py) -
+    doesn't extend base.html.j2, since there's nothing to put in the
+    sidebar for someone who isn't authenticated yet. `next_path` and
+    `error` are plain Jinja variables, autoescaped like every other
+    template here - the XSS finding from review was in settings.html.j2's
+    client-side JS, not in any server-rendered Jinja output."""
+    template = _env().get_template("login.html.j2")
+    return template.render(next_path=next_path, error=error)
