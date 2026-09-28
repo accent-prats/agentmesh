@@ -40,6 +40,40 @@ missed silently (see `main.py`'s lifespan handler). Generate a real
 first two by necessity, the third because Event Grid's own handshake
 can't carry either credential.
 
+### Sliding-session renewal (2026-09-27)
+
+The Portal-SSO cookie set by #2 above, and the JWT payload inside it,
+both originally hard-expired 60 minutes after the *moment Portal issued
+the token* - not renewed by activity. An actively-browsing user got
+logged out on that fixed wall-clock timer mid-session, bounced to the
+`CULPRIT_API_TOKEN` login screen - an operator secret an ordinary
+AgentMesh user has no way to know, with no working recovery path from
+there.
+
+`RequireApiTokenMiddleware` (`auth_middleware.py`) now re-signs and
+re-sets the cookie (`security/portal_jwt.py::renew_portal_token` - same
+claims, a fresh 60-minute `exp`) on every request authenticated via a
+Portal-JWT **cookie**, so the window is "60 minutes since your last
+click," not "60 minutes since you logged in." Deliberately scoped to
+that one case only:
+
+- The shared `CULPRIT_API_TOKEN` (cookie or Bearer) is never renewed -
+  it has no expiry to renew; it authenticates the same way every time
+  it's presented.
+- A script's `Authorization: Bearer <portal JWT>` header is never
+  renewed either - a script re-sends its own credential on every call
+  and has no cookie jar to benefit from a `Set-Cookie` response, so
+  none is sent for that path.
+
+This does not change the *authorization* check at all (still `"culprit"
+in app_access`, or `admin`/`ci_service`) - only how long a validated
+session keeps working without the user re-authenticating with Portal.
+An admin revoking a user's Culprit access mid-session still takes effect
+on their *next* Portal-issued token, the same as before; this renewal
+re-signs the claims already present in the cookie, it doesn't re-check
+them against the Portal's `users` table (Culprit has none of its own -
+see `security/portal_jwt.py`'s docstring).
+
 ## RBAC
 
 `culprit/security/rbac/culprit-reader-role.json` is the complete custom
@@ -123,6 +157,43 @@ assignment. Fixed by building that element with `textContent`/
 `createTextNode` exclusively (`reporting/templates/settings.html.j2`),
 which never parses its input as HTML regardless of content.
 
+## AI provider credentials (platform-wide, owned by Portal)
+
+Unlike Azure/Datadog above, the deep RCA agent's own AI provider
+credentials are **not** Culprit's to encrypt or store - they're a
+platform-wide setting an admin configures once on the Portal (Admin →
+AI Providers), shared by every app that needs an LLM call. This is a
+deliberately different trust shape from everything else in this file,
+so it's worth spelling out precisely:
+
+- Encrypted at rest with the Portal's own key (`PORTAL_ENCRYPTION_KEY`,
+  Fernet, `portal/crypto.py`) - a separate key from Culprit's own
+  `CULPRIT_ENCRYPTION_KEY`, so neither app's secrets are decryptable
+  with the other's key.
+- The admin-facing views (`GET /api/ai-providers`) never return a
+  decrypted key, only whether one is configured - the same "configured:
+  bool, never the value" rule Culprit's own `/settings` screen follows.
+- Exactly one endpoint ever returns a decrypted key:
+  `GET /api/ai-providers/resolved-active`, gated by
+  `portal/dependencies.py::require_service` - a short-lived (5 minute)
+  `type: "service"` JWT that the *calling app* mints itself with the
+  same shared secret Portal SSO already trusts
+  (`CULPRIT_PORTAL_JWT_SECRET` on Culprit's side), not a real user
+  session. A leaked service token is a narrow, time-boxed exposure (the
+  currently-active provider's credential, for up to 5 minutes), not a
+  standing credential.
+- That service token is deliberately a different `type` claim than a
+  real user's Portal access token, checked explicitly
+  (`payload.get("type") != "service"`), so a stolen or logged user
+  session token can never be replayed against this endpoint, and a
+  service token can never be used to sign into the admin UI - each
+  side's `require_admin`/`require_service` dependency only accepts its
+  own claim shape.
+- The actual model call happens directly from the consuming app (e.g.
+  Culprit) to the provider - Portal is never in that request path and
+  never sees the prompt or the response, only the credential lookup at
+  the start of a run.
+
 ## Query construction
 
 Every Resource Graph/Log Analytics query the collectors and
@@ -160,10 +231,31 @@ the original error still propagates to the caller.
 
 ## Data retention and reproducibility
 
-Every evidence bundle collected is retained (as `TimelineEvent`s
-persisted alongside the `RCAResult` in `db/models.py`), addressable by
-`raw_ref`, so any RCA can be re-derived and audited months later. Every
-guest Run Command invocation and every Resource Graph/Activity
+**Corrected 2026-09-28 - this section previously overstated what's kept.**
+The cluster (fingerprint + membership) and the `RCAResult` (cause,
+confidence, causal chain, remediation) are persisted in `db/models.py`
+and never expire on their own - that part was accurate. The raw
+`EvidenceBundle` each diagnosis actually reasoned over - the full
+`TimelineEvent` list, addressable by `raw_ref` - was **not**: it's a
+local variable inside `pipeline/orchestrator.py::Pipeline.run()` that's
+garbage-collected the moment a run finishes. Nothing in this repository
+re-derives or audits the original raw evidence for a past run; only the
+finding it produced.
+
+`MachineOutcomeRecord` (`db/models.py`, added 2026-09-27) narrows that
+gap for the one summary a reviewer actually asks for first - each
+machine's own `PatchOutcome` (status, error code/message, the specific
+failed KB(s)/package(s), reboot status, the run window) is now
+persisted per run and shown on `/runs/{run_id}/machines/{vm_name}.html`.
+It is a **summary**, not the audit trail: the underlying timeline
+(individual Resource Graph rows, guest log lines, Datadog points) that
+produced that summary is still not retained anywhere Culprit controls.
+If your compliance posture requires reproducing the *exact* evidence an
+RCA was based on months later, that currently has to come from Azure's
+and Datadog's own logs (see the audit-trail note below), not from
+Culprit's own database.
+
+Every guest Run Command invocation and every Resource Graph/Activity
 Log/Datadog read happens under the identity's own audit trail in that
 service - Culprit does not add a separate audit log for reads that Azure
 and Datadog already log natively.

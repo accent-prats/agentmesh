@@ -11,6 +11,7 @@ The Portal is the unified entry point for the AgentMesh platform. It provides a 
 - [Login and Token Flow](#login-and-token-flow)
 - [App Launcher](#app-launcher)
 - [User Management](#user-management)
+- [AI Providers](#ai-providers)
 - [Configuration](#configuration)
 - [Docker](#docker)
 
@@ -42,10 +43,17 @@ portal/
 ├── api/                      # FastAPI backend (port 8000)
 │   ├── main.py                   # App setup, GrowthBook flags, DB bootstrap
 │   ├── routers/auth.py           # Login, refresh, user/app-access management
-│   └── routers/apps.py           # App registry + per-user visibility
+│   ├── routers/apps.py           # App registry + per-user visibility
+│   └── routers/ai_providers.py   # Platform-wide AI provider config (admin) +
+│                                  # the service-to-service resolved-active endpoint
 │
 ├── db.py                     # SQLAlchemy models + schema bootstrap + admin seed
-├── security.py                # Password hashing, JWT issuance/decoding
+│                              # (User, AIProviderSetting)
+├── security.py                # Password hashing, JWT issuance/decoding,
+│                                # create_service_token() for app-to-app calls
+├── crypto.py                  # Fernet encryption for AI provider secrets
+│                                # (PORTAL_ENCRYPTION_KEY - a separate key from
+│                                # any consuming app's own encryption)
 │
 ├── ui/                        # React + Vite + TypeScript + Tailwind CSS
 │   ├── public/
@@ -56,9 +64,9 @@ portal/
 │       ├── pages/
 │       │   ├── Login.tsx         # Sign-in page
 │       │   ├── AppLauncher.tsx   # App grid with role-based card visibility
-│       │   └── Admin.tsx         # User management
+│       │   └── Admin.tsx         # User Management + AI Providers tabs
 │       ├── lib/
-│       │   ├── api.ts            # fetchApps(), fetchMe(), login()
+│       │   ├── api.ts            # fetchApps(), fetchMe(), login(), getAIProviders()/saveAIProvider()/...
 │       │   └── auth.ts           # saveTokens(), clearTokens(), buildAppUrl()
 │       └── main.tsx
 │
@@ -129,12 +137,47 @@ A first admin account is seeded automatically on first startup if the `users` ta
 
 ---
 
+## AI Providers
+
+**Admin → AI Providers** configures which LLM a consuming app's AI agent calls — Culprit's deep
+RCA agent today, any future app tomorrow. This is deliberately a **platform-wide** setting, not a
+per-app one: it lives in Portal's own `AIProviderSetting` table (`portal/db.py`), not in the
+consuming app's database, so a second app added later gets the same admin screen and the same
+provider catalog for free instead of re-implementing this.
+
+**Catalog:** Anthropic, OpenAI, Azure OpenAI, Google Gemini, xAI Grok, Alibaba Qwen, DeepSeek,
+Ollama, and LM Studio (`shared/src/llm/catalog.py` — a shared module, not Portal's own code, so
+adding a provider is one edit every consuming app picks up automatically). DeepL is deliberately
+absent — it's a translation API with no tool-calling capability, so it can't run an agent that
+needs one.
+
+**No default provider.** Until an admin picks one and marks it active, `active_provider` is empty
+and every consuming app falls back to whatever it did before this screen existed (Culprit:
+`ANTHROPIC_API_KEY`). **Clear active provider** returns to that same "nothing configured" state
+deliberately — an admin can always step back to the pre-existing fallback, not just forward.
+
+**Two audiences, two trust models on the same data:**
+- The admin screen itself (`GET/PUT /api/ai-providers*`) — a human admin, gated by
+  `require_admin`, same as User Management. Secrets are never echoed back, only whether one is
+  configured (`api_key_configured: bool`).
+- `GET /api/ai-providers/resolved-active` — the *only* endpoint that returns a decrypted key, and
+  only to another app's backend calling in at request time to actually build a client, gated by
+  `require_service` (a short-lived `type: "service"` token that app mints itself with the shared
+  Portal-SSO secret, never a real user session). See [culprit/SECURITY.md](../culprit/SECURITY.md#ai-provider-credentials-platform-wide-owned-by-portal)
+  for the full trust-boundary writeup.
+
+The real model call happens directly from the consuming app to the provider — Portal resolves
+"which credential" once per run and is never in the request path for the actual prompt/response.
+
+---
+
 ## Configuration
 
 | Variable | Default | Description |
 |----------|---------|-------------|
 | `DATABASE_URL` | `postgresql+asyncpg://portal:portal@postgres:5432/portal` | Portal's own PostgreSQL database |
 | `SECRET_KEY` | — | JWT signing secret — **must match** `CULPRIT_PORTAL_JWT_SECRET` in Culprit's config for SSO to work |
+| `PORTAL_ENCRYPTION_KEY` | insecure dev-only default | Encrypts AI provider secrets saved on Admin → AI Providers at rest (Fernet, `portal/crypto.py`) — set a real value before saving any real provider API key |
 | `PORTAL_ADMIN_EMAIL` | `admin@example.com` | Email for the auto-seeded first admin account |
 | `PORTAL_ADMIN_PASSWORD` | `ChangeMe123!` | Password for the auto-seeded first admin account — change this before any real deployment |
 | `GROWTHBOOK_API_HOST` | `http://growthbook:3100` | Internal GrowthBook SDK API URL |

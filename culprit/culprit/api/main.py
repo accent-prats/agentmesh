@@ -10,10 +10,12 @@ from __future__ import annotations
 
 import logging
 from contextlib import asynccontextmanager
+from pathlib import Path
 
 from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import HTMLResponse, RedirectResponse
+from fastapi.staticfiles import StaticFiles
 
 from culprit import config
 from culprit.api.auth_middleware import SESSION_COOKIE, RequireApiTokenMiddleware, is_authenticated
@@ -93,6 +95,34 @@ app.add_middleware(
     allow_headers=["*"],
 )
 app.add_middleware(RequireApiTokenMiddleware)
+
+# Vendored Tailwind/Lucide (reporting/static/) - the server-rendered pages
+# used to load these live from cdn.tailwindcss.com/cdn.jsdelivr.net, which
+# breaks every page's styling on a deployment that can't reach the public
+# internet (found 2026-09-29 on a network-restricted environment: every
+# page rendered as plain unstyled HTML). auth_middleware.py's
+# _PUBLIC_PATH_PREFIX exempts this path from login so the login page
+# itself can fetch its own CSS/JS.
+#
+# A plain route, not `app.mount("/static", StaticFiles(...))` - found while
+# verifying this fix under nginx's /culprit/ prefix: `Mount.matches()`
+# accumulates `X-Forwarded-Prefix`'s value onto `scope["root_path"]` (see
+# `root_path_middleware.py`), but nginx's own rewrite already stripped that
+# prefix from `scope["path"]` before this app ever sees it - `root_path` no
+# longer being an actual prefix of `path` makes Starlette's route-path
+# resolution fall back to the *unstripped* path a second time inside
+# StaticFiles, so it looked up "static/tailwind.js" relative to a directory
+# that already *is* .../static, i.e. a nonexistent .../static/static/. A
+# plain `@app.get` route never hits that accumulation - FastAPI resolves
+# `file_path` correctly regardless - and calls `get_response()` directly
+# with the already-resolved relative path instead of re-deriving it.
+_STATIC_DIR = Path(__file__).parent.parent / "reporting" / "static"
+_static_files = StaticFiles(directory=str(_STATIC_DIR))
+
+
+@app.get("/static/{file_path:path}", include_in_schema=False)
+async def _serve_static(file_path: str, request: Request):
+    return await _static_files.get_response(file_path, request.scope)
 
 app.include_router(runs_router)
 app.include_router(settings_router)

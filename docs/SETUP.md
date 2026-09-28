@@ -56,10 +56,15 @@ is unset. Flipping the active provider here takes effect on the *next* request e
 no redeploy, no restart.
 
 For each provider: fill in the endpoint (most have a sensible default; Azure OpenAI needs your
-resource's actual endpoint), model, and API key, then **Save**. **Test connection** makes a real,
-minimal call (a model-catalog fetch for Anthropic/Gemini, a one-token completion for the rest)
-before you commit to it. Secrets are encrypted at rest (`PORTAL_ENCRYPTION_KEY`) and never echoed
-back by any GET.
+resource's actual endpoint), pick a model from the dropdown (or choose **Other (custom)** to type
+one not in the list — a renamed or newly-released model id never blocks saving), and an API key,
+then **Save**. **Test connection** makes a real, minimal call (a model-catalog fetch for
+Anthropic/Gemini, a one-token completion for the rest) before you commit to it. Secrets are
+encrypted at rest (`PORTAL_ENCRYPTION_KEY`) and never echoed back by any GET.
+
+**Clear active provider** (next to the provider list) returns to "nothing configured" — every
+consuming app falls back to its own pre-existing behavior again, the same as if no admin had ever
+touched this screen.
 
 ```bash
 python -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())"

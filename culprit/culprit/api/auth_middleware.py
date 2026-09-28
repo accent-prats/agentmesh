@@ -46,6 +46,14 @@ SESSION_COOKIE = "culprit_session"
 # obviously can't require the credential they exist to grant/report on.
 _PUBLIC_PATHS = {"/health", "/login", "/webhooks/event-grid"}
 
+# Vendored CSS/icon assets (reporting/static/ - see main.py's StaticFiles
+# mount) - these hold no data of any kind, and the login page itself has
+# to be able to fetch them before a user has any credential at all, or
+# the login screen would render unstyled (the exact bug this vendoring
+# was added to fix - see the module docstring's own history for why
+# these used to be a Tailwind/Lucide CDN script tag instead).
+_PUBLIC_PATH_PREFIX = "/static/"
+
 # Portal's own access tokens are short-lived (ACCESS_TOKEN_EXPIRE_MINUTES,
 # 60 by default) - matched here so the cookie we set from a validated one
 # doesn't imply a longer session than the JWT inside it actually grants.
@@ -104,7 +112,7 @@ class RequireApiTokenMiddleware(BaseHTTPMiddleware):
             # warns at startup; this is the actual fail-open enforcement point.
             return await call_next(request)
 
-        if request.url.path in _PUBLIC_PATHS:
+        if request.url.path in _PUBLIC_PATHS or request.url.path.startswith(_PUBLIC_PATH_PREFIX):
             return await call_next(request)
 
         if is_authenticated(request, token, portal_jwt_secret):

@@ -111,6 +111,26 @@ rather than with a committed test file.
   URL must go through the existing `root_path(request)` helper (or the
   template's `nav_prefix`, for a page several path segments deep), never a
   hardcoded absolute path.
+- **A session's lifetime is sliding, not fixed, and only for the case that
+  needs it.** `auth_middleware.py::_renew_session_cookie_if_portal_backed`
+  re-signs Culprit's session cookie on every request so an actively-
+  browsing user isn't logged out on a fixed wall-clock timer - but only
+  for a Portal-JWT-backed **cookie**; the shared `CULPRIT_API_TOKEN` and a
+  script's `Authorization: Bearer` header both re-send their own
+  credential every call and are never "renewed". If you add another
+  session-shaped credential, decide explicitly whether it slides or not -
+  don't assume all auth state behaves the same way.
+- **A persisted summary is not the audit trail it summarizes.**
+  `MachineOutcomeRecord` persists each machine's `PatchOutcome` (status,
+  error, failed KB/package) so the per-machine page can show it after a
+  run finishes - it does not persist the raw `EvidenceBundle`/
+  `TimelineEvent` list that summary was derived from, which is still a
+  local variable that vanishes when `Pipeline.run()` returns (see
+  `culprit/SECURITY.md`'s "Data retention and reproducibility", corrected
+  2026-09-28 after this exact gap was found). If you add a new persisted
+  summary, say plainly in its docstring what it does and doesn't let you
+  reconstruct later - the previous version of that security doc claimed
+  more than the code actually did.
 
 ## Where to look
 

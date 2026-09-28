@@ -40,8 +40,11 @@ second login. See [docs/SETUP.md](docs/SETUP.md) for first-time configuration.
 │   ├── culprit/reporting/    # Server-rendered console/settings UI
 │   └── Dockerfile
 │
-├── shared/                   # Shared library — imported by Portal
-│   └── src/feature_flags/    # GrowthBook client + FastAPI middleware
+├── shared/                   # Shared library — imported by both apps
+│   └── src/
+│       ├── feature_flags/    # GrowthBook client + FastAPI middleware (used by Portal)
+│       └── llm/              # Multi-provider AI client construction (used by Culprit's
+│                             # deep RCA agent; app-agnostic, see shared/README.md)
 │
 ├── infrastructure/
 │   ├── nginx/                 # Reverse proxy configs + TLS cert generation
@@ -97,8 +100,25 @@ any token exchange.
 4. Culprit validates the token, converts it into its own session cookie, and drops the query
    param from the URL bar
 
+**Session lifetime is sliding, not fixed:** Culprit re-signs and re-sets that cookie (same claims,
+a fresh expiry) on every request while it's still valid, so an actively-browsing user's session
+lasts "since your last click," not "since you logged in." The shared `CULPRIT_API_TOKEN` and a
+script's `Authorization: Bearer` header are never renewed this way — see
+[culprit/SECURITY.md](culprit/SECURITY.md#sliding-session-renewal-2026-09-27) for the full design
+and its deliberate scope.
+
 See [portal/README.md](portal/README.md#login-and-token-flow) and
 [culprit/SECURITY.md](culprit/SECURITY.md) for the full details on each side.
+
+---
+
+## Platform-Wide AI Configuration
+
+Which LLM an agent calls (Culprit's deep RCA agent today) is configured once, for the whole
+platform, from **Portal's Admin → AI Providers** screen — not per-app, and with no default
+provider until an admin picks one. See [portal/README.md#ai-providers](portal/README.md#ai-providers)
+for the admin-facing picture and [shared/README.md](shared/README.md) for the adapter package
+every consuming app builds a client from.
 
 ---
 
