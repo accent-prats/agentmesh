@@ -439,18 +439,28 @@ def save_azure_settings(session: Session, cfg) -> SettingsRecord:
     `client_secret` means 'leave whatever is already stored alone' - the
     settings form never re-sends a secret it didn't just receive from the
     user, so overwriting a real secret with an accidental blank would be a
-    silent lockout."""
+    silent lockout. `clear_credentials` is the one deliberate exception -
+    the settings screen's "Managed identity" radio sets it to actually
+    forget a previously-saved secret on an explicit mode switch, rather
+    than leaving it stored-but-unused forever."""
     from culprit.security.crypto import encrypt
 
     record = session.get(SettingsRecord, "azure")
     existing_secret_ciphertext = record.data_json.get("client_secret_ciphertext", "") if record else ""
+
+    if cfg.client_secret:
+        new_secret_ciphertext = encrypt(cfg.client_secret)
+    elif cfg.clear_credentials:
+        new_secret_ciphertext = ""
+    else:
+        new_secret_ciphertext = existing_secret_ciphertext
 
     data = {
         "subscription_ids": cfg.subscription_ids,
         "log_analytics_workspace_id": cfg.log_analytics_workspace_id,
         "tenant_id": cfg.tenant_id,
         "client_id": cfg.client_id,
-        "client_secret_ciphertext": encrypt(cfg.client_secret) if cfg.client_secret else existing_secret_ciphertext,
+        "client_secret_ciphertext": new_secret_ciphertext,
     }
     if record is None:
         record = SettingsRecord(provider="azure", data_json=data)
@@ -559,7 +569,13 @@ def azure_settings_view(session: Session):
         tenant_id=d.get("tenant_id", ""),
         client_id=d.get("client_id", ""),
         client_secret_configured=bool(d.get("client_secret_ciphertext")),
-        configured=bool(d.get("subscription_ids") and d.get("client_secret_ciphertext")),
+        # Subscription ids are the only thing every auth mode needs - a
+        # service principal's secret is not, since blank tenant/client/secret
+        # is a deliberate, complete configuration (managed identity; see
+        # azure_auth.py::build_credential). Gating this on a saved secret
+        # (found 2026-10-10) meant the settings screen showed "Not configured
+        # yet." forever for a fully-working managed-identity setup.
+        configured=bool(d.get("subscription_ids")),
         last_tested_at=record.last_tested_at,
         last_test_ok=record.last_test_ok,
         last_test_message=record.last_test_message,

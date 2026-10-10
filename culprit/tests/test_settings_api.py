@@ -78,6 +78,41 @@ def test_blank_secret_on_update_preserves_the_existing_one(client):
     assert decrypted.client_secret == "first-secret"
 
 
+def test_clear_credentials_actually_forgets_a_previously_saved_secret(client):
+    """The settings screen's "Managed identity" radio sends clear_credentials
+    on an explicit switch away from a service principal - unlike a plain
+    blank client_secret (see test_blank_secret_on_update_preserves_the_existing_one),
+    this one is supposed to wipe it. Added 2026-10-10 alongside the toggle."""
+    client.put("/settings/azure", json={"subscription_ids": ["sub-1"], "tenant_id": "t", "client_id": "c", "client_secret": "a-real-secret"})
+
+    resp = client.put(
+        "/settings/azure",
+        json={"subscription_ids": ["sub-1"], "tenant_id": "", "client_id": "", "client_secret": "", "clear_credentials": True},
+    )
+    body = resp.json()
+    assert body["client_secret_configured"] is False
+
+    from culprit.db import repository
+    from culprit.api.deps import get_session_factory
+
+    with get_session_factory()() as session:
+        decrypted = repository.load_azure_settings(session)
+    assert decrypted.client_secret == ""
+
+
+def test_azure_settings_with_only_subscription_ids_is_configured(client):
+    """A managed-identity setup never has a secret to save - tenant/client/
+    secret all stay blank by design (azure_auth.py::build_credential falls
+    back to DefaultAzureCredential). `configured` used to require a saved
+    secret too, so this exact setup showed "Not configured yet." on the
+    settings screen forever despite being complete and working - found
+    2026-10-10 while adding a managed-identity toggle to that screen."""
+    resp = client.put("/settings/azure", json={"subscription_ids": ["sub-1"]})
+    body = resp.json()
+    assert body["client_secret_configured"] is False
+    assert body["configured"] is True
+
+
 def test_datadog_settings_save_and_mask(client):
     resp = client.put("/settings/datadog", json={"site": "datadoghq.eu", "api_key": "abc", "app_key": "def"})
     body = resp.json()

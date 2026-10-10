@@ -28,6 +28,15 @@ class AzureSettingsInput(BaseModel):
     # routes_settings.py is what implements that merge; this model itself
     # doesn't know whether blank means "unset" or "unchanged".
     client_secret: str = ""
+    # The one deliberate exception to the rule above: the settings screen's
+    # "Managed identity" radio sets this to actually forget a previously-
+    # saved secret when the admin explicitly switches away from a service
+    # principal, instead of leaving it as an orphaned, unused ciphertext
+    # (found 2026-10-10 - harmless functionally since build_credential never
+    # reads it once tenant/client are blank, but confusing to leave behind).
+    # A blank client_secret alone must never trigger this on its own, or
+    # the anti-lockout protection above stops meaning anything.
+    clear_credentials: bool = False
 
 
 class AzureSettingsView(BaseModel):

@@ -20,8 +20,7 @@
       <h2 class="font-semibold text-gray-900">Azure</h2>
     </div>
     <p class="text-sm text-gray-500 mt-2 mb-5">
-      Resource Graph, Activity Log, Log Analytics, and Run Command. Leave tenant/client/secret
-      blank to use a managed identity instead of a service principal.
+      Resource Graph, Activity Log, Log Analytics, and Run Command.
     </p>
 
     <div class="space-y-4">
@@ -30,31 +29,55 @@
         <textarea id="az-subs" rows="2" placeholder="one per line, or comma-separated"
           class="w-full border border-gray-300 rounded-lg px-3 py-2 text-sm font-mono focus:ring-2 focus:ring-brand focus:border-brand focus:outline-none"></textarea>
       </div>
-      <div class="grid grid-cols-2 gap-4">
-        <div>
-          <label class="block text-xs font-medium text-gray-600 mb-1.5">Log Analytics workspace ID</label>
-          <input id="az-workspace" placeholder="00000000-0000-0000-0000-000000000000"
-            class="w-full border border-gray-300 rounded-lg px-3 py-2 text-sm focus:ring-2 focus:ring-brand focus:border-brand focus:outline-none">
-        </div>
-        <div>
-          <label class="block text-xs font-medium text-gray-600 mb-1.5">Tenant ID <span class="text-gray-400 font-normal">(optional)</span></label>
-          <input id="az-tenant" placeholder="00000000-0000-0000-0000-000000000000"
-            class="w-full border border-gray-300 rounded-lg px-3 py-2 text-sm focus:ring-2 focus:ring-brand focus:border-brand focus:outline-none">
-        </div>
+      <div>
+        <label class="block text-xs font-medium text-gray-600 mb-1.5">Log Analytics workspace ID</label>
+        <input id="az-workspace" placeholder="00000000-0000-0000-0000-000000000000"
+          class="w-full border border-gray-300 rounded-lg px-3 py-2 text-sm focus:ring-2 focus:ring-brand focus:border-brand focus:outline-none">
       </div>
-      <div class="grid grid-cols-2 gap-4">
-        <div>
-          <label class="block text-xs font-medium text-gray-600 mb-1.5">Client ID</label>
-          <input id="az-client" placeholder="00000000-0000-0000-0000-000000000000"
-            class="w-full border border-gray-300 rounded-lg px-3 py-2 text-sm focus:ring-2 focus:ring-brand focus:border-brand focus:outline-none">
+
+      <div class="pt-2">
+        <label class="block text-xs font-medium text-gray-600 mb-2">Authentication method</label>
+        <div class="space-y-2">
+          <label class="flex items-start gap-2.5 cursor-pointer">
+            <input type="radio" name="az-auth-mode" value="managed_identity" checked
+              onchange="applyAzureAuthMode(true)" class="mt-0.5 accent-brand">
+            <span>
+              <span class="block text-sm text-gray-800">Managed identity</span>
+              <span class="block text-xs text-gray-400">Uses this host's Azure system-assigned identity &mdash; no secret to store or rotate. Only works when Culprit runs on an Azure VM/App with an identity assigned.</span>
+            </span>
+          </label>
+          <label class="flex items-start gap-2.5 cursor-pointer">
+            <input type="radio" name="az-auth-mode" value="service_principal"
+              onchange="applyAzureAuthMode(true)" class="mt-0.5 accent-brand">
+            <span>
+              <span class="block text-sm text-gray-800">Service principal</span>
+              <span class="block text-xs text-gray-400">Needed on any host that isn't itself running in Azure.</span>
+            </span>
+          </label>
+        </div>
+        <p id="az-mode-hint" class="text-xs text-gray-500 mt-2.5"></p>
+      </div>
+
+      <div id="az-sp-fields" class="space-y-4 pt-1">
+        <div class="grid grid-cols-2 gap-4">
+          <div>
+            <label class="block text-xs font-medium text-gray-600 mb-1.5">Tenant ID</label>
+            <input id="az-tenant" placeholder="00000000-0000-0000-0000-000000000000"
+              class="w-full border border-gray-300 rounded-lg px-3 py-2 text-sm focus:ring-2 focus:ring-brand focus:border-brand focus:outline-none">
+          </div>
+          <div>
+            <label class="block text-xs font-medium text-gray-600 mb-1.5">Client ID</label>
+            <input id="az-client" placeholder="00000000-0000-0000-0000-000000000000"
+              class="w-full border border-gray-300 rounded-lg px-3 py-2 text-sm focus:ring-2 focus:ring-brand focus:border-brand focus:outline-none">
+          </div>
         </div>
         <div>
           <label class="block text-xs font-medium text-gray-600 mb-1.5">Client secret</label>
           <input id="az-secret" type="password" placeholder="leave blank to keep saved secret"
             class="w-full border border-gray-300 rounded-lg px-3 py-2 text-sm focus:ring-2 focus:ring-brand focus:border-brand focus:outline-none">
         </div>
+        <p id="az-secret-hint" class="text-xs text-gray-400"></p>
       </div>
-      <p id="az-secret-hint" class="text-xs text-gray-400"></p>
     </div>
 
     <div class="flex items-center gap-3 mt-5 pt-5 border-t border-gray-100">
@@ -164,6 +187,36 @@ function renderStatus(elId, view, testedLabel) {
   el.appendChild(document.createTextNode(testedLabel + ' — ' + text + when));
 }
 
+// Which mode a saved config is in isn't a stored field of its own - a
+// service principal is "whatever has a client id or a saved secret",
+// everything else is managed identity (see azure_auth.py::build_credential,
+// the single source of truth this mirrors: all-three-or-fallback).
+function isServicePrincipalConfigured(view) {
+  return !!(view.client_id || view.client_secret_configured);
+}
+
+// `clearFields` is true only for a user-initiated radio change, never for
+// loadAzure() reflecting what's already saved - otherwise switching the
+// page's focus back to "service principal" after a fresh load would wipe
+// out a tenant/client id that was just fetched from the server.
+function applyAzureAuthMode(clearFields) {
+  const mode = document.querySelector('input[name="az-auth-mode"]:checked').value;
+  const spFields = document.getElementById('az-sp-fields');
+  const hint = document.getElementById('az-mode-hint');
+  if (mode === 'managed_identity') {
+    spFields.classList.add('hidden');
+    if (clearFields) {
+      document.getElementById('az-tenant').value = '';
+      document.getElementById('az-client').value = '';
+      document.getElementById('az-secret').value = '';
+    }
+    hint.textContent = "Culprit will authenticate as this host's Azure managed identity.";
+  } else {
+    spFields.classList.remove('hidden');
+    hint.textContent = 'Culprit will authenticate using the service principal below.';
+  }
+}
+
 async function loadAzure() {
   const view = await (await fetch('settings/azure')).json();
   document.getElementById('az-subs').value = (view.subscription_ids || []).join('\n');
@@ -172,6 +225,9 @@ async function loadAzure() {
   document.getElementById('az-client').value = view.client_id || '';
   document.getElementById('az-secret-hint').textContent = view.client_secret_configured
     ? 'A secret is currently saved.' : 'No secret saved yet.';
+  const spMode = isServicePrincipalConfigured(view);
+  document.querySelector(`input[name="az-auth-mode"][value="${spMode ? 'service_principal' : 'managed_identity'}"]`).checked = true;
+  applyAzureAuthMode(false);
   renderStatus('az-status', view, 'Azure');
 }
 
@@ -192,13 +248,33 @@ function setResult(id, text, ok) {
   el.className = 'text-sm ' + (ok === true ? 'text-emerald-600' : ok === false ? 'text-red-600' : 'text-gray-500');
 }
 
+// Reads the service-principal fields only when that mode is actually
+// selected - forcing them blank under managed identity regardless of
+// stale DOM state is what actually makes the toggle authoritative over
+// "whatever happens to be sitting in those inputs" (applyAzureAuthMode
+// also clears them on switch, but this is the save-time guarantee).
+function azureAuthFields() {
+  const mode = document.querySelector('input[name="az-auth-mode"]:checked').value;
+  if (mode === 'managed_identity') {
+    // clear_credentials actually forgets a previously-saved secret on this
+    // explicit switch, instead of leaving it stored-but-unused forever -
+    // see repository.py::save_azure_settings for why a blank client_secret
+    // alone is never enough to do that on its own.
+    return { tenant_id: '', client_id: '', client_secret: '', clear_credentials: true };
+  }
+  return {
+    tenant_id: document.getElementById('az-tenant').value.trim(),
+    client_id: document.getElementById('az-client').value.trim(),
+    client_secret: document.getElementById('az-secret').value,
+    clear_credentials: false,
+  };
+}
+
 async function saveAzure() {
   const body = {
     subscription_ids: parseSubs(),
     log_analytics_workspace_id: document.getElementById('az-workspace').value.trim(),
-    tenant_id: document.getElementById('az-tenant').value.trim(),
-    client_id: document.getElementById('az-client').value.trim(),
-    client_secret: document.getElementById('az-secret').value,
+    ...azureAuthFields(),
   };
   await fetch('settings/azure', { method: 'PUT', headers: {'Content-Type':'application/json'}, body: JSON.stringify(body) });
   document.getElementById('az-secret').value = '';
@@ -211,9 +287,7 @@ async function testAzure() {
   const body = {
     subscription_ids: parseSubs(),
     log_analytics_workspace_id: document.getElementById('az-workspace').value.trim(),
-    tenant_id: document.getElementById('az-tenant').value.trim(),
-    client_id: document.getElementById('az-client').value.trim(),
-    client_secret: document.getElementById('az-secret').value,
+    ...azureAuthFields(),
   };
   const res = await (await fetch('settings/azure/test', { method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify(body) })).json();
   setResult('az-result', res.message, res.ok);
