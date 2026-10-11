@@ -106,7 +106,31 @@
         <input id="dd-site" placeholder="datadoghq.com"
           class="w-full border border-gray-300 rounded-lg px-3 py-2 text-sm focus:ring-2 focus:ring-brand focus:border-brand focus:outline-none">
       </div>
-      <div class="grid grid-cols-2 gap-4">
+
+      <div class="pt-2">
+        <label class="block text-xs font-medium text-gray-600 mb-2">Authentication method</label>
+        <div class="space-y-2">
+          <label class="flex items-start gap-2.5 cursor-pointer">
+            <input type="radio" name="dd-auth-mode" value="api_key" checked
+              onchange="applyDatadogAuthMode(true)" class="mt-0.5 accent-brand">
+            <span>
+              <span class="block text-sm text-gray-800">API key</span>
+              <span class="block text-xs text-gray-400">The classic key pair - an App key is only needed for monitor/log access beyond metrics submission.</span>
+            </span>
+          </label>
+          <label class="flex items-start gap-2.5 cursor-pointer">
+            <input type="radio" name="dd-auth-mode" value="personal_access_token"
+              onchange="applyDatadogAuthMode(true)" class="mt-0.5 accent-brand">
+            <span>
+              <span class="block text-sm text-gray-800">Personal Access Token</span>
+              <span class="block text-xs text-gray-400">Datadog's newer alternative to an API/App key pair for everything except telemetry submission. Preview feature on Datadog's side - documented for v2 API calls; v1 compatibility (metrics/monitor collection) isn't confirmed either way.</span>
+            </span>
+          </label>
+        </div>
+        <p id="dd-mode-hint" class="text-xs text-gray-500 mt-2.5"></p>
+      </div>
+
+      <div id="dd-api-key-fields" class="grid grid-cols-2 gap-4">
         <div>
           <label class="block text-xs font-medium text-gray-600 mb-1.5">API key</label>
           <input id="dd-api" type="password" placeholder="leave blank to keep saved key"
@@ -117,6 +141,12 @@
           <input id="dd-app" type="password" placeholder="leave blank to keep saved key"
             class="w-full border border-gray-300 rounded-lg px-3 py-2 text-sm focus:ring-2 focus:ring-brand focus:border-brand focus:outline-none">
         </div>
+      </div>
+
+      <div id="dd-pat-fields" class="hidden">
+        <label class="block text-xs font-medium text-gray-600 mb-1.5">Personal Access Token</label>
+        <input id="dd-pat" type="password" placeholder="leave blank to keep saved token"
+          class="w-full border border-gray-300 rounded-lg px-3 py-2 text-sm focus:ring-2 focus:ring-brand focus:border-brand focus:outline-none">
       </div>
     </div>
 
@@ -231,9 +261,37 @@ async function loadAzure() {
   renderStatus('az-status', view, 'Azure');
 }
 
+// `use_personal_access_token` isn't derivable from the input fields (both
+// stay blank after a save, same as every other secret here) - it reflects
+// what's actually stored, same reasoning as Azure's isServicePrincipalConfigured.
+function applyDatadogAuthMode(clearFields) {
+  const mode = document.querySelector('input[name="dd-auth-mode"]:checked').value;
+  const apiKeyFields = document.getElementById('dd-api-key-fields');
+  const patFields = document.getElementById('dd-pat-fields');
+  const hint = document.getElementById('dd-mode-hint');
+  if (mode === 'personal_access_token') {
+    apiKeyFields.classList.add('hidden');
+    patFields.classList.remove('hidden');
+    if (clearFields) {
+      document.getElementById('dd-api').value = '';
+      document.getElementById('dd-app').value = '';
+    }
+    hint.textContent = 'Culprit will authenticate with the Personal Access Token below.';
+  } else {
+    apiKeyFields.classList.remove('hidden');
+    patFields.classList.add('hidden');
+    if (clearFields) {
+      document.getElementById('dd-pat').value = '';
+    }
+    hint.textContent = 'Culprit will authenticate with the API key below.';
+  }
+}
+
 async function loadDatadog() {
   const view = await (await fetch('settings/datadog')).json();
   document.getElementById('dd-site').value = view.site || 'datadoghq.com';
+  document.querySelector(`input[name="dd-auth-mode"][value="${view.personal_access_token_configured ? 'personal_access_token' : 'api_key'}"]`).checked = true;
+  applyDatadogAuthMode(false);
   renderStatus('dd-status', view, 'Datadog');
 }
 
@@ -294,15 +352,40 @@ async function testAzure() {
   loadAzure();
 }
 
+// Reads only the fields belonging to the selected mode - forcing the
+// other side blank regardless of stale DOM state, mirroring
+// azureAuthFields(). use_personal_access_token tells save_datadog_settings
+// which side a blank field should preserve vs. forget (see
+// repository.py::save_datadog_settings - this is bidirectional, unlike
+// Azure's single clear_credentials flag, since both sides here are real,
+// independently-preservable secrets).
+function datadogAuthFields() {
+  const mode = document.querySelector('input[name="dd-auth-mode"]:checked').value;
+  if (mode === 'personal_access_token') {
+    return {
+      api_key: '',
+      app_key: '',
+      personal_access_token: document.getElementById('dd-pat').value,
+      use_personal_access_token: true,
+    };
+  }
+  return {
+    api_key: document.getElementById('dd-api').value,
+    app_key: document.getElementById('dd-app').value,
+    personal_access_token: '',
+    use_personal_access_token: false,
+  };
+}
+
 async function saveDatadog() {
   const body = {
     site: document.getElementById('dd-site').value.trim() || 'datadoghq.com',
-    api_key: document.getElementById('dd-api').value,
-    app_key: document.getElementById('dd-app').value,
+    ...datadogAuthFields(),
   };
   await fetch('settings/datadog', { method: 'PUT', headers: {'Content-Type':'application/json'}, body: JSON.stringify(body) });
   document.getElementById('dd-api').value = '';
   document.getElementById('dd-app').value = '';
+  document.getElementById('dd-pat').value = '';
   setResult('dd-result', 'Saved.', true);
   loadDatadog();
 }
@@ -311,8 +394,7 @@ async function testDatadog() {
   setResult('dd-result', 'Testing…', null);
   const body = {
     site: document.getElementById('dd-site').value.trim() || 'datadoghq.com',
-    api_key: document.getElementById('dd-api').value,
-    app_key: document.getElementById('dd-app').value,
+    ...datadogAuthFields(),
   };
   const res = await (await fetch('settings/datadog/test', { method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify(body) })).json();
   setResult('dd-result', res.message, res.ok);

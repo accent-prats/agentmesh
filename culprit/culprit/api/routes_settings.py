@@ -79,7 +79,7 @@ def test_datadog(body: DatadogSettingsInput | None = None) -> dict:
     from culprit.db import repository
 
     with deps.get_session_factory()() as session:
-        cfg = body if body and body.api_key else repository.load_datadog_settings(session)
+        cfg = body if body and (body.api_key or body.personal_access_token) else repository.load_datadog_settings(session)
         ok, message = test_datadog_credentials(cfg)
         repository.record_settings_test_result(session, "datadog", ok, message)
         return {"ok": ok, "message": message}

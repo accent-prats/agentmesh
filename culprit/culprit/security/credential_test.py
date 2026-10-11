@@ -52,28 +52,38 @@ def test_azure_credentials(cfg: AzureSettingsInput) -> tuple[bool, str]:
 
 def test_datadog_credentials(cfg: DatadogSettingsInput) -> tuple[bool, str]:
     """Uses Datadog's own AuthenticationApi.validate() - the documented,
-    lightweight way to check an API key without any side effects."""
+    lightweight way to check a credential without any side effects.
+    Builds the client the exact same way the real pipeline does
+    (`collectors/datadog_auth.py::configure_datadog_client`), whether
+    that's a Personal Access Token or the classic API key/App key pair,
+    so a pass here means the real run will authenticate the same way.
+
+    Note this specific call is a v1 API endpoint - Datadog's own PAT docs
+    only confirm PAT compatibility for v2 calls, so a pass here is good
+    evidence but not a guarantee that a PAT will also work for the v1
+    Metrics/Monitors collection the real pipeline also does (see
+    datadog_auth.py's docstring)."""
     try:
-        from datadog_api_client import ApiClient, Configuration
+        from datadog_api_client import ApiClient
         from datadog_api_client.v1.api.authentication_api import AuthenticationApi
     except ImportError:
         return False, "datadog-api-client is not installed in this deployment"
 
-    if not cfg.api_key:
-        return False, "No API key provided"
+    if not cfg.api_key and not cfg.personal_access_token:
+        return False, "No API key or Personal Access Token provided"
+
+    from culprit.collectors.datadog_auth import configure_datadog_client
+
+    via = "a Personal Access Token" if cfg.personal_access_token else "the API key"
 
     try:
-        configuration = Configuration()
-        configuration.api_key["apiKeyAuth"] = cfg.api_key
-        if cfg.app_key:
-            configuration.api_key["appKeyAuth"] = cfg.app_key
-        configuration.server_variables["site"] = cfg.site or "datadoghq.com"
+        configuration = configure_datadog_client(cfg)
 
         with ApiClient(configuration) as api_client:
             response = AuthenticationApi(api_client).validate()
 
         if response.valid:
-            return True, "API key validated"
-        return False, "Datadog reported this API key as invalid"
+            return True, f"Authenticated via {via}"
+        return False, f"Datadog reported {via} as invalid"
     except Exception as exc:  # noqa: BLE001
-        return False, str(exc)[:500]
+        return False, f"Tried {via}: {str(exc)[:480]}"

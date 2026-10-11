@@ -473,18 +473,49 @@ def save_azure_settings(session: Session, cfg) -> SettingsRecord:
 
 def save_datadog_settings(session: Session, cfg) -> SettingsRecord:
     """`cfg` is a culprit.models.settings.DatadogSettingsInput. Same
-    leave-alone-if-blank rule as `save_azure_settings` for each secret
-    field, applied independently (you can rotate the API key without
-    re-entering the app key, and vice versa)."""
+    leave-alone-if-blank rule as `save_azure_settings` for api_key/app_key,
+    applied independently (you can rotate the API key without re-entering
+    the app key, and vice versa) - but the api_key/app_key pair and
+    personal_access_token are mutually exclusive auth shapes, not three
+    independent secrets: `use_personal_access_token` says which one the
+    settings screen's toggle actually has active, so switching shapes
+    forgets the inactive one's secret(s) instead of leaving them as
+    orphaned ciphertext, while a blank field that belongs to the *active*
+    shape still keeps the normal preserve-on-blank behavior (found
+    2026-10-11 while adding PAT support - the same class of bug as
+    Azure's clear_credentials, but bidirectional since there are two
+    secretable shapes here instead of one)."""
     from culprit.security.crypto import encrypt
 
     record = session.get(SettingsRecord, "datadog")
     existing = record.data_json if record else {}
 
+    if cfg.personal_access_token:
+        pat_ciphertext = encrypt(cfg.personal_access_token)
+    elif cfg.use_personal_access_token:
+        pat_ciphertext = existing.get("personal_access_token_ciphertext", "")
+    else:
+        pat_ciphertext = ""
+
+    if cfg.api_key:
+        api_key_ciphertext = encrypt(cfg.api_key)
+    elif not cfg.use_personal_access_token:
+        api_key_ciphertext = existing.get("api_key_ciphertext", "")
+    else:
+        api_key_ciphertext = ""
+
+    if cfg.app_key:
+        app_key_ciphertext = encrypt(cfg.app_key)
+    elif not cfg.use_personal_access_token:
+        app_key_ciphertext = existing.get("app_key_ciphertext", "")
+    else:
+        app_key_ciphertext = ""
+
     data = {
         "site": cfg.site or "datadoghq.com",
-        "api_key_ciphertext": encrypt(cfg.api_key) if cfg.api_key else existing.get("api_key_ciphertext", ""),
-        "app_key_ciphertext": encrypt(cfg.app_key) if cfg.app_key else existing.get("app_key_ciphertext", ""),
+        "api_key_ciphertext": api_key_ciphertext,
+        "app_key_ciphertext": app_key_ciphertext,
+        "personal_access_token_ciphertext": pat_ciphertext,
     }
     if record is None:
         record = SettingsRecord(provider="datadog", data_json=data)
@@ -553,6 +584,7 @@ def load_datadog_settings(session: Session):
         site=d.get("site", "datadoghq.com"),
         api_key=decrypt(d.get("api_key_ciphertext", "")),
         app_key=decrypt(d.get("app_key_ciphertext", "")),
+        personal_access_token=decrypt(d.get("personal_access_token_ciphertext", "")),
     )
 
 
@@ -593,7 +625,11 @@ def datadog_settings_view(session: Session):
         site=d.get("site", "datadoghq.com"),
         api_key_configured=bool(d.get("api_key_ciphertext")),
         app_key_configured=bool(d.get("app_key_ciphertext")),
-        configured=bool(d.get("api_key_ciphertext")),
+        personal_access_token_configured=bool(d.get("personal_access_token_ciphertext")),
+        # A PAT alone is a complete, working configuration - same reasoning
+        # as Azure's configured fix (2026-10-10), this must not require the
+        # *other* credential shape's secret to also be present.
+        configured=bool(d.get("api_key_ciphertext") or d.get("personal_access_token_ciphertext")),
         last_tested_at=record.last_tested_at,
         last_test_ok=record.last_test_ok,
         last_test_message=record.last_test_message,

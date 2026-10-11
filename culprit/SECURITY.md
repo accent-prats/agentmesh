@@ -129,8 +129,10 @@ policy decision, made via `config.py::settings.scrub_network_and_pii`.
 
 ## Connection settings (the `/settings` screen)
 
-The Azure client secret and Datadog API/app keys entered on `/settings`
-are encrypted at rest (Fernet, `culprit/security/crypto.py`), keyed by
+The Azure client secret and Datadog API/app keys (or a Datadog Personal
+Access Token - added 2026-10-11, an alternative to the API/app key pair,
+see `collectors/datadog_auth.py`) entered on `/settings` are encrypted at
+rest (Fernet, `culprit/security/crypto.py`), keyed by
 `CULPRIT_ENCRYPTION_KEY` - set this in any real deployment; an insecure,
 clearly-marked dev-only default keeps the screen usable with zero
 configuration otherwise. Every `GET` of a settings view
@@ -141,7 +143,11 @@ point of an actual Azure/Datadog call (`load_azure_settings` /
 `load_datadog_settings`), and is never logged or returned over the API.
 Updating settings with a blank secret field leaves the previously-saved
 secret untouched rather than wiping it - see the "leave alone if blank"
-handling in `save_azure_settings`/`save_datadog_settings`.
+handling in `save_azure_settings`/`save_datadog_settings`. The Datadog
+API/app key pair and a Personal Access Token are mutually exclusive, not
+three independent secrets: switching the settings screen's toggle from
+one to the other explicitly forgets the one no longer in use, rather than
+leaving it as an orphaned, unused ciphertext.
 
 `CULPRIT_ENCRYPTION_KEY` not being set is loudly warned about at startup
 (see the app-authentication section above) - previously it degraded

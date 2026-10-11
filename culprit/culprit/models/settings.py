@@ -55,12 +55,29 @@ class DatadogSettingsInput(BaseModel):
     site: str = "datadoghq.com"
     api_key: str = ""
     app_key: str = ""
+    # A Personal Access Token - Datadog's own documented alternative to the
+    # api_key/app_key pair for everything except telemetry submission (see
+    # collectors/datadog_auth.py::configure_datadog_client for exactly how
+    # this reaches the wire). Blank on an update means "leave whatever's
+    # stored alone", same rule as api_key/app_key - which side that rule
+    # actually applies to is decided by use_personal_access_token below,
+    # not by this field being blank on its own.
+    personal_access_token: str = ""
+    # Which of the two mutually-exclusive credential shapes the settings
+    # screen's toggle has selected. Needed because, unlike Azure's single
+    # "managed identity has no secret of its own" case, Datadog has two
+    # independently-securable secrets - a blank field alone can't tell
+    # "preserve the existing PAT, I'm just updating the site" apart from
+    # "forget the API/App key, PAT mode is active now" (or the reverse).
+    # See repository.py::save_datadog_settings for how this resolves it.
+    use_personal_access_token: bool = False
 
 
 class DatadogSettingsView(BaseModel):
     site: str = "datadoghq.com"
     api_key_configured: bool = False
     app_key_configured: bool = False
+    personal_access_token_configured: bool = False
     configured: bool = False
     last_tested_at: datetime | None = None
     last_test_ok: bool | None = None

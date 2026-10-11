@@ -26,21 +26,31 @@ Phase 0/1 actually needs to point it at a real subscription.
 
 ## 2. Datadog
 
-Enter the site, API key, and app key on the **`/settings` screen**. The
-API key needs read scope only (metrics, monitors, logs read) - no write
-scope is used anywhere in `collectors/datadog_collector.py`. The standard
-`DD_API_KEY`/`DD_APP_KEY`/`DD_SITE` env vars still work as a fallback if
-nothing is saved on the settings screen (the Datadog SDK's own env
-resolution). Install with `pip install -e ".[datadog]"`.
+Enter the site and either a Personal Access Token or an API key/app key
+pair on the **`/settings` screen** - the screen's "Authentication method"
+toggle picks which. The API key needs read scope only (metrics, monitors,
+logs read) - no write scope is used anywhere in
+`collectors/datadog_collector.py`. A Personal Access Token is Datadog's
+newer alternative, documented for v2 API calls (confirmed to work for this
+app's v2 Logs collection); v1 compatibility for the Metrics/Monitors
+collection this app also does isn't documented either way by Datadog as of
+2026-10, and PATs are a Preview feature on Datadog's side - see
+`collectors/datadog_auth.py`'s docstring before relying on one in
+production. The standard `DD_API_KEY`/`DD_APP_KEY`/`DD_SITE` env vars still
+work as a fallback if nothing is saved on the settings screen (the Datadog
+SDK's own env resolution - there's no PAT equivalent env var). Install
+with `pip install -e ".[datadog]"`.
 
 ## Connection settings (the `/settings` screen)
 
 Both of the above can be entered through **`GET /settings`** (a plain
 HTML page - linked from the console at `/`) instead of environment
 variables: subscription ids, workspace id, an optional service-principal
-tenant/client/secret, and the Datadog site/API key/app key. Each field
-group has a **Test connection** button that makes a real, read-only call
-and reports what happened, and everything is stored encrypted at rest
+tenant/client/secret (or a managed identity, if neither is given), and
+the Datadog site plus either a Personal Access Token or an API key/app
+key pair. Each field group has a **Test connection** button that makes a
+real, read-only call and reports what happened, and everything is stored
+encrypted at rest
 (Fernet, keyed by `CULPRIT_ENCRYPTION_KEY` - set this in any real
 deployment; there's an insecure dev-only default so the screen still
 works with zero configuration). See `culprit/api/routes_settings.py`,

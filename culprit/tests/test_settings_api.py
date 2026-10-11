@@ -123,6 +123,86 @@ def test_datadog_settings_save_and_mask(client):
     assert "def" not in resp.text
 
 
+def test_datadog_settings_with_only_a_pat_is_configured(client):
+    """Mirrors test_azure_settings_with_only_subscription_ids_is_configured -
+    a Personal Access Token alone is a complete, working configuration, so
+    `configured` must not require the api_key/app_key pair too. Added
+    2026-10-11 alongside PAT support."""
+    resp = client.put("/settings/datadog", json={"personal_access_token": "pat-1", "use_personal_access_token": True})
+    body = resp.json()
+    assert body["personal_access_token_configured"] is True
+    assert body["api_key_configured"] is False
+    assert body["configured"] is True
+
+
+def test_datadog_blank_pat_on_update_preserves_the_existing_one(client):
+    """Same leave-alone-if-blank contract as api_key/app_key, as long as
+    use_personal_access_token says PAT mode is still active - this is the
+    "just updating the site, didn't retype the token" case."""
+    client.put("/settings/datadog", json={"personal_access_token": "first-pat", "use_personal_access_token": True})
+
+    resp = client.put(
+        "/settings/datadog",
+        json={"site": "datadoghq.eu", "personal_access_token": "", "use_personal_access_token": True},
+    )
+    body = resp.json()
+    assert body["site"] == "datadoghq.eu"
+    assert body["personal_access_token_configured"] is True
+
+    from culprit.db import repository
+    from culprit.api.deps import get_session_factory
+
+    with get_session_factory()() as session:
+        decrypted = repository.load_datadog_settings(session)
+    assert decrypted.personal_access_token == "first-pat"
+
+
+def test_datadog_switching_to_pat_forgets_the_api_and_app_key(client):
+    """The bidirectional equivalent of Azure's clear_credentials test -
+    switching the settings screen's toggle to "Personal Access Token" and
+    saving must actually forget a previously-saved API/App key, not just
+    leave them as orphaned ciphertext."""
+    client.put("/settings/datadog", json={"api_key": "a-real-api-key", "app_key": "a-real-app-key"})
+
+    resp = client.put(
+        "/settings/datadog",
+        json={"api_key": "", "app_key": "", "personal_access_token": "new-pat", "use_personal_access_token": True},
+    )
+    body = resp.json()
+    assert body["api_key_configured"] is False
+    assert body["app_key_configured"] is False
+    assert body["personal_access_token_configured"] is True
+
+
+def test_datadog_switching_back_to_api_key_forgets_the_pat(client):
+    """The reverse direction - switching away from PAT mode must forget the
+    PAT, not leave it stored alongside the newly-active API key."""
+    client.put("/settings/datadog", json={"personal_access_token": "a-real-pat", "use_personal_access_token": True})
+
+    resp = client.put(
+        "/settings/datadog",
+        json={"api_key": "new-api-key", "app_key": "new-app-key", "personal_access_token": "", "use_personal_access_token": False},
+    )
+    body = resp.json()
+    assert body["personal_access_token_configured"] is False
+    assert body["api_key_configured"] is True
+
+
+def test_datadog_test_connection_uses_a_fresh_pat_not_stale_stored_settings(client, monkeypatch):
+    """Found while adding PAT support: the route only checked body.api_key
+    to decide whether to trust the submitted form over stored settings, so
+    testing a brand-new, not-yet-saved PAT (api_key blank) would silently
+    fall back to whatever was already in the database instead."""
+    client.put("/settings/datadog", json={"api_key": "old-stored-key"})
+
+    calls = []
+    monkeypatch.setattr("culprit.api.routes_settings.test_datadog_credentials", lambda cfg: (calls.append(cfg), (True, "ok"))[1])
+
+    client.post("/settings/datadog/test", json={"personal_access_token": "brand-new-pat", "use_personal_access_token": True})
+    assert calls[0].personal_access_token == "brand-new-pat"
+    assert calls[0].api_key == ""
+
+
 def test_azure_test_connection_uses_the_body_when_given(client, monkeypatch):
     calls = []
 

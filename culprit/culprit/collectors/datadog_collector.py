@@ -1,11 +1,14 @@
 """Datadog collector: metrics (preconditions leading into the window),
 monitor state, and logs/events (post-reboot regression detection).
 
-Requires `datadog-api-client`, and `DD_API_KEY` / `DD_APP_KEY` /
-`DD_SITE` in the environment (standard Datadog client env vars - this
-module never reads a raw HTTP endpoint directly). Read-only: every call
-below is `query_metrics` / `list_monitors` / `list_logs_get`, never a
-mutating Datadog API.
+Requires `datadog-api-client`, and either `DD_API_KEY`/`DD_APP_KEY`/
+`DD_SITE` in the environment (standard Datadog client env vars, when no
+settings are saved) or whatever's configured on /culprit/settings - a
+Personal Access Token or the classic API key/App key pair, see
+`datadog_auth.py::configure_datadog_client` for how that choice is made.
+This module never reads a raw HTTP endpoint directly. Read-only: every
+call below is `query_metrics` / `list_monitors` / `list_logs_get`, never
+a mutating Datadog API.
 """
 from __future__ import annotations
 
@@ -15,7 +18,7 @@ from culprit.collectors.base import CollectionRequest, CollectionResult, Collect
 from culprit.models.evidence import Source, TimelineEvent
 
 try:  # pragma: no cover
-    from datadog_api_client import ApiClient, Configuration
+    from datadog_api_client import ApiClient
     from datadog_api_client.v1.api.metrics_api import MetricsApi
     from datadog_api_client.v1.api.monitors_api import MonitorsApi
     from datadog_api_client.v2.api.logs_api import LogsApi
@@ -59,12 +62,9 @@ class DatadogCollector(Collector):
                 "or use the demo collector for offline runs."
             )
         if self._api_client is None:
-            configuration = Configuration()
-            if self._settings and self._settings.api_key:
-                configuration.api_key["apiKeyAuth"] = self._settings.api_key
-                if self._settings.app_key:
-                    configuration.api_key["appKeyAuth"] = self._settings.app_key
-                configuration.server_variables["site"] = self._settings.site or "datadoghq.com"
+            from culprit.collectors.datadog_auth import configure_datadog_client
+
+            configuration = configure_datadog_client(self._settings)
             self._api_client = ApiClient(configuration)
         return self._api_client
 
