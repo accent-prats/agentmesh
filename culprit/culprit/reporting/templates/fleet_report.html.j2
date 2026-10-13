@@ -48,10 +48,101 @@
   <p class="text-xs text-gray-400 mb-6">No prior completed cycle for "{{ report.run.scope_name }}" yet to trend against.</p>
   {% endif %}
 
+  {% if report.machine_rows %}
+  {% set ns = namespace(failed=0, succeeded=0, other=0) %}
+  {% for row in report.machine_rows %}
+    {% set st = (row.outcome.status if row.outcome else '')|lower %}
+    {% if st == 'failed' %}{% set ns.failed = ns.failed + 1 %}
+    {% elif st == 'succeeded' %}{% set ns.succeeded = ns.succeeded + 1 %}
+    {% else %}{% set ns.other = ns.other + 1 %}{% endif %}
+  {% endfor %}
+  <div class="bg-white rounded-2xl shadow-sm border border-gray-100 overflow-hidden mb-6">
+    <div class="px-6 py-4 border-b border-gray-100 flex flex-wrap items-center gap-2.5">
+      <h2 class="font-semibold text-gray-900 text-sm mr-1">Machines</h2>
+      <div id="fr-status-filters" class="flex flex-wrap items-center gap-1.5">
+        <button type="button" data-status="all" class="fr-filter-chip text-[11px] font-medium px-2.5 py-1 rounded-full border transition-colors bg-gray-900 text-white border-gray-900">All &middot; {{ report.machine_rows|length }}</button>
+        <button type="button" data-status="failed" class="fr-filter-chip text-[11px] font-medium px-2.5 py-1 rounded-full border transition-colors bg-white text-gray-500 border-gray-200 hover:bg-gray-50">Failed &middot; {{ ns.failed }}</button>
+        <button type="button" data-status="succeeded" class="fr-filter-chip text-[11px] font-medium px-2.5 py-1 rounded-full border transition-colors bg-white text-gray-500 border-gray-200 hover:bg-gray-50">Succeeded &middot; {{ ns.succeeded }}</button>
+        <button type="button" data-status="other" class="fr-filter-chip text-[11px] font-medium px-2.5 py-1 rounded-full border transition-colors bg-white text-gray-500 border-gray-200 hover:bg-gray-50">Other &middot; {{ ns.other }}</button>
+      </div>
+      <input type="text" id="fr-search" placeholder="Search machine or cause&hellip;"
+        class="ml-auto border border-gray-200 rounded-lg px-3 py-1.5 text-xs w-56 focus:ring-2 focus:ring-brand focus:border-brand focus:outline-none">
+    </div>
+    <div class="overflow-x-auto">
+      <table class="w-full text-sm" id="fr-table">
+        <thead>
+          <tr class="text-[10px] font-semibold uppercase tracking-wide text-gray-400 border-b border-gray-100">
+            <th class="text-left px-5 py-2.5 cursor-pointer select-none" data-sort="vmName">Machine <span class="fr-sort-arrow"></span></th>
+            <th class="text-left px-3 py-2.5 cursor-pointer select-none" data-sort="status">Status <span class="fr-sort-arrow"></span></th>
+            <th class="text-left px-3 py-2.5">Failed update</th>
+            <th class="text-left px-3 py-2.5">Root cause</th>
+            <th class="text-left px-3 py-2.5 cursor-pointer select-none" data-sort="confidence">Confidence <span class="fr-sort-arrow"></span></th>
+            <th class="text-left px-5 py-2.5">Fix</th>
+          </tr>
+        </thead>
+        <tbody>
+          {% for row in report.machine_rows %}
+          {% set st = (row.outcome.status if row.outcome else '')|lower %}
+          {% set st_bucket = 'failed' if st == 'failed' else 'succeeded' if st == 'succeeded' else 'other' %}
+          <tr class="border-b border-gray-50 hover:bg-gray-50/70"
+            data-vm-name="{{ row.vm_name|lower }}" data-title="{{ row.title|lower }}"
+            data-status="{{ st_bucket }}" data-confidence="{{ row.confidence }}">
+            <td class="px-5 py-2.5 font-mono text-[12.5px] whitespace-nowrap">
+              <a href="{{ report.run.run_id }}/machines/{{ row.vm_name }}.html" class="text-brand hover:underline">{{ row.vm_name }}</a>
+            </td>
+            <td class="px-3 py-2.5 whitespace-nowrap">
+              {% if row.outcome %}
+                {% if st == 'failed' %}
+                <span class="text-[10px] font-semibold uppercase tracking-wide px-2 py-0.5 rounded-full bg-red-50 text-red-600 border border-red-200">{{ row.outcome.status }}</span>
+                {% elif st == 'succeeded' %}
+                <span class="text-[10px] font-semibold uppercase tracking-wide px-2 py-0.5 rounded-full bg-emerald-50 text-emerald-700 border border-emerald-200">{{ row.outcome.status }}</span>
+                {% elif st == 'completedwithwarnings' %}
+                <span class="text-[10px] font-semibold uppercase tracking-wide px-2 py-0.5 rounded-full bg-amber-50 text-amber-700 border border-amber-200">{{ row.outcome.status }}</span>
+                {% else %}
+                <span class="text-[10px] font-semibold uppercase tracking-wide px-2 py-0.5 rounded-full bg-gray-50 text-gray-600 border border-gray-200">{{ row.outcome.status }}</span>
+                {% endif %}
+              {% else %}
+              <span class="text-[10px] font-semibold uppercase tracking-wide px-2 py-0.5 rounded-full bg-gray-50 text-gray-400 border border-gray-200" title="No structured outcome recorded for this machine - this run predates per-machine outcome tracking.">Unknown</span>
+              {% endif %}
+            </td>
+            <td class="px-3 py-2.5 font-mono text-[11.5px] text-gray-600 max-w-[160px]">
+              {% if row.outcome and (row.outcome.kbs_failed or row.outcome.packages_failed) %}
+              {% set failed_update = (row.outcome.kbs_failed + row.outcome.packages_failed)|join(', ') %}
+              <div class="truncate" title="{{ failed_update }}">{{ failed_update }}</div>
+              {% else %}&mdash;{% endif %}
+            </td>
+            <td class="px-3 py-2.5 max-w-[240px]">
+              <a href="#cluster-{{ row.cluster_id }}" class="block truncate text-gray-700 hover:text-brand" title="{{ row.title }}">{{ row.title }}</a>
+            </td>
+            <td class="px-3 py-2.5 whitespace-nowrap">
+              {% if row.confidence >= 0.8 %}
+              <span class="text-[10px] font-semibold px-2 py-0.5 rounded-full bg-emerald-50 text-emerald-700 border border-emerald-200">{{ '%.0f' % (row.confidence * 100) }}%</span>
+              {% elif row.confidence >= 0.5 %}
+              <span class="text-[10px] font-semibold px-2 py-0.5 rounded-full bg-amber-50 text-amber-700 border border-amber-200">{{ '%.0f' % (row.confidence * 100) }}%</span>
+              {% else %}
+              <span class="text-[10px] font-semibold px-2 py-0.5 rounded-full bg-red-50 text-red-600 border border-red-200">{{ '%.0f' % (row.confidence * 100) }}%</span>
+              {% endif %}
+            </td>
+            <td class="px-5 py-2.5 whitespace-nowrap">
+              {% if row.has_immediate_fix %}
+              <span class="text-[9px] font-semibold uppercase px-1.5 py-0.5 rounded bg-emerald-50 text-emerald-700 border border-emerald-200">Yes</span>
+              {% else %}
+              <span class="text-[9px] font-semibold uppercase px-1.5 py-0.5 rounded bg-gray-50 text-gray-500 border border-gray-200">No</span>
+              {% endif %}
+            </td>
+          </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+    <p id="fr-empty-state" class="px-6 py-3 text-xs text-gray-400" style="display:none;">No machines match this filter.</p>
+  </div>
+  {% endif %}
+
   <div class="space-y-4">
   {% for entry in report.entries %}
   {% set conf = entry.result.confidence %}
-  <div class="bg-white rounded-2xl shadow-sm border border-gray-100 overflow-hidden">
+  <div id="cluster-{{ entry.cluster.cluster_id }}" class="bg-white rounded-2xl shadow-sm border border-gray-100 overflow-hidden target:ring-2 target:ring-brand/40 target:ring-offset-2 transition-shadow">
     <div class="px-6 py-5 border-b border-gray-100">
       <div class="flex flex-wrap items-center gap-1.5 mb-2.5">
         {% if conf >= 0.8 %}
@@ -152,6 +243,68 @@
 
 {% block scripts %}
 <script>
+// Machine table: client-side search, status filter, and column sort -
+// every row's already in the page (one run's worth of machines, not a
+// paginated dataset), so there's no need for a server round-trip to
+// slice this any differently.
+(function () {
+  const table = document.getElementById('fr-table');
+  if (!table) return;
+
+  const tbody = table.querySelector('tbody');
+  const rows = Array.from(tbody.querySelectorAll('tr'));
+  const search = document.getElementById('fr-search');
+  const emptyState = document.getElementById('fr-empty-state');
+  const chips = Array.from(document.querySelectorAll('#fr-status-filters .fr-filter-chip'));
+  let activeStatus = 'all';
+
+  const chipActive = 'fr-filter-chip text-[11px] font-medium px-2.5 py-1 rounded-full border transition-colors bg-gray-900 text-white border-gray-900';
+  const chipInactive = 'fr-filter-chip text-[11px] font-medium px-2.5 py-1 rounded-full border transition-colors bg-white text-gray-500 border-gray-200 hover:bg-gray-50';
+
+  function applyFilters() {
+    const q = (search.value || '').trim().toLowerCase();
+    let visible = 0;
+    rows.forEach(function (row) {
+      const matchesStatus = activeStatus === 'all' || row.dataset.status === activeStatus;
+      const matchesSearch = !q || row.dataset.vmName.includes(q) || row.dataset.title.includes(q);
+      const show = matchesStatus && matchesSearch;
+      row.style.display = show ? '' : 'none';
+      if (show) visible++;
+    });
+    emptyState.style.display = visible === 0 ? '' : 'none';
+    table.style.display = visible === 0 ? 'none' : '';
+  }
+
+  search.addEventListener('input', applyFilters);
+  chips.forEach(function (chip) {
+    chip.className = chip.dataset.status === 'all' ? chipActive : chipInactive;
+    chip.addEventListener('click', function () {
+      chips.forEach(function (c) { c.className = chipInactive; });
+      chip.className = chipActive;
+      activeStatus = chip.dataset.status;
+      applyFilters();
+    });
+  });
+
+  table.querySelectorAll('th[data-sort]').forEach(function (th) {
+    let ascending = true;
+    th.addEventListener('click', function () {
+      const key = th.dataset.sort;
+      const sorted = rows.slice().sort(function (a, b) {
+        const av = key === 'confidence' ? parseFloat(a.dataset.confidence) : a.dataset[key];
+        const bv = key === 'confidence' ? parseFloat(b.dataset.confidence) : b.dataset[key];
+        if (av < bv) return ascending ? -1 : 1;
+        if (av > bv) return ascending ? 1 : -1;
+        return 0;
+      });
+      table.querySelectorAll('.fr-sort-arrow').forEach(function (el) { el.textContent = ''; });
+      th.querySelector('.fr-sort-arrow').textContent = ascending ? '↑' : '↓';
+      ascending = !ascending;
+      sorted.forEach(function (row) { tbody.appendChild(row); });
+    });
+  });
+})();
+
 document.querySelectorAll('.verdict-widget').forEach(function (widget) {
   const clusterId = widget.dataset.clusterId;
   const causeFamily = widget.dataset.causeFamily;

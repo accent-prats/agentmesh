@@ -165,7 +165,8 @@ def _load_fleet_report_core(session: Session, run_id: str):
     the *previous* run's report) doesn't recursively attach a trend to
     that previous report too."""
     from culprit.models.cluster import Cluster, ClusterMember, Fingerprint
-    from culprit.models.report import ClusterReportEntry, FleetReport
+    from culprit.models.evidence import PatchOutcome
+    from culprit.models.report import ClusterReportEntry, FleetReport, MachineRow
     from culprit.pipeline.advisor import compute_recurrence
 
     run_record = session.get(RunRecord, run_id)
@@ -213,12 +214,57 @@ def _load_fleet_report_core(session: Session, run_id: str):
     unresolved = sum(e.cluster.size for e in entries if e.result.cause_family == CauseFamily.UNRESOLVED)
     repeat_offenders = sum(1 for e in entries if e.recurrence_badge)
 
+    # One query for the whole run, not one per machine - get_machine_detail
+    # does this same MachineOutcomeRecord join per machine for the
+    # single-machine page, which is fine there (one machine per request)
+    # but would be an N+1 query here (one fleet report can cover hundreds
+    # of machines).
+    outcomes_by_vm_id = {
+        rec.vm_id: rec
+        for rec in session.execute(select(MachineOutcomeRecord).where(MachineOutcomeRecord.run_id == run_id)).scalars()
+    }
+
+    machine_rows = []
+    for e in entries:
+        has_immediate_fix = bool(e.result.remediation and e.result.remediation.immediate_fix)
+        for m in e.cluster.members:
+            rec = outcomes_by_vm_id.get(m.vm_id)
+            outcome = (
+                PatchOutcome(
+                    status=rec.status,
+                    error_code=rec.error_code,
+                    error_message=rec.error_message,
+                    packages_failed=rec.packages_failed_json,
+                    kbs_failed=rec.kbs_failed_json,
+                    reboot_status=rec.reboot_status,
+                    started_at=rec.started_at,
+                    ended_at=rec.ended_at,
+                    window_minutes=rec.window_minutes,
+                )
+                if rec is not None
+                else None
+            )
+            machine_rows.append(
+                MachineRow(
+                    vm_id=m.vm_id,
+                    vm_name=m.vm_name,
+                    cluster_id=e.cluster.cluster_id,
+                    cause_family=e.result.cause_family,
+                    title=e.result.title,
+                    confidence=e.result.confidence,
+                    is_actionable=e.result.is_actionable,
+                    has_immediate_fix=has_immediate_fix,
+                    outcome=outcome,
+                )
+            )
+
     return FleetReport(
         run=run,
         total_machines=run_record.total_machines,
         total_failed=total_failed,
         total_clusters=len(entries),
         entries=entries,
+        machine_rows=machine_rows,
         unresolved_count=unresolved,
         repeat_offender_count=repeat_offenders,
     )

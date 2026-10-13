@@ -54,6 +54,48 @@ def test_fleet_report_html_shows_evidence_citations_and_ruled_out(client):
     assert "Ruled out" in html
 
 
+def test_fleet_report_json_includes_a_machine_row_per_failed_machine(client):
+    """machine_rows (added 2026-10-13 for the fleet report's per-machine
+    table) must cover every failed machine exactly once, batch-joined
+    against MachineOutcomeRecord - not the per-machine N+1 query
+    get_machine_detail uses, which would be fine for one machine but not
+    for a whole fleet's worth."""
+    test_client, _ = client
+    report = test_client.post("/runs/demo").json()
+
+    assert len(report["machine_rows"]) == report["total_failed"]
+    vm_names = {row["vm_name"] for row in report["machine_rows"]}
+    assert len(vm_names) == len(report["machine_rows"])  # no duplicates, no machine missing
+
+    # This demo run post-dates MachineOutcomeRecord (see
+    # test_machine_drill_down_shows_the_machines_own_patch_outcome), so
+    # every row should have a real outcome, not the "predates per-machine
+    # outcome tracking" None case.
+    assert all(row["outcome"] is not None for row in report["machine_rows"])
+    assert all(row["outcome"]["status"] for row in report["machine_rows"])
+
+
+def test_fleet_report_html_shows_the_machine_table(client):
+    """The table itself, plus its search/filter affordances and a working
+    jump-to-cluster-card anchor - the actual UI surface, not just the data
+    feeding it."""
+    test_client, _ = client
+    resp = test_client.post("/runs/demo")
+    report = resp.json()
+    run_id = report["run"]["run_id"]
+    first_row = report["machine_rows"][0]
+
+    html = test_client.get(f"/runs/{run_id}/report.html").text
+    assert 'id="fr-table"' in html
+    assert 'id="fr-search"' in html
+    assert first_row["vm_name"] in html
+    # The table row's root-cause link and the card's own id must agree,
+    # or clicking a row silently goes nowhere.
+    anchor = f'#cluster-{first_row["cluster_id"]}'
+    assert anchor in html
+    assert f'id="cluster-{first_row["cluster_id"]}"' in html
+
+
 def test_fleet_report_html_verdict_widget_present_and_wired_to_relative_verdicts_path(client):
     test_client, _ = client
     resp = test_client.post("/runs/demo")
