@@ -2,219 +2,261 @@
 {% block title %}Settings{% endblock %}
 
 {% block content %}
-<div class="max-w-2xl mx-auto px-8 py-12">
+<div class="max-w-5xl mx-auto px-8 py-12">
 
   <h1 class="text-2xl font-bold text-gray-900 tracking-tight">Settings</h1>
-  <p class="text-gray-500 text-sm mt-1.5 mb-8">
+  <p class="text-gray-500 text-sm mt-1.5 mb-8 max-w-2xl">
     Azure and Datadog credentials Culprit uses to diagnose real patch failures.
     Nothing here is required to run the demo scenario. The deep RCA agent's own AI provider is
     configured platform-wide from the AgentMesh Portal's Admin &rarr; AI Providers screen, not here.
   </p>
 
-  <!-- Azure -->
-  <div class="bg-white rounded-2xl shadow-sm border border-gray-100 p-7 mb-5">
-    <div class="flex items-center gap-3 mb-1">
-      <div class="w-9 h-9 rounded-xl bg-sky-50 flex items-center justify-center shrink-0">
-        <i data-lucide="cloud" class="w-4 h-4 text-sky-600"></i>
-      </div>
-      <h2 class="font-semibold text-gray-900">Azure</h2>
-    </div>
-    <p class="text-sm text-gray-500 mt-2 mb-5">
-      Resource Graph, Activity Log, Log Analytics, and Run Command.
-    </p>
+  <div class="flex gap-8 items-start">
 
-    <div class="space-y-4">
-      <div>
-        <label class="block text-xs font-medium text-gray-600 mb-1.5">Subscription IDs</label>
-        <textarea id="az-subs" rows="2" placeholder="one per line, or comma-separated"
-          class="w-full border border-gray-300 rounded-lg px-3 py-2 text-sm font-mono focus:ring-2 focus:ring-brand focus:border-brand focus:outline-none"></textarea>
-      </div>
-      <div>
-        <label class="block text-xs font-medium text-gray-600 mb-1.5">Log Analytics workspace ID</label>
-        <input id="az-workspace" placeholder="00000000-0000-0000-0000-000000000000"
-          class="w-full border border-gray-300 rounded-lg px-3 py-2 text-sm focus:ring-2 focus:ring-brand focus:border-brand focus:outline-none">
-      </div>
+    <!-- Sub-nav - hash-routed (bookmarkable, back-button-friendly, no JS
+         framework needed) rather than onclick, same "plain anchor" pattern
+         as every other nav link in this app (base.html.j2's sidebar). Each
+         item's trailing dot mirrors that section's own status badge, so a
+         misconfigured or failing connection is visible without opening it. -->
+    <nav class="w-52 shrink-0 space-y-1 sticky top-12">
+      <a href="#azure" data-tab="azure" class="settings-tab flex items-center justify-between gap-2 px-3 py-2.5 rounded-lg text-sm transition-colors">
+        <span class="flex items-center gap-2.5">
+          <i data-lucide="cloud" class="w-4 h-4"></i> Azure
+        </span>
+        <span id="azure-nav-dot" class="w-1.5 h-1.5 rounded-full bg-gray-300 shrink-0"></span>
+      </a>
+      <a href="#datadog" data-tab="datadog" class="settings-tab flex items-center justify-between gap-2 px-3 py-2.5 rounded-lg text-sm transition-colors">
+        <span class="flex items-center gap-2.5">
+          <i data-lucide="activity" class="w-4 h-4"></i> Datadog
+        </span>
+        <span id="datadog-nav-dot" class="w-1.5 h-1.5 rounded-full bg-gray-300 shrink-0"></span>
+      </a>
+      <a href="#schedule" data-tab="schedule" class="settings-tab flex items-center justify-between gap-2 px-3 py-2.5 rounded-lg text-sm transition-colors">
+        <span class="flex items-center gap-2.5">
+          <i data-lucide="calendar-clock" class="w-4 h-4"></i> Scheduled runs
+        </span>
+        <span id="schedule-nav-dot" class="w-1.5 h-1.5 rounded-full bg-gray-300 shrink-0"></span>
+      </a>
+    </nav>
 
-      <div class="pt-2">
-        <label class="block text-xs font-medium text-gray-600 mb-2">Authentication method</label>
-        <div class="space-y-2">
-          <label class="flex items-start gap-2.5 cursor-pointer">
-            <input type="radio" name="az-auth-mode" value="managed_identity" checked
-              onchange="applyAzureAuthMode(true)" class="mt-0.5 accent-brand">
-            <span>
-              <span class="block text-sm text-gray-800">Managed identity</span>
-              <span class="block text-xs text-gray-400">Uses this host's Azure system-assigned identity &mdash; no secret to store or rotate. Only works when Culprit runs on an Azure VM/App with an identity assigned.</span>
-            </span>
-          </label>
-          <label class="flex items-start gap-2.5 cursor-pointer">
-            <input type="radio" name="az-auth-mode" value="service_principal"
-              onchange="applyAzureAuthMode(true)" class="mt-0.5 accent-brand">
-            <span>
-              <span class="block text-sm text-gray-800">Service principal</span>
-              <span class="block text-xs text-gray-400">Needed on any host that isn't itself running in Azure.</span>
-            </span>
-          </label>
+    <div class="flex-1 min-w-0">
+
+      <!-- Azure -->
+      <section id="panel-azure" class="settings-panel bg-white rounded-2xl shadow-sm border border-gray-100 p-7">
+        <div class="flex items-start justify-between gap-4 mb-1">
+          <div class="flex items-center gap-3">
+            <div class="w-9 h-9 rounded-xl bg-sky-50 flex items-center justify-center shrink-0">
+              <i data-lucide="cloud" class="w-4 h-4 text-sky-600"></i>
+            </div>
+            <h2 class="font-semibold text-gray-900">Azure</h2>
+          </div>
+          <span id="az-status" class="shrink-0"></span>
         </div>
-        <p id="az-mode-hint" class="text-xs text-gray-500 mt-2.5"></p>
-      </div>
+        <p class="text-sm text-gray-500 mt-2 mb-5">
+          Resource Graph, Activity Log, Log Analytics, and Run Command.
+        </p>
 
-      <div id="az-sp-fields" class="space-y-4 pt-1">
-        <div class="grid grid-cols-2 gap-4">
+        <div class="space-y-4">
           <div>
-            <label class="block text-xs font-medium text-gray-600 mb-1.5">Tenant ID</label>
-            <input id="az-tenant" placeholder="00000000-0000-0000-0000-000000000000"
-              class="w-full border border-gray-300 rounded-lg px-3 py-2 text-sm focus:ring-2 focus:ring-brand focus:border-brand focus:outline-none">
+            <label class="block text-xs font-medium text-gray-600 mb-1.5">Subscription IDs</label>
+            <textarea id="az-subs" rows="2" placeholder="one per line, or comma-separated"
+              class="w-full border border-gray-300 rounded-lg px-3 py-2 text-sm font-mono focus:ring-2 focus:ring-brand focus:border-brand focus:outline-none"></textarea>
           </div>
           <div>
-            <label class="block text-xs font-medium text-gray-600 mb-1.5">Client ID</label>
-            <input id="az-client" placeholder="00000000-0000-0000-0000-000000000000"
+            <label class="block text-xs font-medium text-gray-600 mb-1.5">Log Analytics workspace ID</label>
+            <input id="az-workspace" placeholder="00000000-0000-0000-0000-000000000000"
+              class="w-full border border-gray-300 rounded-lg px-3 py-2 text-sm focus:ring-2 focus:ring-brand focus:border-brand focus:outline-none">
+          </div>
+
+          <div class="pt-2">
+            <label class="block text-xs font-medium text-gray-600 mb-2">Authentication method</label>
+            <div class="space-y-2">
+              <label class="flex items-start gap-2.5 cursor-pointer">
+                <input type="radio" name="az-auth-mode" value="managed_identity" checked
+                  onchange="applyAzureAuthMode(true)" class="mt-0.5 accent-brand">
+                <span>
+                  <span class="block text-sm text-gray-800">Managed identity</span>
+                  <span class="block text-xs text-gray-400">Uses this host's Azure system-assigned identity &mdash; no secret to store or rotate. Only works when Culprit runs on an Azure VM/App with an identity assigned.</span>
+                </span>
+              </label>
+              <label class="flex items-start gap-2.5 cursor-pointer">
+                <input type="radio" name="az-auth-mode" value="service_principal"
+                  onchange="applyAzureAuthMode(true)" class="mt-0.5 accent-brand">
+                <span>
+                  <span class="block text-sm text-gray-800">Service principal</span>
+                  <span class="block text-xs text-gray-400">Needed on any host that isn't itself running in Azure.</span>
+                </span>
+              </label>
+            </div>
+            <p id="az-mode-hint" class="text-xs text-gray-500 mt-2.5"></p>
+          </div>
+
+          <div id="az-sp-fields" class="space-y-4 pt-1">
+            <div class="grid grid-cols-2 gap-4">
+              <div>
+                <label class="block text-xs font-medium text-gray-600 mb-1.5">Tenant ID</label>
+                <input id="az-tenant" placeholder="00000000-0000-0000-0000-000000000000"
+                  class="w-full border border-gray-300 rounded-lg px-3 py-2 text-sm focus:ring-2 focus:ring-brand focus:border-brand focus:outline-none">
+              </div>
+              <div>
+                <label class="block text-xs font-medium text-gray-600 mb-1.5">Client ID</label>
+                <input id="az-client" placeholder="00000000-0000-0000-0000-000000000000"
+                  class="w-full border border-gray-300 rounded-lg px-3 py-2 text-sm focus:ring-2 focus:ring-brand focus:border-brand focus:outline-none">
+              </div>
+            </div>
+            <div>
+              <label class="block text-xs font-medium text-gray-600 mb-1.5">Client secret</label>
+              <input id="az-secret" type="password" placeholder="leave blank to keep saved secret"
+                class="w-full border border-gray-300 rounded-lg px-3 py-2 text-sm focus:ring-2 focus:ring-brand focus:border-brand focus:outline-none">
+            </div>
+            <p id="az-secret-hint" class="text-xs text-gray-400"></p>
+          </div>
+        </div>
+
+        <div class="flex items-center gap-3 mt-5 pt-5 border-t border-gray-100">
+          <button onclick="saveAzure()" class="bg-brand hover:bg-brand-dark text-white text-sm font-medium px-4 py-2 rounded-lg transition-colors">Save</button>
+          <button onclick="testAzure()" class="bg-gray-100 hover:bg-gray-200 text-gray-700 text-sm font-medium px-4 py-2 rounded-lg transition-colors">Test connection</button>
+          <span class="text-sm" id="az-result"></span>
+        </div>
+        <p class="text-xs text-gray-400 mt-3" id="az-status-detail"></p>
+      </section>
+
+      <!-- Datadog -->
+      <section id="panel-datadog" class="settings-panel hidden bg-white rounded-2xl shadow-sm border border-gray-100 p-7">
+        <div class="flex items-start justify-between gap-4 mb-1">
+          <div class="flex items-center gap-3">
+            <div class="w-9 h-9 rounded-xl bg-violet-50 flex items-center justify-center shrink-0">
+              <i data-lucide="activity" class="w-4 h-4 text-violet-600"></i>
+            </div>
+            <h2 class="font-semibold text-gray-900">Datadog</h2>
+          </div>
+          <span id="dd-status" class="shrink-0"></span>
+        </div>
+        <p class="text-sm text-gray-500 mt-2 mb-5">
+          Metrics, monitor state, and post-reboot regression signals. Read-only API scope is enough.
+        </p>
+
+        <div class="space-y-4">
+          <div>
+            <label class="block text-xs font-medium text-gray-600 mb-1.5">Site</label>
+            <input id="dd-site" placeholder="datadoghq.com"
+              class="w-full border border-gray-300 rounded-lg px-3 py-2 text-sm focus:ring-2 focus:ring-brand focus:border-brand focus:outline-none">
+          </div>
+
+          <div class="pt-2">
+            <label class="block text-xs font-medium text-gray-600 mb-2">Authentication method</label>
+            <div class="space-y-2">
+              <label class="flex items-start gap-2.5 cursor-pointer">
+                <input type="radio" name="dd-auth-mode" value="api_key" checked
+                  onchange="applyDatadogAuthMode(true)" class="mt-0.5 accent-brand">
+                <span>
+                  <span class="block text-sm text-gray-800">API key</span>
+                  <span class="block text-xs text-gray-400">The classic key pair - an App key is only needed for monitor/log access beyond metrics submission.</span>
+                </span>
+              </label>
+              <label class="flex items-start gap-2.5 cursor-pointer">
+                <input type="radio" name="dd-auth-mode" value="personal_access_token"
+                  onchange="applyDatadogAuthMode(true)" class="mt-0.5 accent-brand">
+                <span>
+                  <span class="block text-sm text-gray-800">Personal Access Token</span>
+                  <span class="block text-xs text-gray-400">Datadog's newer alternative to an API/App key pair for everything except telemetry submission. Preview feature on Datadog's side, and not yet exercised against a real Datadog org for metrics/monitor collection specifically.</span>
+                </span>
+              </label>
+            </div>
+            <p id="dd-mode-hint" class="text-xs text-gray-500 mt-2.5"></p>
+          </div>
+
+          <div id="dd-api-key-fields" class="grid grid-cols-2 gap-4">
+            <div>
+              <label class="block text-xs font-medium text-gray-600 mb-1.5">API key</label>
+              <input id="dd-api" type="password" placeholder="leave blank to keep saved key"
+                class="w-full border border-gray-300 rounded-lg px-3 py-2 text-sm focus:ring-2 focus:ring-brand focus:border-brand focus:outline-none">
+            </div>
+            <div>
+              <label class="block text-xs font-medium text-gray-600 mb-1.5">App key</label>
+              <input id="dd-app" type="password" placeholder="leave blank to keep saved key"
+                class="w-full border border-gray-300 rounded-lg px-3 py-2 text-sm focus:ring-2 focus:ring-brand focus:border-brand focus:outline-none">
+            </div>
+          </div>
+
+          <div id="dd-pat-fields" class="hidden">
+            <label class="block text-xs font-medium text-gray-600 mb-1.5">Personal Access Token</label>
+            <input id="dd-pat" type="password" placeholder="leave blank to keep saved token"
               class="w-full border border-gray-300 rounded-lg px-3 py-2 text-sm focus:ring-2 focus:ring-brand focus:border-brand focus:outline-none">
           </div>
         </div>
-        <div>
-          <label class="block text-xs font-medium text-gray-600 mb-1.5">Client secret</label>
-          <input id="az-secret" type="password" placeholder="leave blank to keep saved secret"
-            class="w-full border border-gray-300 rounded-lg px-3 py-2 text-sm focus:ring-2 focus:ring-brand focus:border-brand focus:outline-none">
+
+        <div class="flex items-center gap-3 mt-5 pt-5 border-t border-gray-100">
+          <button onclick="saveDatadog()" class="bg-brand hover:bg-brand-dark text-white text-sm font-medium px-4 py-2 rounded-lg transition-colors">Save</button>
+          <button onclick="testDatadog()" class="bg-gray-100 hover:bg-gray-200 text-gray-700 text-sm font-medium px-4 py-2 rounded-lg transition-colors">Test connection</button>
+          <span class="text-sm" id="dd-result"></span>
         </div>
-        <p id="az-secret-hint" class="text-xs text-gray-400"></p>
-      </div>
-    </div>
+        <p class="text-xs text-gray-400 mt-3" id="dd-status-detail"></p>
+      </section>
 
-    <div class="flex items-center gap-3 mt-5 pt-5 border-t border-gray-100">
-      <button onclick="saveAzure()" class="bg-brand hover:bg-brand-dark text-white text-sm font-medium px-4 py-2 rounded-lg transition-colors">Save</button>
-      <button onclick="testAzure()" class="bg-gray-100 hover:bg-gray-200 text-gray-700 text-sm font-medium px-4 py-2 rounded-lg transition-colors">Test connection</button>
-      <span class="text-sm" id="az-result"></span>
-    </div>
-    <div class="text-xs text-gray-400 mt-3" id="az-status">Loading&hellip;</div>
-  </div>
-
-  <!-- Datadog -->
-  <div class="bg-white rounded-2xl shadow-sm border border-gray-100 p-7 mb-5">
-    <div class="flex items-center gap-3 mb-1">
-      <div class="w-9 h-9 rounded-xl bg-violet-50 flex items-center justify-center shrink-0">
-        <i data-lucide="activity" class="w-4 h-4 text-violet-600"></i>
-      </div>
-      <h2 class="font-semibold text-gray-900">Datadog</h2>
-    </div>
-    <p class="text-sm text-gray-500 mt-2 mb-5">
-      Metrics, monitor state, and post-reboot regression signals. Read-only API scope is enough.
-    </p>
-
-    <div class="space-y-4">
-      <div>
-        <label class="block text-xs font-medium text-gray-600 mb-1.5">Site</label>
-        <input id="dd-site" placeholder="datadoghq.com"
-          class="w-full border border-gray-300 rounded-lg px-3 py-2 text-sm focus:ring-2 focus:ring-brand focus:border-brand focus:outline-none">
-      </div>
-
-      <div class="pt-2">
-        <label class="block text-xs font-medium text-gray-600 mb-2">Authentication method</label>
-        <div class="space-y-2">
-          <label class="flex items-start gap-2.5 cursor-pointer">
-            <input type="radio" name="dd-auth-mode" value="api_key" checked
-              onchange="applyDatadogAuthMode(true)" class="mt-0.5 accent-brand">
-            <span>
-              <span class="block text-sm text-gray-800">API key</span>
-              <span class="block text-xs text-gray-400">The classic key pair - an App key is only needed for monitor/log access beyond metrics submission.</span>
-            </span>
-          </label>
-          <label class="flex items-start gap-2.5 cursor-pointer">
-            <input type="radio" name="dd-auth-mode" value="personal_access_token"
-              onchange="applyDatadogAuthMode(true)" class="mt-0.5 accent-brand">
-            <span>
-              <span class="block text-sm text-gray-800">Personal Access Token</span>
-              <span class="block text-xs text-gray-400">Datadog's newer alternative to an API/App key pair for everything except telemetry submission. Preview feature on Datadog's side, and not yet exercised against a real Datadog org for metrics/monitor collection specifically.</span>
-            </span>
-          </label>
+      <!-- Scheduled runs -->
+      <section id="panel-schedule" class="settings-panel hidden bg-white rounded-2xl shadow-sm border border-gray-100 p-7">
+        <div class="flex items-start justify-between gap-4 mb-1">
+          <div class="flex items-center gap-3">
+            <div class="w-9 h-9 rounded-xl bg-amber-50 flex items-center justify-center shrink-0">
+              <i data-lucide="calendar-clock" class="w-4 h-4 text-amber-600"></i>
+            </div>
+            <h2 class="font-semibold text-gray-900">Scheduled runs</h2>
+          </div>
+          <span id="sched-status" class="shrink-0"></span>
         </div>
-        <p id="dd-mode-hint" class="text-xs text-gray-500 mt-2.5"></p>
-      </div>
+        <p class="text-sm text-gray-500 mt-2 mb-5">
+          Automatically runs a live analysis on a recurring schedule, using the Azure &amp; Datadog
+          settings saved above - no manual trigger needed. To run one right now instead, use
+          <a href="." class="text-brand hover:text-brand-dark font-medium">Run live analysis</a> on the Console.
+        </p>
 
-      <div id="dd-api-key-fields" class="grid grid-cols-2 gap-4">
-        <div>
-          <label class="block text-xs font-medium text-gray-600 mb-1.5">API key</label>
-          <input id="dd-api" type="password" placeholder="leave blank to keep saved key"
-            class="w-full border border-gray-300 rounded-lg px-3 py-2 text-sm focus:ring-2 focus:ring-brand focus:border-brand focus:outline-none">
+        <label class="flex items-center gap-2.5 cursor-pointer mb-5">
+          <input type="checkbox" id="sched-enabled" onchange="applyScheduleEnabled()" class="accent-brand w-4 h-4">
+          <span class="text-sm text-gray-800">Run automatically</span>
+        </label>
+
+        <div id="sched-fields" class="space-y-4">
+          <div class="grid grid-cols-2 gap-4">
+            <div>
+              <label class="block text-xs font-medium text-gray-600 mb-1.5">Frequency</label>
+              <select id="sched-preset" onchange="applySchedulePreset()"
+                class="w-full border border-gray-300 rounded-lg px-3 py-2 text-sm focus:ring-2 focus:ring-brand focus:border-brand focus:outline-none">
+                <option value="0 */6 * * *">Every 6 hours</option>
+                <option value="0 */12 * * *">Every 12 hours</option>
+                <option value="0 4 * * *">Daily, 4:00 AM UTC</option>
+                <option value="0 4 * * 0">Weekly, Sunday 4:00 AM UTC</option>
+                <option value="custom">Custom (cron expression)</option>
+              </select>
+            </div>
+            <div>
+              <label class="block text-xs font-medium text-gray-600 mb-1.5">Window (hours back)</label>
+              <input id="sched-hours" type="number" value="192" min="1" max="720"
+                class="w-full border border-gray-300 rounded-lg px-3 py-2 text-sm focus:ring-2 focus:ring-brand focus:border-brand focus:outline-none">
+            </div>
+          </div>
+          <div>
+            <label class="block text-xs font-medium text-gray-600 mb-1.5">Cron expression (UTC)</label>
+            <input id="sched-cron" placeholder="0 4 * * *" oninput="syncPresetFromCron()"
+              class="w-full border border-gray-300 rounded-lg px-3 py-2 text-sm font-mono focus:ring-2 focus:ring-brand focus:border-brand focus:outline-none">
+            <p class="text-xs text-gray-400 mt-1.5">minute hour day-of-month month day-of-week, UTC &mdash; e.g. "0 4 * * *" runs every day at 4:00 AM UTC.</p>
+          </div>
+          <div>
+            <label class="block text-xs font-medium text-gray-600 mb-1.5">Scope name</label>
+            <input id="sched-scope" placeholder="scheduled"
+              class="w-full border border-gray-300 rounded-lg px-3 py-2 text-sm focus:ring-2 focus:ring-brand focus:border-brand focus:outline-none">
+            <p class="text-xs text-gray-400 mt-1.5">Labels these runs on the Runs page, distinguishing them from manual and demo runs.</p>
+          </div>
         </div>
-        <div>
-          <label class="block text-xs font-medium text-gray-600 mb-1.5">App key</label>
-          <input id="dd-app" type="password" placeholder="leave blank to keep saved key"
-            class="w-full border border-gray-300 rounded-lg px-3 py-2 text-sm focus:ring-2 focus:ring-brand focus:border-brand focus:outline-none">
+
+        <div class="flex items-center gap-3 mt-5 pt-5 border-t border-gray-100">
+          <button onclick="saveSchedule()" class="bg-brand hover:bg-brand-dark text-white text-sm font-medium px-4 py-2 rounded-lg transition-colors">Save</button>
+          <span class="text-sm" id="sched-result"></span>
         </div>
-      </div>
+        <p class="text-xs text-gray-400 mt-3" id="sched-status-detail"></p>
+      </section>
 
-      <div id="dd-pat-fields" class="hidden">
-        <label class="block text-xs font-medium text-gray-600 mb-1.5">Personal Access Token</label>
-        <input id="dd-pat" type="password" placeholder="leave blank to keep saved token"
-          class="w-full border border-gray-300 rounded-lg px-3 py-2 text-sm focus:ring-2 focus:ring-brand focus:border-brand focus:outline-none">
-      </div>
     </div>
-
-    <div class="flex items-center gap-3 mt-5 pt-5 border-t border-gray-100">
-      <button onclick="saveDatadog()" class="bg-brand hover:bg-brand-dark text-white text-sm font-medium px-4 py-2 rounded-lg transition-colors">Save</button>
-      <button onclick="testDatadog()" class="bg-gray-100 hover:bg-gray-200 text-gray-700 text-sm font-medium px-4 py-2 rounded-lg transition-colors">Test connection</button>
-      <span class="text-sm" id="dd-result"></span>
-    </div>
-    <div class="text-xs text-gray-400 mt-3" id="dd-status">Loading&hellip;</div>
-  </div>
-
-  <!-- Scheduled runs -->
-  <div class="bg-white rounded-2xl shadow-sm border border-gray-100 p-7">
-    <div class="flex items-center gap-3 mb-1">
-      <div class="w-9 h-9 rounded-xl bg-amber-50 flex items-center justify-center shrink-0">
-        <i data-lucide="calendar-clock" class="w-4 h-4 text-amber-600"></i>
-      </div>
-      <h2 class="font-semibold text-gray-900">Scheduled runs</h2>
-    </div>
-    <p class="text-sm text-gray-500 mt-2 mb-5">
-      Automatically runs a live analysis on a recurring schedule, using the Azure &amp; Datadog
-      settings saved above - no manual trigger needed. To run one right now instead, use
-      <a href="." class="text-brand hover:text-brand-dark font-medium">Run live analysis</a> on the Console.
-    </p>
-
-    <label class="flex items-center gap-2.5 cursor-pointer mb-5">
-      <input type="checkbox" id="sched-enabled" onchange="applyScheduleEnabled()" class="accent-brand w-4 h-4">
-      <span class="text-sm text-gray-800">Run automatically</span>
-    </label>
-
-    <div id="sched-fields" class="space-y-4">
-      <div class="grid grid-cols-2 gap-4">
-        <div>
-          <label class="block text-xs font-medium text-gray-600 mb-1.5">Frequency</label>
-          <select id="sched-preset" onchange="applySchedulePreset()"
-            class="w-full border border-gray-300 rounded-lg px-3 py-2 text-sm focus:ring-2 focus:ring-brand focus:border-brand focus:outline-none">
-            <option value="0 */6 * * *">Every 6 hours</option>
-            <option value="0 */12 * * *">Every 12 hours</option>
-            <option value="0 4 * * *">Daily, 4:00 AM UTC</option>
-            <option value="0 4 * * 0">Weekly, Sunday 4:00 AM UTC</option>
-            <option value="custom">Custom (cron expression)</option>
-          </select>
-        </div>
-        <div>
-          <label class="block text-xs font-medium text-gray-600 mb-1.5">Window (hours back)</label>
-          <input id="sched-hours" type="number" value="192" min="1" max="720"
-            class="w-full border border-gray-300 rounded-lg px-3 py-2 text-sm focus:ring-2 focus:ring-brand focus:border-brand focus:outline-none">
-        </div>
-      </div>
-      <div>
-        <label class="block text-xs font-medium text-gray-600 mb-1.5">Cron expression (UTC)</label>
-        <input id="sched-cron" placeholder="0 4 * * *" oninput="syncPresetFromCron()"
-          class="w-full border border-gray-300 rounded-lg px-3 py-2 text-sm font-mono focus:ring-2 focus:ring-brand focus:border-brand focus:outline-none">
-        <p class="text-xs text-gray-400 mt-1.5">minute hour day-of-month month day-of-week, UTC &mdash; e.g. "0 4 * * *" runs every day at 4:00 AM UTC.</p>
-      </div>
-      <div>
-        <label class="block text-xs font-medium text-gray-600 mb-1.5">Scope name</label>
-        <input id="sched-scope" placeholder="scheduled"
-          class="w-full border border-gray-300 rounded-lg px-3 py-2 text-sm focus:ring-2 focus:ring-brand focus:border-brand focus:outline-none">
-        <p class="text-xs text-gray-400 mt-1.5">Labels these runs on the Runs page, distinguishing them from manual and demo runs.</p>
-      </div>
-    </div>
-
-    <div class="flex items-center gap-3 mt-5 pt-5 border-t border-gray-100">
-      <button onclick="saveSchedule()" class="bg-brand hover:bg-brand-dark text-white text-sm font-medium px-4 py-2 rounded-lg transition-colors">Save</button>
-      <span class="text-sm" id="sched-result"></span>
-    </div>
-    <div class="text-xs text-gray-400 mt-3" id="sched-status">Loading&hellip;</div>
   </div>
 
 </div>
@@ -222,35 +264,71 @@
 
 {% block scripts %}
 <script>
-// Builds the status line with DOM nodes only - no innerHTML, no string-
-// concatenated HTML. view.last_test_message is provider-supplied error
-// text (an Azure/Datadog SDK exception message); it was previously
-// concatenated straight into an innerHTML assignment, which was a stored-
-// XSS vector via a crafted subscription id or Datadog site value that
-// ends up echoed back in an error message. textContent/createTextNode
-// never parse their input as HTML, so this is XSS-proof regardless of
-// what that message contains.
-function renderStatus(elId, view, testedLabel) {
-  const el = document.getElementById(elId);
-  el.textContent = '';
+// Hash-routed sub-nav (bookmarkable, back-button-friendly, no framework) -
+// one panel visible at a time, active nav item highlighted to match.
+const SETTINGS_TABS = ['azure', 'datadog', 'schedule'];
+
+function showSettingsTab(tab) {
+  if (!SETTINGS_TABS.includes(tab)) tab = 'azure';
+  SETTINGS_TABS.forEach(function (t) {
+    document.getElementById('panel-' + t).classList.toggle('hidden', t !== tab);
+    const link = document.querySelector('.settings-tab[data-tab="' + t + '"]');
+    link.classList.toggle('bg-brand/10', t === tab);
+    link.classList.toggle('text-brand', t === tab);
+    link.classList.toggle('font-semibold', t === tab);
+    link.classList.toggle('text-gray-600', t !== tab);
+    link.classList.toggle('font-medium', t !== tab);
+    link.classList.toggle('hover:bg-gray-50', t !== tab);
+  });
+}
+
+function settingsTabFromHash() {
+  return (location.hash || '#azure').slice(1);
+}
+
+window.addEventListener('hashchange', function () { showSettingsTab(settingsTabFromHash()); });
+showSettingsTab(settingsTabFromHash());
+
+// Status badge shared by Azure/Datadog - a small colored pill (scannable
+// at a glance, including from the sub-nav's own dot) plus a muted detail
+// line below the Save/Test row for the failure message and/or timestamp,
+// which used to be crammed into that same single line as the badge.
+// view.last_test_message is provider-supplied error text (an Azure/Datadog
+// SDK exception message) - textContent/createTextNode only, never
+// innerHTML, since that was a stored-XSS vector before (a crafted
+// subscription id or Datadog site value echoed back in an error message).
+function renderStatus(badgeElId, detailElId, navDotElId, view) {
+  const badge = document.getElementById(badgeElId);
+  const detail = document.getElementById(detailElId);
+  const dot = document.getElementById(navDotElId);
+  badge.textContent = '';
+  detail.textContent = '';
+
+  const pill = (bg, text, label) => {
+    badge.className = 'inline-flex items-center px-2.5 py-1 rounded-full text-xs font-medium ' + bg + ' ' + text;
+    badge.textContent = label;
+  };
 
   if (!view.configured) {
-    const span = document.createElement('span');
-    span.className = 'text-gray-400';
-    span.textContent = 'Not configured yet.';
-    el.appendChild(span);
+    pill('bg-gray-100', 'text-gray-500', 'Not connected');
+    dot.className = 'w-1.5 h-1.5 rounded-full bg-gray-300 shrink-0';
     return;
   }
 
-  let dotColor = 'bg-gray-300', text = 'not tested yet';
-  if (view.last_test_ok === true)  { dotColor = 'bg-emerald-500'; text = 'last test passed'; }
-  if (view.last_test_ok === false) { dotColor = 'bg-red-500';     text = 'last test failed: ' + view.last_test_message; }
-  const when = view.last_tested_at ? ' (' + new Date(view.last_tested_at).toLocaleString() + ')' : '';
-
-  const dot = document.createElement('span');
-  dot.className = 'inline-block w-1.5 h-1.5 rounded-full mr-1.5 align-middle ' + dotColor;
-  el.appendChild(dot);
-  el.appendChild(document.createTextNode(testedLabel + ' — ' + text + when));
+  const parts = [];
+  if (view.last_test_ok === true) {
+    pill('bg-emerald-50', 'text-emerald-700', 'Connected');
+    dot.className = 'w-1.5 h-1.5 rounded-full bg-emerald-500 shrink-0';
+  } else if (view.last_test_ok === false) {
+    pill('bg-red-50', 'text-red-700', 'Connection failed');
+    dot.className = 'w-1.5 h-1.5 rounded-full bg-red-500 shrink-0';
+    if (view.last_test_message) parts.push(view.last_test_message);
+  } else {
+    pill('bg-gray-100', 'text-gray-600', 'Saved · not tested yet');
+    dot.className = 'w-1.5 h-1.5 rounded-full bg-gray-400 shrink-0';
+  }
+  if (view.last_tested_at) parts.push('Last tested ' + new Date(view.last_tested_at).toLocaleString());
+  detail.textContent = parts.join(' — ');
 }
 
 // Which mode a saved config is in isn't a stored field of its own - a
@@ -294,7 +372,7 @@ async function loadAzure() {
   const spMode = isServicePrincipalConfigured(view);
   document.querySelector(`input[name="az-auth-mode"][value="${spMode ? 'service_principal' : 'managed_identity'}"]`).checked = true;
   applyAzureAuthMode(false);
-  renderStatus('az-status', view, 'Azure');
+  renderStatus('az-status', 'az-status-detail', 'azure-nav-dot', view);
 }
 
 // `use_personal_access_token` isn't derivable from the input fields (both
@@ -328,7 +406,7 @@ async function loadDatadog() {
   document.getElementById('dd-site').value = view.site || 'datadoghq.com';
   document.querySelector(`input[name="dd-auth-mode"][value="${view.personal_access_token_configured ? 'personal_access_token' : 'api_key'}"]`).checked = true;
   applyDatadogAuthMode(false);
-  renderStatus('dd-status', view, 'Datadog');
+  renderStatus('dd-status', 'dd-status-detail', 'datadog-nav-dot', view);
 }
 
 function parseSubs() {
@@ -463,6 +541,37 @@ function syncPresetFromCron() {
   document.getElementById('sched-preset').value = SCHEDULE_PRESETS.has(cron) ? cron : 'custom';
 }
 
+function renderScheduleStatus(view) {
+  const badge = document.getElementById('sched-status');
+  const detail = document.getElementById('sched-status-detail');
+  const dot = document.getElementById('schedule-nav-dot');
+  badge.textContent = '';
+  detail.textContent = '';
+
+  const pill = (bg, text, label) => {
+    badge.className = 'inline-flex items-center px-2.5 py-1 rounded-full text-xs font-medium ' + bg + ' ' + text;
+    badge.textContent = label;
+  };
+
+  if (!view.scheduler_running) {
+    pill('bg-amber-50', 'text-amber-700', 'Scheduler not running');
+    dot.className = 'w-1.5 h-1.5 rounded-full bg-amber-400 shrink-0';
+    detail.textContent = "This deployment's in-process scheduler is off (CULPRIT_SCHEDULER_ENABLED) - saved settings take effect once it's turned on.";
+    return;
+  }
+  if (view.enabled) {
+    pill('bg-emerald-50', 'text-emerald-700', 'Automatic · On');
+    dot.className = 'w-1.5 h-1.5 rounded-full bg-emerald-500 shrink-0';
+    detail.textContent = view.next_run_at
+      ? 'Next run: ' + new Date(view.next_run_at).toLocaleString()
+      : 'Next run time not available yet.';
+  } else {
+    pill('bg-gray-100', 'text-gray-500', 'Automatic · Off');
+    dot.className = 'w-1.5 h-1.5 rounded-full bg-gray-300 shrink-0';
+    detail.textContent = 'Not running automatically.';
+  }
+}
+
 async function loadSchedule() {
   const view = await (await fetch('settings/schedule')).json();
   document.getElementById('sched-enabled').checked = view.enabled;
@@ -471,21 +580,7 @@ async function loadSchedule() {
   document.getElementById('sched-scope').value = view.scope_name;
   syncPresetFromCron();
   applyScheduleEnabled();
-
-  const statusEl = document.getElementById('sched-status');
-  statusEl.textContent = '';
-  if (!view.scheduler_running) {
-    const span = document.createElement('span');
-    span.className = 'text-amber-600';
-    span.textContent = "This deployment's in-process scheduler is off (CULPRIT_SCHEDULER_ENABLED) - saved settings take effect once it's turned on.";
-    statusEl.appendChild(span);
-  } else if (view.enabled && view.next_run_at) {
-    statusEl.textContent = 'Next run: ' + new Date(view.next_run_at).toLocaleString();
-  } else if (view.enabled) {
-    statusEl.textContent = 'Enabled - next run time not available yet.';
-  } else {
-    statusEl.textContent = 'Not running automatically.';
-  }
+  renderScheduleStatus(view);
 }
 
 async function saveSchedule() {
