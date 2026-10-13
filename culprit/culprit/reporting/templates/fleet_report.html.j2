@@ -397,6 +397,29 @@ document.querySelectorAll('.verdict-widget').forEach(function (widget) {
   });
 });
 
+// Maps the execute route's structured {reason: ...} rejection bodies to
+// plain-English text - found in review: the fallback path (JSON.stringify
+// of the raw detail object) would otherwise print the literal internal
+// reason code (e.g. "not_phase2_candidate") straight onto the page, the
+// same class of "internal field name leaking into UI text" issue this
+// page's own "Automation candidate" heading was just cleaned up for.
+function describeRemediationError(detail, statusCode) {
+  if (typeof detail === 'string') return detail;
+  if (detail && typeof detail === 'object' && detail.reason) {
+    if (detail.reason === 'not_phase2_candidate') {
+      return 'This diagnosis is not currently marked as an automation candidate.';
+    }
+    if (detail.reason === 'promotion_bar_not_met') {
+      return 'This cause family no longer clears the precision gate (' + detail.sample_size + '/' + detail.min_sample +
+        ' reviewed, ' + Math.round(detail.precision * 100) + '% precision, needs ≥' + Math.round(detail.threshold * 100) + '%).';
+    }
+    if (detail.reason === 'action_type_not_supported_for_cause_family') {
+      return 'This action is not supported for this cause family.';
+    }
+  }
+  return detail ? JSON.stringify(detail) : ('HTTP ' + statusCode);
+}
+
 document.querySelectorAll('.remediation-widget').forEach(function (widget) {
   const runId = widget.dataset.runId;
   const clusterId = widget.dataset.clusterId;
@@ -433,8 +456,7 @@ document.querySelectorAll('.remediation-widget').forEach(function (widget) {
       });
       if (!res.ok) {
         const err = await res.json().catch(() => ({}));
-        const detail = typeof err.detail === 'string' ? err.detail : JSON.stringify(err.detail || ('HTTP ' + res.status));
-        throw new Error(detail);
+        throw new Error(describeRemediationError(err.detail, res.status));
       }
       const body = await res.json();
       status.className = 'remediation-status text-xs ' + (body.failed_count > 0 ? 'text-amber-600' : 'text-emerald-600');
