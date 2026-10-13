@@ -175,7 +175,7 @@ def test_fleet_report_html_trend_arrows_point_the_right_way(
     run, bundles = build_scenario()
     pipeline = Pipeline(session_factory=factory, rca_agent=ScriptedRCAAgent(), retrieval_store=default_retrieval_store())
     output = pipeline.run(run, bundles)
-    report = build_fleet_report(output, total_machines=312)
+    report = build_fleet_report(output, total_machines=312, bundles=bundles)
 
     trend = FleetTrend(
         previous_run_id="prev-run", previous_total_failed=99, previous_compliance_pct=80.0,

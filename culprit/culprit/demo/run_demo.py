@@ -57,7 +57,7 @@ def main() -> int:
     pipeline = Pipeline(session_factory=session_factory, rca_agent=rca_agent, retrieval_store=retrieval_store)
     output = pipeline.run(run, bundles)
 
-    report = build_fleet_report(output, total_machines=TOTAL_MACHINES)
+    report = build_fleet_report(output, total_machines=TOTAL_MACHINES, bundles=bundles)
 
     log.info("=" * 70)
     log.info("%d failed machines collapsed into %d clusters", report.total_failed, report.total_clusters)

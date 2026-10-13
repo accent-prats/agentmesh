@@ -49,20 +49,24 @@
   {% endif %}
 
   {% if report.machine_rows %}
-  {% set ns = namespace(failed=0, succeeded=0, other=0) %}
+  {# Discovery only ever pulls in non-Succeeded machines in the first place
+     (pipeline/discovery.py's Resource Graph query explicitly excludes them),
+     so every row here is some flavor of "didn't succeed" - a "Succeeded"
+     filter chip would structurally always read 0, in the demo and in
+     every real deployment alike. Found 2026-10-13 reviewing this exact
+     table - two buckets, not three. #}
+  {% set ns = namespace(failed=0, other=0) %}
   {% for row in report.machine_rows %}
     {% set st = (row.outcome.status if row.outcome else '')|lower %}
     {% if st == 'failed' %}{% set ns.failed = ns.failed + 1 %}
-    {% elif st == 'succeeded' %}{% set ns.succeeded = ns.succeeded + 1 %}
     {% else %}{% set ns.other = ns.other + 1 %}{% endif %}
   {% endfor %}
   <div class="bg-white rounded-2xl shadow-sm border border-gray-100 overflow-hidden mb-6">
     <div class="px-6 py-4 border-b border-gray-100 flex flex-wrap items-center gap-2.5">
-      <h2 class="font-semibold text-gray-900 text-sm mr-1">Machines</h2>
+      <h2 class="font-semibold text-gray-900 text-sm mr-1">Failed machines</h2>
       <div id="fr-status-filters" class="flex flex-wrap items-center gap-1.5">
         <button type="button" data-status="all" class="fr-filter-chip text-[11px] font-medium px-2.5 py-1 rounded-full border transition-colors bg-gray-900 text-white border-gray-900">All &middot; {{ report.machine_rows|length }}</button>
         <button type="button" data-status="failed" class="fr-filter-chip text-[11px] font-medium px-2.5 py-1 rounded-full border transition-colors bg-white text-gray-500 border-gray-200 hover:bg-gray-50">Failed &middot; {{ ns.failed }}</button>
-        <button type="button" data-status="succeeded" class="fr-filter-chip text-[11px] font-medium px-2.5 py-1 rounded-full border transition-colors bg-white text-gray-500 border-gray-200 hover:bg-gray-50">Succeeded &middot; {{ ns.succeeded }}</button>
         <button type="button" data-status="other" class="fr-filter-chip text-[11px] font-medium px-2.5 py-1 rounded-full border transition-colors bg-white text-gray-500 border-gray-200 hover:bg-gray-50">Other &middot; {{ ns.other }}</button>
       </div>
       <input type="text" id="fr-search" placeholder="Search machine or cause&hellip;"
@@ -83,7 +87,7 @@
         <tbody>
           {% for row in report.machine_rows %}
           {% set st = (row.outcome.status if row.outcome else '')|lower %}
-          {% set st_bucket = 'failed' if st == 'failed' else 'succeeded' if st == 'succeeded' else 'other' %}
+          {% set st_bucket = 'failed' if st == 'failed' else 'other' %}
           <tr class="border-b border-gray-50 hover:bg-gray-50/70"
             data-vm-name="{{ row.vm_name|lower }}" data-title="{{ row.title|lower }}"
             data-status="{{ st_bucket }}" data-confidence="{{ row.confidence }}">

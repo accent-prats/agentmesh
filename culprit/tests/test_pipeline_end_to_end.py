@@ -68,7 +68,7 @@ def test_fleet_report_totals_and_repeat_offender_detection(session_factory):
     run, bundles = build_scenario()
     pipeline = Pipeline(session_factory=session_factory, rca_agent=ScriptedRCAAgent(), retrieval_store=default_retrieval_store())
     output = pipeline.run(run, bundles)
-    report = build_fleet_report(output, total_machines=TOTAL_MACHINES)
+    report = build_fleet_report(output, total_machines=TOTAL_MACHINES, bundles=bundles)
 
     assert report.total_machines == TOTAL_MACHINES
     assert report.total_failed == 47
@@ -77,6 +77,32 @@ def test_fleet_report_totals_and_repeat_offender_detection(session_factory):
     # First run ever for this cluster_key - nothing should be flagged as a repeat yet.
     assert report.repeat_offender_count == 0
     assert report.entries[0].cluster.size == 19  # sorted largest-first
+
+
+def test_build_fleet_report_populates_machine_rows_from_bundles(session_factory):
+    """build_fleet_report is a second, independent FleetReport construction
+    path from db/repository.py::_load_fleet_report_core - used by
+    demo/run_demo.py (the actual event-demo script that writes a static
+    HTML report) and so needs machine_rows populated too, from each
+    bundle's own `outcome` rather than a MachineOutcomeRecord query (there
+    being no DB round-trip needed here - this is the pipeline's own
+    freshly in-memory output). Found 2026-10-13 reviewing the fleet report
+    table: this path silently produced an empty machine_rows - no error,
+    just a quietly missing table."""
+    run, bundles = build_scenario()
+    pipeline = Pipeline(session_factory=session_factory, rca_agent=ScriptedRCAAgent(), retrieval_store=default_retrieval_store())
+    output = pipeline.run(run, bundles)
+    report = build_fleet_report(output, total_machines=TOTAL_MACHINES, bundles=bundles)
+
+    assert len(report.machine_rows) == report.total_failed == 47
+    vm_names = {row.vm_name for row in report.machine_rows}
+    assert len(vm_names) == len(report.machine_rows)
+    # Every bundle always carries a real outcome (it's this run's own
+    # freshly-collected evidence, not a possibly-missing historical
+    # MachineOutcomeRecord) - None here would be a real bug, not a
+    # legitimate "predates outcome tracking" case.
+    assert all(row.outcome is not None for row in report.machine_rows)
+    assert all(row.outcome.status for row in report.machine_rows)
 
 
 def test_second_run_with_the_same_causes_is_flagged_as_repeat_offender(session_factory):
