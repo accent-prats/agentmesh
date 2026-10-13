@@ -1,8 +1,8 @@
 """Real connection tests for the settings screen's "Test connection"
 button - not stubs. Each function actually calls the provider and reports
 what happened; neither ever mutates anything (an auth-token fetch and a
-Resource Graph read for Azure, the Datadog SDK's own key-validation
-endpoint for Datadog).
+Resource Graph read for Azure, one of two read-only Datadog endpoints
+depending on credential shape - see test_datadog_credentials).
 
 AI provider credential testing lives in
 `shared/src/llm/credential_test.py` instead - it's a platform-level,
@@ -51,21 +51,26 @@ def test_azure_credentials(cfg: AzureSettingsInput) -> tuple[bool, str]:
 
 
 def test_datadog_credentials(cfg: DatadogSettingsInput) -> tuple[bool, str]:
-    """Uses Datadog's own AuthenticationApi.validate() - the documented,
-    lightweight way to check a credential without any side effects.
-    Builds the client the exact same way the real pipeline does
+    """Builds the client the exact same way the real pipeline does
     (`collectors/datadog_auth.py::configure_datadog_client`), whether
     that's a Personal Access Token or the classic API key/App key pair,
     so a pass here means the real run will authenticate the same way.
 
-    Note this specific call is a v1 API endpoint - Datadog's own PAT docs
-    only confirm PAT compatibility for v2 calls, so a pass here is good
-    evidence but not a guarantee that a PAT will also work for the v1
-    Metrics/Monitors collection the real pipeline also does (see
-    datadog_auth.py's docstring)."""
+    Two different validation calls, not one, because `/api/v1/validate`
+    (AuthenticationApi.validate(), used for an API key) predates
+    Application keys and PATs entirely and only ever checks DD-API-KEY -
+    confirmed via Datadog's own docs and curl example, which sends no
+    app-key header at all. A PAT lives in this app's DD-APPLICATION-KEY
+    slot (see datadog_auth.py), so /validate structurally cannot
+    authenticate one - it returns a clean 403 regardless of whether the
+    PAT itself is good (found 2026-10-13: a real, valid PAT failed "Test
+    connection" this way). `GET /api/v2/current_user` is Datadog's
+    documented PAT-compatible equivalent: no scope requirement beyond
+    being authenticated at all, same spirit as /validate for an API key."""
     try:
         from datadog_api_client import ApiClient
         from datadog_api_client.v1.api.authentication_api import AuthenticationApi
+        from datadog_api_client.v2.api.users_api import UsersApi
     except ImportError:
         return False, "datadog-api-client is not installed in this deployment"
 
@@ -80,10 +85,14 @@ def test_datadog_credentials(cfg: DatadogSettingsInput) -> tuple[bool, str]:
         configuration = configure_datadog_client(cfg)
 
         with ApiClient(configuration) as api_client:
-            response = AuthenticationApi(api_client).validate()
+            if cfg.personal_access_token:
+                response = UsersApi(api_client).get_current_user()
+                email = getattr(getattr(response.data, "attributes", None), "email", "")
+                return True, f"Authenticated via {via}" + (f" as {email}" if email else "")
 
-        if response.valid:
-            return True, f"Authenticated via {via}"
-        return False, f"Datadog reported {via} as invalid"
+            response = AuthenticationApi(api_client).validate()
+            if response.valid:
+                return True, f"Authenticated via {via}"
+            return False, f"Datadog reported {via} as invalid"
     except Exception as exc:  # noqa: BLE001
         return False, f"Tried {via}: {str(exc)[:480]}"

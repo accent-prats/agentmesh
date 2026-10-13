@@ -31,14 +31,16 @@ pair on the **`/settings` screen** - the screen's "Authentication method"
 toggle picks which. The API key needs read scope only (metrics, monitors,
 logs read) - no write scope is used anywhere in
 `collectors/datadog_collector.py`. A Personal Access Token is Datadog's
-newer alternative, documented for v2 API calls (confirmed to work for this
-app's v2 Logs collection); v1 compatibility for the Metrics/Monitors
-collection this app also does isn't documented either way by Datadog as of
-2026-10, and PATs are a Preview feature on Datadog's side - see
-`collectors/datadog_auth.py`'s docstring before relying on one in
-production. The standard `DD_API_KEY`/`DD_APP_KEY`/`DD_SITE` env vars still
-work as a fallback if nothing is saved on the settings screen (the Datadog
-SDK's own env resolution - there's no PAT equivalent env var). Install
+newer alternative - it's a Preview feature on Datadog's side as of 2026-10,
+and is placed in the same slot an Application key would occupy (see
+`collectors/datadog_auth.py`'s docstring), so it's expected to work
+anywhere `app_key` already did (Metrics, Monitors, Logs), but this hasn't
+been exercised against a real Datadog org for metrics/monitor collection
+specifically - **Test connection** on the settings screen verifies real
+authentication either way. The standard `DD_API_KEY`/`DD_APP_KEY`/`DD_SITE`
+env vars still work as a fallback if nothing is saved on the settings
+screen (the Datadog SDK's own env resolution - there's no PAT equivalent
+env var). Install
 with `pip install -e ".[datadog]"`.
 
 ## Connection settings (the `/settings` screen)
