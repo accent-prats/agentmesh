@@ -163,7 +163,7 @@ def runs_page() -> str:
 
     with deps.get_session_factory()() as session:
         runs = repository.list_runs(session)
-    return render_runs_html(runs)
+    return render_runs_html(runs, demo_enabled=config.settings.demo_enabled)
 
 
 @app.get("/login", response_model=None)

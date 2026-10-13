@@ -51,3 +51,15 @@ def test_demo_disabled_404s_the_route_and_hides_the_card(client, monkeypatch):
     # The "Live analysis" card (real Azure/Datadog config) must still be
     # there - disabling the demo isn't disabling the whole console page.
     assert "Live analysis" in html
+
+
+def test_demo_disabled_runs_page_empty_state_does_not_mention_the_demo(client, monkeypatch):
+    """Found reviewing the gating work: the Runs page's empty state told a
+    user with no runs yet to "trigger the demo scenario" from the Console -
+    stale advice once that button no longer exists there."""
+    monkeypatch.setattr(config, "settings", config.Settings(demo_enabled=False))
+
+    html = client.get("/runs.html").text
+    assert "No runs yet" in html
+    assert "demo scenario" not in html.lower()
+    assert "live analysis" in html.lower()

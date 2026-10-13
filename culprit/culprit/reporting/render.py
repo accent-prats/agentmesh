@@ -23,12 +23,15 @@ def render_fleet_report_html(report: FleetReport) -> str:
     return template.render(report=report, active="console", nav_prefix="../../")
 
 
-def render_runs_html(runs) -> str:
+def render_runs_html(runs, demo_enabled: bool = True) -> str:
     """The Runs list page - "which update jobs is Culprit monitoring",
     most recent first (culprit/db/repository.py::list_runs). Root-level,
-    same depth as console/settings/precision.html."""
+    same depth as console/settings/precision.html. `demo_enabled` only
+    affects the empty-state copy (it points at the Console's demo
+    button, which shouldn't be mentioned when that button doesn't
+    exist) - see render_console_html."""
     template = _env().get_template("runs.html.j2")
-    return template.render(runs=runs, active="runs")
+    return template.render(runs=runs, active="runs", demo_enabled=demo_enabled)
 
 
 def render_console_html(demo_enabled: bool = True) -> str:

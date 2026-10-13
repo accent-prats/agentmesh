@@ -54,7 +54,11 @@
   </div>
   {% else %}
   <div class="bg-white rounded-2xl shadow-sm border border-gray-100 p-8 text-center text-gray-400 text-sm">
+    {% if demo_enabled %}
     No runs yet. Trigger the demo scenario or a live analysis from the <a href="." class="text-brand hover:text-brand-dark font-medium">Console</a> to see one here.
+    {% else %}
+    No runs yet. Trigger a live analysis from the <a href="." class="text-brand hover:text-brand-dark font-medium">Console</a> to see one here.
+    {% endif %}
   </div>
   {% endif %}
 
