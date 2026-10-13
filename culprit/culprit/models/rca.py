@@ -78,6 +78,15 @@ class RemediationPlaybook(BaseModel):
     rollback: str = ""
     phase2_candidate: bool = False
     phase2_rationale: str = ""
+    # Structured target for remediation execution (culprit/remediation/) -
+    # `immediate_fix`/`preventive_fix` are free text for a human to read,
+    # not for a route to parse. A diagnosis that sets phase2_candidate=True
+    # and has a wired automated action (see routes_remediation.py's
+    # SUPPORTED_ACTIONS) populates whatever parameters that action needs
+    # here - e.g. disk cleanup's {"mount": "/var"}. Untyped (plain strings)
+    # since each action type needs different parameters; the action's own
+    # executor is what validates/interprets its own keys.
+    automation_params: dict[str, str] = Field(default_factory=dict)
 
 
 class RCAResult(BaseModel):

@@ -12,12 +12,17 @@ unambiguous ones with a deterministic rule engine, and hands the
 genuinely ambiguous tail to Claude for deep reasoning - never the other
 way around.
 
-This is **Phase 1**: analysis and remediation guidance. It is read-only by
-construction - the credential it runs as has no write permission to any
-resource, anywhere. See [`SECURITY.md`](SECURITY.md) for exactly what that
-means and why. Phase 2 (automated remediation) is a separate, later
-decision gated on measured per-cause-family precision - see
-[`ARCHITECTURE.md`](ARCHITECTURE.md#the-phase-2-gate).
+This is primarily **Phase 1**: analysis and remediation guidance, read-only
+by construction - the credential it runs as has no write permission to any
+ARM resource, anywhere. See [`SECURITY.md`](SECURITY.md) for exactly what
+that means and why. One deliberately narrow slice of Phase 2 is live on
+top of that: a single, hardcoded, reviewed automated action (disk
+cleanup), gated on measured per-cause-family precision and a required
+human confirmation per action, off by default
+(`CULPRIT_REMEDIATION_ENABLED`) - see
+[`ARCHITECTURE.md`](ARCHITECTURE.md#the-phase-2-gate) and
+[`SECURITY.md`](SECURITY.md)'s "Remediation execution" section. Every
+other cause family's fix still surfaces as guidance only.
 
 The design rationale for every choice below - why cluster before
 diagnosing, why rules run before the model, why the RCA output is
@@ -120,6 +125,8 @@ uvicorn culprit.api.main:app --reload
 # GET  /runs/{run_id}/machines/{vm_name}.html  - one machine's own patch outcome (status, error, failed KB/package) plus its deviation from its cluster
 # POST /verdicts              - submit an engineer verdict on an RCA card
 # GET  /precision, /precision.html  - per-cause-family precision + Phase 2 gate status (JSON/HTML)
+# POST /remediation/runs/{run_id}/clusters/{cluster_id}/execute  - run the one gated automated action (needs CULPRIT_REMEDIATION_ENABLED=true)
+# GET  /remediation/log, /remediation/log.html  - every remediation action ever taken (JSON/HTML)
 # GET  /preflight              - the latest pre-flight scan's findings (see Scheduling in RUNBOOK.md)
 # POST /chat                   - "why did vm-x fail?" / "what's failing across the fleet?" /
 #                                 "which machines will fail next?" (reads the pre-flight scan)
@@ -150,6 +157,7 @@ culprit/
   memory/         mem0-backed episodic memory (optional - pip install 'culprit[memory]')
   db/             SQLAlchemy persistence (SQLite by default, Postgres-ready)
   reporting/      fleet report model, HTML rendering, Teams/Slack notification
+  remediation/    the one gated, hardcoded automated action (disk cleanup) and its Run Command execution
   api/            FastAPI app
   scheduler/      cron (scheduled + pre-flight) and Event Grid webhook receiver
   security/       RBAC role definition, secret/PII scrubbing
@@ -176,6 +184,8 @@ subscription.
   real, working, dependency-light TF-IDF-style store on purpose - it
   doesn't grow and doesn't need real embeddings to search well. Confirmed
   RCAs *are* on a real vector store now, optionally - see `memory/`.
-- **Phase 2 (automated remediation).** Deliberately not started - it's a
-  later decision, gated on the precision numbers this Phase 1 build
-  produces.
+- **Phase 2 beyond disk cleanup.** One cause family (capacity/disk
+  exhaustion) has a real, gated, human-confirmed automated action - see
+  `culprit/remediation/`. Every other `phase2_candidate=True` diagnosis
+  still surfaces a human playbook only, pending its own reviewed action
+  and precision clearance.

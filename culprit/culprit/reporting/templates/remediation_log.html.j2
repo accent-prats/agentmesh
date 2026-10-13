@@ -1,0 +1,150 @@
+{% extends "base.html.j2" %}
+{% block title %}Remediation log{% endblock %}
+
+{% block content %}
+<div class="max-w-5xl mx-auto px-8 py-10">
+
+  <h1 class="text-2xl font-bold text-gray-900 tracking-tight">Remediation log</h1>
+  <p class="text-sm text-gray-500 mt-1 mb-6 max-w-2xl">
+    Every automated remediation Culprit has ever executed - what ran, on which
+    machine, who confirmed it, and whether it succeeded. See the
+    <a href="{{ nav_prefix|default('') }}precision.html" class="text-brand hover:text-brand-dark font-medium">Precision gate</a>
+    for which cause families are currently eligible, and a cluster's own
+    Fleet Report for where to trigger one.
+  </p>
+
+  {% if records %}
+  <div class="grid grid-cols-2 sm:grid-cols-4 gap-px bg-gray-100 border border-gray-100 rounded-xl overflow-hidden mb-5">
+    <div class="bg-white px-4 py-3.5"><b id="stat-total" class="block text-2xl font-bold text-gray-900 tabular-nums">{{ records|length }}</b><span class="block text-[11px] text-gray-400 mt-1">Actions shown</span></div>
+    <div class="bg-white px-4 py-3.5"><b id="stat-success" class="block text-2xl font-bold text-gray-900 tabular-nums">0</b><span class="block text-[11px] text-gray-400 mt-1">Succeeded</span></div>
+    <div class="bg-white px-4 py-3.5"><b id="stat-failed" class="block text-2xl font-bold text-gray-900 tabular-nums">0</b><span class="block text-[11px] text-gray-400 mt-1">Failed</span></div>
+    <div class="bg-white px-4 py-3.5"><b id="stat-machines" class="block text-2xl font-bold text-gray-900 tabular-nums">0</b><span class="block text-[11px] text-gray-400 mt-1">Distinct machines</span></div>
+  </div>
+
+  <div class="flex flex-wrap items-center gap-3 mb-4">
+    <div class="relative flex-1 min-w-[220px] max-w-sm">
+      <i data-lucide="search" class="w-4 h-4 text-gray-400 absolute left-3 top-1/2 -translate-y-1/2 pointer-events-none"></i>
+      <input id="log-search" type="text" placeholder="Search machine, requester, or message&hellip;"
+        class="w-full border border-gray-300 rounded-lg pl-9 pr-3 py-2 text-sm focus:ring-2 focus:ring-brand focus:border-brand focus:outline-none">
+    </div>
+    <select id="log-filter-status" class="border border-gray-300 rounded-lg px-3 py-2 text-sm text-gray-700 focus:ring-2 focus:ring-brand focus:border-brand focus:outline-none">
+      <option value="">All statuses</option>
+      <option value="success">Success</option>
+      <option value="failed">Failed</option>
+    </select>
+  </div>
+
+  <div class="bg-white rounded-2xl shadow-sm border border-gray-100 overflow-hidden">
+    <table class="w-full text-sm table-fixed">
+      <thead class="bg-gray-50 text-[11px] text-gray-500 uppercase tracking-wide">
+        <tr>
+          <th class="px-5 py-3 text-left w-[16%] cursor-pointer select-none hover:text-gray-700" onclick="sortLog('when')">
+            <span id="sort-label-when" class="inline-flex items-center gap-1">When <span id="sort-arrow-when" class="text-brand text-[9px]"></span></span>
+          </th>
+          <th class="px-5 py-3 text-left w-[18%]">Machine</th>
+          <th class="px-5 py-3 text-left w-[14%]">Cause family</th>
+          <th class="px-5 py-3 text-left w-[12%]">Action</th>
+          <th class="px-5 py-3 text-left w-[14%]">Requested by</th>
+          <th class="px-5 py-3 text-left w-[10%]">Status</th>
+          <th class="px-5 py-3 text-left w-[16%]">Message</th>
+        </tr>
+      </thead>
+      <tbody class="divide-y divide-gray-100" id="log-tbody">
+        {% for r in records %}
+        <tr class="log-row hover:bg-gray-50/60 cursor-pointer"
+          data-when="{{ r.requested_at.isoformat() }}" data-vm="{{ r.vm_name|lower }}"
+          data-requested-by="{{ r.requested_by|lower }}" data-message="{{ r.message|lower }}"
+          data-status="{{ r.status.value }}"
+          onclick="window.location.href='../runs/{{ r.run_id }}/report.html'">
+          <td class="px-5 py-3.5 text-gray-600 whitespace-nowrap">{{ r.requested_at.strftime('%Y-%m-%d %H:%M UTC') }}</td>
+          <td class="px-5 py-3.5 overflow-hidden"><span class="font-medium text-gray-900 truncate block">{{ r.vm_name }}</span></td>
+          <td class="px-5 py-3.5 text-gray-600">{{ r.cause_family.value|replace('_', ' ')|capitalize }}</td>
+          <td class="px-5 py-3.5 text-gray-600">{{ r.action_type.value|replace('_', ' ')|capitalize }}</td>
+          <td class="px-5 py-3.5 text-gray-600 truncate">{{ r.requested_by }}</td>
+          <td class="px-5 py-3.5">
+            {% if r.status.value == 'success' %}
+            <span class="text-[10px] font-semibold uppercase tracking-wide px-2 py-0.5 rounded-full bg-emerald-50 text-emerald-700 border border-emerald-200">Success</span>
+            {% else %}
+            <span class="text-[10px] font-semibold uppercase tracking-wide px-2 py-0.5 rounded-full bg-red-50 text-red-600 border border-red-200">Failed</span>
+            {% endif %}
+          </td>
+          <td class="px-5 py-3.5 text-gray-400 text-xs truncate" title="{{ r.message }}">{{ r.message }}</td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+    <div id="log-empty-filtered" class="hidden p-8 text-center text-gray-400 text-sm">
+      No actions match your search or filters.
+    </div>
+  </div>
+  {% else %}
+  <div class="bg-white rounded-2xl shadow-sm border border-gray-100 p-8 text-center text-gray-400 text-sm">
+    No remediation actions recorded yet. A cluster becomes eligible once its
+    diagnosis is marked phase2_candidate and its cause family clears the
+    <a href="{{ nav_prefix|default('') }}precision.html" class="text-brand hover:text-brand-dark font-medium">precision gate</a> -
+    "Run remediation" then appears on that cluster's own Fleet Report entry.
+  </div>
+  {% endif %}
+
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+const logRows = Array.from(document.querySelectorAll('#log-tbody .log-row'));
+let logSortState = { key: 'when', dir: 'desc' };
+
+function applyLogFilters() {
+  if (logRows.length === 0) return;
+  const q = document.getElementById('log-search').value.trim().toLowerCase();
+  const status = document.getElementById('log-filter-status').value;
+
+  let visible = 0, success = 0, failed = 0;
+  const machines = new Set();
+
+  logRows.forEach(function (row) {
+    const matchesQuery = !q || row.dataset.vm.includes(q) || row.dataset.requestedBy.includes(q) || row.dataset.message.includes(q);
+    const matchesStatus = !status || row.dataset.status === status;
+    const isVisible = matchesQuery && matchesStatus;
+    row.classList.toggle('hidden', !isVisible);
+    if (isVisible) {
+      visible++;
+      if (row.dataset.status === 'success') success++;
+      if (row.dataset.status === 'failed') failed++;
+      machines.add(row.dataset.vm);
+    }
+  });
+
+  document.getElementById('stat-total').textContent = visible;
+  document.getElementById('stat-success').textContent = success;
+  document.getElementById('stat-failed').textContent = failed;
+  document.getElementById('stat-machines').textContent = machines.size;
+  document.getElementById('log-empty-filtered').classList.toggle('hidden', visible > 0);
+}
+
+function sortLog(key) {
+  if (logSortState.key === key) {
+    logSortState.dir = logSortState.dir === 'asc' ? 'desc' : 'asc';
+  } else {
+    logSortState = { key: key, dir: 'desc' };
+  }
+  const dir = logSortState.dir === 'asc' ? 1 : -1;
+  const sorted = logRows.slice().sort(function (a, b) {
+    const av = a.dataset.when, bv = b.dataset.when;
+    if (av < bv) return -1 * dir;
+    if (av > bv) return 1 * dir;
+    return 0;
+  });
+  const tbody = document.getElementById('log-tbody');
+  sorted.forEach(function (row) { tbody.appendChild(row); });
+  const arrow = document.getElementById('sort-arrow-when');
+  arrow.textContent = logSortState.dir === 'asc' ? '▲' : '▼';
+}
+
+if (logRows.length > 0) {
+  document.getElementById('log-search').addEventListener('input', applyLogFilters);
+  document.getElementById('log-filter-status').addEventListener('change', applyLogFilters);
+  applyLogFilters();
+}
+</script>
+{% endblock %}

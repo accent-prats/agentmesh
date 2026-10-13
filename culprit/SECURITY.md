@@ -1,8 +1,13 @@
 # Security
 
-Phase 1 is read-only by construction: the credential Culprit runs as
-cannot change a resource, not because it's told not to, but because it
-has no permission to.
+Culprit's diagnosis path is read-only by construction: the credential it
+runs as has no RBAC write permission to any ARM resource, and nothing in
+collection or deep RCA can invoke anything but a read - not because it's
+told not to, but because it has no permission to. The one deliberate
+exception is remediation execution (see "Remediation execution" below) -
+a small, explicitly reviewed, hardcoded allow-listed action, gated on a
+precision threshold re-verified live and a required human confirmation
+per action, off by default.
 
 ## Application authentication (`CULPRIT_API_TOKEN` + Portal SSO)
 
@@ -266,11 +271,41 @@ Log/Datadog read happens under the identity's own audit trail in that
 service - Culprit does not add a separate audit log for reads that Azure
 and Datadog already log natively.
 
+## Remediation execution
+
+The one deliberate exception to "read-only by construction": a single
+hardcoded, allow-listed disk-cleanup action (`culprit/remediation/`,
+`POST /remediation/runs/{run_id}/clusters/{cluster_id}/execute`). It can
+only run when **all** of the following hold at the moment of the request,
+re-verified live every time, never cached or trusted from an earlier
+check:
+
+- `CULPRIT_REMEDIATION_ENABLED=true` is explicitly set - **off by
+  default**.
+- The specific diagnosis is marked `phase2_candidate=True`.
+- The diagnosed cause family currently clears the precision gate
+  (`>=95%` precision over `>=50` reviewed instances, same bar `/precision`
+  shows).
+- A human supplies their own identity (`requested_by`) and explicitly
+  confirms the action for that specific cluster.
+
+There is no fully-autonomous or zero-touch path, ever, even for a cause
+family that has cleared every other condition. The RBAC role this reuses
+(`culprit-reader-role.json`) already grants the Run Command `DataAction`
+needed - no new Azure permission was added for this; the only boundary is
+the fixed script content reviewed into `culprit/remediation/scripts.py`,
+held to the same "extending this needs a code review, not a config
+change" bar the read-only collectors' own allow-lists already use.
+
 ## Reporting a concern
 
-This is a Phase 1, read-only analysis tool with no write path to
-production infrastructure. If you find a way for it to change a resource,
-exfiltrate a secret past `scrub.py`, or have the RCA agent take an action
-beyond returning its structured finding, that's a bug against the
-guarantees stated above - treat it as a priority fix, not a Phase 2
-concern.
+Culprit's analysis/diagnosis path remains read-only with no write path to
+production infrastructure - the RCA agent still has no tool beyond
+`submit_rca_finding`. Remediation execution (above) is the one narrow,
+deliberate exception, bounded by every condition listed there. If you
+find a way for it to change a resource outside remediation execution,
+exfiltrate a secret past `scrub.py`, have the RCA agent take an action
+beyond returning its structured finding, or execute a remediation action
+missing any one of the conditions above (flag off, not phase2_candidate,
+gate not met, or no human confirmation), that's a bug against the
+guarantees stated above - treat it as a priority fix.

@@ -45,6 +45,17 @@ class Fingerprint(BaseModel):
 class ClusterMember(BaseModel):
     vm_id: str
     vm_name: str
+    # Added for remediation execution (culprit/remediation/) - Run Command
+    # needs (resource_group, vm_name, subscription_id) to target a real VM,
+    # and a cluster's own members are the only persisted record of "which
+    # machines" past the run that collected them (the richer, transient
+    # MachineIdentity is discarded once the run completes). Not os_family -
+    # every member of a cluster already shares one via Fingerprint.os_family,
+    # by construction (clustering groups on fingerprint equality). Blank on
+    # any cluster persisted before this field existed - handled as a
+    # per-machine remediation failure, not a crash.
+    resource_group: str = ""
+    subscription_id: str = ""
     deviation_notes: list[str] = Field(
         default_factory=list,
         description="Ways this machine's evidence differs from the cluster's representative "

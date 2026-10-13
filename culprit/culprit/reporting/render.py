@@ -11,16 +11,45 @@ _TEMPLATE_DIR = Path(__file__).parent / "templates"
 
 
 def _env() -> Environment:
-    return Environment(loader=FileSystemLoader(str(_TEMPLATE_DIR)), autoescape=select_autoescape(["html"]))
+    # remediation_enabled is a Jinja *global*, not a per-call render
+    # kwarg, specifically so base.html.j2's shared nav (extended by every
+    # page) can gate the "Remediation log" link on it without threading
+    # a new parameter through every single render_*_html function and
+    # call site - every template already goes through this one function,
+    # so this is the one place that needs to know about the flag at all.
+    # supported_action_families/promotion_threshold/promotion_min_sample
+    # are static, process-wide config too (not per-request data like
+    # family_precision, which stays an explicit render parameter) - same
+    # reasoning, same treatment.
+    from culprit.config import settings
+    from culprit.models.remediation import SUPPORTED_ACTIONS
+
+    env = Environment(loader=FileSystemLoader(str(_TEMPLATE_DIR)), autoescape=select_autoescape(["html"]))
+    env.globals["remediation_enabled"] = settings.remediation_enabled
+    env.globals["supported_action_families"] = SUPPORTED_ACTIONS
+    env.globals["promotion_threshold"] = settings.promotion_precision_threshold
+    env.globals["promotion_min_sample"] = settings.promotion_min_sample
+    return env
 
 
-def render_fleet_report_html(report: FleetReport) -> str:
+def render_fleet_report_html(report: FleetReport, family_precision=None) -> str:
+    """`family_precision` (dict[CauseFamily, FamilyPrecision]) is a
+    render-only input, deliberately kept off `FleetReport` itself (that
+    model is also returned as plain JSON from GET /runs/{run_id}/report) -
+    same "UI-only data stays a render parameter, not a model field"
+    convention render_console_html already uses for `demo_enabled`. Used
+    to decide what the "Run remediation" control under each cluster's
+    Phase 2 badge shows once a family clears the gate - see
+    routes_runs.py::get_report_html for where it's computed.
+    `remediation_enabled` itself is a Jinja global (see _env()), not
+    passed here - whether the button exists at all vs. not rendering is
+    gated in the template directly."""
     template = _env().get_template("fleet_report.html.j2")
     # This page lives two levels below the app root (runs/{id}/report.html),
     # unlike every other page here - nav_prefix corrects the shared sidebar's
     # otherwise-root-relative links (base.html.j2) so they still resolve
     # correctly from this depth.
-    return template.render(report=report, active="console", nav_prefix="../../")
+    return template.render(report=report, active="console", nav_prefix="../../", family_precision=family_precision or {})
 
 
 def render_runs_html(runs, demo_enabled: bool = True) -> str:
@@ -125,6 +154,21 @@ def render_precision_html(precision: dict) -> str:
     clears the promotion bar."""
     template = _env().get_template("precision.html.j2")
     return template.render(active="precision", precision=precision)
+
+
+def render_remediation_log_html(records) -> str:
+    """The Phase 2 remediation audit log - every automated action ever
+    taken, most recent first (culprit/db/repository.py::
+    list_remediation_actions). Served at /remediation/log.html - one level
+    below the app root (routes_remediation.py's router has
+    prefix="/remediation") - nav_prefix corrects the shared sidebar's
+    otherwise-root-relative links/static assets so they still resolve
+    correctly from this depth, same reasoning as render_fleet_report_html's
+    own nav_prefix. Found live via Playwright: without this, the page
+    requested static/tailwind.js as /remediation/static/tailwind.js and
+    rendered completely unstyled."""
+    template = _env().get_template("remediation_log.html.j2")
+    return template.render(active="remediation", records=records, nav_prefix="../")
 
 
 def render_login_html(next_path: str = "/", error: str = "") -> str:

@@ -184,10 +184,45 @@ monitoring," the report's zeroth altitude.
 is the entire gate: `sample_size >= 50 and precision >= 0.95` (both
 configurable via `CULPRIT_PROMOTION_MIN_SAMPLE` / `CULPRIT_PROMOTION_THRESHOLD`).
 `GET /precision` is the one view that decision gets made from. Nothing in
-this repository promotes a family automatically - the gate produces a
-number and a boolean; a human decision is still required, deliberately.
+this repository promotes a family to fully autonomous action - the gate
+produces a number and a boolean, re-read live on every single execution
+attempt, never cached or trusted from an earlier check. A human decision
+is required for every individual remediation, even for a cause family
+that has cleared the gate - see "Remediation execution" below.
+
+## Remediation execution
+
+The one place `meets_promotion_bar()` and a diagnosis's own
+`phase2_candidate` flag (set per-diagnosis by the rule engine/RCA agent,
+asserting "this kind of fix is mechanical/bounded/reversible" -
+independent of precision data) are AND'd together and actually acted on:
+`api/routes_remediation.py::execute_remediation`. Both conditions are
+re-checked fresh on every request, alongside a feature flag
+(`CULPRIT_REMEDIATION_ENABLED`, off by default) and a required
+caller-supplied `requested_by` - there is no code path that skips any of
+these, and no fully-autonomous/zero-touch variant exists anywhere.
+
+`culprit/remediation/` holds the one wired action (disk cleanup,
+`CauseFamily.CAPACITY`) - `scripts.py`'s allow-listed Linux/Windows
+scripts, executed via `runner.py`'s `RemediationRunner` (mirrors
+`collectors/guest_linux.py`'s exact Run Command invocation pattern). Every
+attempt, success or failure, is persisted to `RemediationActionRecord`
+(`db/models.py`) - an append-only audit log, not an upsert, since the same
+machine can legitimately be remediated more than once over time - readable
+at `GET /remediation/log.html`.
+
+See `SECURITY.md`'s "Remediation execution" section for the full
+guarantee this is held to.
 
 ## Design deviations from a literal reading of the proposal, and why
+
+- **Phase 2 scoped to exactly one cause family's one action, not a
+  generic automation framework.** `phase2_candidate=True` is necessary but
+  not sufficient to execute - a wired `action_type` in
+  `models/remediation.py::SUPPORTED_ACTIONS` is also required, so every
+  other `phase2_candidate` family still surfaces a human playbook only
+  until it gets its own reviewed `RemediationRunner` method and allow-listed
+  script.
 
 - **No separate "Advisor" LLM call.** Both the rule engine and the RCA
   agent produce a `RemediationPlaybook` directly as part of their own

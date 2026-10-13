@@ -135,13 +135,19 @@ def get_report_html(run_id: str):
     from fastapi.responses import HTMLResponse
 
     from culprit.db import repository
+    from culprit.models.verdict import compute_family_precision
     from culprit.reporting.render import render_fleet_report_html
 
     with deps.get_session_factory()() as session:
         report = repository.load_fleet_report(session, run_id)
-    if report is None:
-        raise HTTPException(status_code=404, detail=f"Run {run_id} not found")
-    return HTMLResponse(render_fleet_report_html(report))
+        if report is None:
+            raise HTTPException(status_code=404, detail=f"Run {run_id} not found")
+        # Read fresh on every render, same as the execute route itself -
+        # this is what lets the "eligible once X clears review: N/50..."
+        # message stay accurate as verdicts are submitted, not a stale
+        # snapshot from whenever the page was last generated.
+        family_precision = compute_family_precision(repository.all_verdicts(session))
+    return HTMLResponse(render_fleet_report_html(report, family_precision=family_precision))
 
 
 @router.get("/{run_id}/machines/{vm_name}.html")

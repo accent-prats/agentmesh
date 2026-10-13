@@ -93,6 +93,7 @@ def rule_disk_exhaustion(ctx: RuleContext) -> RCAResult | None:
             preventive_risk=RiskLevel.MEDIUM,
             phase2_candidate=True,
             phase2_rationale="Mechanical, bounded, verifiable, and trivially reversible.",
+            automation_params={"mount": mount},
         ),
     )
 

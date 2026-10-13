@@ -220,6 +220,47 @@
         {% endif %}
         {{ entry.result.remediation.phase2_rationale }}
       </p>
+
+      {% if entry.result.remediation.phase2_candidate and entry.result.cause_family in supported_action_families %}
+        {% set fp = family_precision.get(entry.result.cause_family) %}
+        {% set action_type = supported_action_families[entry.result.cause_family] %}
+        {% if remediation_enabled and fp and fp.meets_promotion_bar(promotion_threshold, promotion_min_sample) %}
+        <div class="remediation-widget mb-4 p-4 rounded-xl bg-gray-50 border border-gray-200"
+          data-run-id="{{ report.run.run_id }}" data-cluster-id="{{ entry.cluster.cluster_id }}" data-action-type="{{ action_type.value }}">
+          <h6 class="text-[10px] font-semibold uppercase tracking-wide text-gray-400 mb-2">Run remediation</h6>
+          <p class="text-xs text-gray-500 mb-3">
+            {{ entry.cluster.size }} machine{{ 's' if entry.cluster.size != 1 else '' }} in this cluster - all are
+            targeted unless you uncheck one below.
+          </p>
+          <div class="flex flex-wrap gap-x-4 gap-y-1.5 mb-3 max-h-24 overflow-y-auto">
+            {% for m in entry.cluster.members %}
+            <label class="flex items-center gap-1.5 text-xs text-gray-600 cursor-pointer">
+              <input type="checkbox" class="remediation-vm-checkbox accent-brand" value="{{ m.vm_id }}" checked> {{ m.vm_name }}
+            </label>
+            {% endfor %}
+          </div>
+          <div class="flex flex-wrap items-center gap-2">
+            <input type="text" class="requested-by-input border border-gray-200 rounded-lg px-2.5 py-1.5 text-xs w-40" placeholder="your email">
+            <button type="button" class="remediation-run-btn px-3 py-1.5 rounded-lg text-xs font-medium bg-brand hover:bg-brand-dark text-white">
+              Remediate {{ entry.cluster.size }} machine{{ 's' if entry.cluster.size != 1 else '' }}
+            </button>
+            <span class="remediation-status text-xs text-gray-400"></span>
+          </div>
+          <div class="remediation-results mt-3 space-y-1 text-xs"></div>
+        </div>
+        {% elif fp %}
+        <p class="text-xs text-gray-500 mb-4">
+          Eligible once {{ entry.result.cause_family.value|replace('_', ' ') }} clears review:
+          {{ fp.sample_size }}/{{ promotion_min_sample }} reviewed, {{ "%.0f"|format(fp.precision * 100) }}% precision
+          (needs &ge;{{ "%.0f"|format(promotion_threshold * 100) }}%).
+        </p>
+        {% else %}
+        <p class="text-xs text-gray-500 mb-4">
+          Eligible once {{ entry.result.cause_family.value|replace('_', ' ') }} clears review:
+          0/{{ promotion_min_sample }} reviewed.
+        </p>
+        {% endif %}
+      {% endif %}
       {% endif %}
 
       <p class="text-xs text-gray-400 pt-3 mt-1 border-t border-gray-100">
@@ -346,6 +387,66 @@ document.querySelectorAll('.verdict-widget').forEach(function (widget) {
         widget.querySelectorAll('.verdict-btn').forEach(b => b.disabled = false);
       }
     });
+  });
+});
+
+document.querySelectorAll('.remediation-widget').forEach(function (widget) {
+  const runId = widget.dataset.runId;
+  const clusterId = widget.dataset.clusterId;
+  const actionType = widget.dataset.actionType;
+  const status = widget.querySelector('.remediation-status');
+  const resultsEl = widget.querySelector('.remediation-results');
+  const requestedByInput = widget.querySelector('.requested-by-input');
+  const runBtn = widget.querySelector('.remediation-run-btn');
+
+  runBtn.addEventListener('click', async function () {
+    const requestedBy = requestedByInput.value.trim();
+    if (!requestedBy) {
+      status.className = 'remediation-status text-xs text-red-600';
+      status.textContent = 'Enter your email first.';
+      return;
+    }
+    const vmIds = Array.from(widget.querySelectorAll('.remediation-vm-checkbox:checked')).map(cb => cb.value);
+    if (vmIds.length === 0) {
+      status.className = 'remediation-status text-xs text-red-600';
+      status.textContent = 'Select at least one machine.';
+      return;
+    }
+
+    runBtn.disabled = true;
+    status.className = 'remediation-status text-xs text-gray-400';
+    status.textContent = 'Running…';
+    resultsEl.innerHTML = '';
+
+    try {
+      const res = await fetch('../../remediation/runs/' + runId + '/clusters/' + clusterId + '/execute', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ action_type: actionType, requested_by: requestedBy, vm_ids: vmIds }),
+      });
+      if (!res.ok) {
+        const err = await res.json().catch(() => ({}));
+        const detail = typeof err.detail === 'string' ? err.detail : JSON.stringify(err.detail || ('HTTP ' + res.status));
+        throw new Error(detail);
+      }
+      const body = await res.json();
+      status.className = 'remediation-status text-xs ' + (body.failed_count > 0 ? 'text-amber-600' : 'text-emerald-600');
+      status.textContent = body.succeeded_count + ' succeeded, ' + body.failed_count + ' failed.';
+      body.results.forEach(function (r) {
+        const row = document.createElement('div');
+        row.className = 'flex items-center gap-2 ' + (r.status === 'success' ? 'text-emerald-700' : 'text-red-600');
+        const dot = document.createElement('span');
+        dot.className = 'inline-block w-1.5 h-1.5 rounded-full ' + (r.status === 'success' ? 'bg-emerald-500' : 'bg-red-500');
+        row.appendChild(dot);
+        row.appendChild(document.createTextNode(r.vm_name + ' — ' + r.message));
+        resultsEl.appendChild(row);
+      });
+    } catch (err) {
+      status.className = 'remediation-status text-xs text-red-600';
+      status.textContent = 'Failed: ' + err.message;
+    } finally {
+      runBtn.disabled = false;
+    }
   });
 });
 </script>

@@ -165,6 +165,8 @@ def cluster_run(run_id: str, bundles: list[EvidenceBundle]) -> list[Cluster]:
             ClusterMember(
                 vm_id=b.machine.vm_id,
                 vm_name=b.machine.vm_name,
+                resource_group=b.machine.resource_group,
+                subscription_id=b.machine.subscription_id,
                 deviation_notes=_deviation_notes(b, members[0]),
             )
             for b in members

@@ -14,6 +14,7 @@ from culprit.db.models import (
     MachineOutcomeRecord,
     PreflightFindingRecord,
     RCAResultRecord,
+    RemediationActionRecord,
     RunRecord,
     RunStage,
     SettingsRecord,
@@ -23,6 +24,7 @@ from culprit.models.cluster import Cluster
 from culprit.models.evidence import EvidenceBundle
 from culprit.models.patch_run import PatchRun, RunSummary
 from culprit.models.rca import RCAResult
+from culprit.models.remediation import RemediationLogEntry, RemediationMachineResult
 from culprit.models.taxonomy import CauseFamily
 from culprit.models.verdict import Verdict, VerdictValue
 
@@ -558,6 +560,86 @@ def all_verdicts(session: Session) -> list[Verdict]:
             reviewer=r.reviewer,
             reviewed_at=r.reviewed_at,
             correction_note=r.correction_note,
+        )
+        for r in records
+    ]
+
+
+# ── Remediation execution (Phase 2) ───────────────────────────────────────────
+
+def get_cluster_with_result(session: Session, run_id: str, cluster_id: str):
+    """The (Cluster, RCAResult) pair for a specific run's cluster, or None
+    if either doesn't exist or the cluster doesn't actually belong to that
+    run - used by the remediation execute route to load exactly what it
+    needs to check eligibility and target real machines. Reuses the same
+    ClusterMember(**m) deserialization already used by
+    _load_fleet_report_core/get_machine_detail, so a change to
+    ClusterMember's fields (e.g. the resource_group/subscription_id added
+    for this feature) is picked up here automatically, no separate
+    migration."""
+    from culprit.models.cluster import ClusterMember, Fingerprint
+
+    cluster_record = session.get(ClusterRecord, cluster_id)
+    if cluster_record is None or cluster_record.run_id != run_id or cluster_record.rca_result is None:
+        return None
+    cluster = Cluster(
+        cluster_id=cluster_record.cluster_id,
+        run_id=cluster_record.run_id,
+        cluster_key=cluster_record.cluster_key,
+        fingerprint=Fingerprint(**cluster_record.fingerprint_json),
+        members=[ClusterMember(**m) for m in cluster_record.members_json],
+        representative_vm_id=cluster_record.representative_vm_id,
+    )
+    result = RCAResult.model_validate(cluster_record.rca_result.result_json)
+    return cluster, result
+
+
+def save_remediation_action(
+    session: Session, *, run_id: str, cluster_id: str, cause_family: CauseFamily,
+    action_type, requested_by: str, requested_at, result: RemediationMachineResult,
+) -> RemediationActionRecord:
+    """One row per targeted machine, success or failure - an append-only
+    audit log (see RemediationActionRecord's own docstring for why this
+    isn't an upsert-by-natural-key table)."""
+    record = RemediationActionRecord(
+        run_id=run_id,
+        cluster_id=cluster_id,
+        vm_id=result.vm_id,
+        vm_name=result.vm_name,
+        cause_family=cause_family.value,
+        action_type=action_type.value,
+        requested_by=requested_by,
+        requested_at=requested_at,
+        status=result.status.value,
+        message=result.message,
+    )
+    session.add(record)
+    session.commit()
+    return record
+
+
+def list_remediation_actions(session: Session, limit: int = 200) -> list[RemediationLogEntry]:
+    """Every remediation action ever taken, most recent first - the
+    audit log page. Capped at `limit`, same "already small, never
+    paginated" convention as list_runs."""
+    from culprit.models.remediation import RemediationActionType, RemediationStatus
+
+    records = session.execute(
+        select(RemediationActionRecord).order_by(RemediationActionRecord.requested_at.desc()).limit(limit)
+    ).scalars().all()
+    return [
+        RemediationLogEntry(
+            id=r.id,
+            run_id=r.run_id,
+            cluster_id=r.cluster_id,
+            vm_id=r.vm_id,
+            vm_name=r.vm_name,
+            cause_family=CauseFamily(r.cause_family),
+            action_type=RemediationActionType(r.action_type),
+            requested_by=r.requested_by,
+            requested_at=r.requested_at,
+            status=RemediationStatus(r.status),
+            message=r.message,
         )
         for r in records
     ]

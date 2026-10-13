@@ -57,7 +57,10 @@ def run_preflight_scan(
                 os_family=bundle.machine.os_family,
                 failing_target="",
             ),
-            members=[ClusterMember(vm_id=bundle.machine.vm_id, vm_name=bundle.machine.vm_name)],
+            members=[ClusterMember(
+                vm_id=bundle.machine.vm_id, vm_name=bundle.machine.vm_name,
+                resource_group=bundle.machine.resource_group, subscription_id=bundle.machine.subscription_id,
+            )],
             representative_vm_id=bundle.machine.vm_id,
         )
         result = evaluate_rules(cluster, bundle)

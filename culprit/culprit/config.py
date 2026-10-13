@@ -74,6 +74,13 @@ class Settings:
     # 404s, not just hides the button, when this is off) - found 2026-10-14,
     # same code either way, this is a deployment-config difference only.
     demo_enabled: bool = os.environ.get("CULPRIT_DEMO_ENABLED", "true").lower() == "true"
+    # Off by default - this is the one flag in this file that gates code
+    # which can mutate real infrastructure, not just read it. See
+    # culprit/remediation/ and SECURITY.md's "Remediation execution" section.
+    # Gates both the Fleet Report page's "Run remediation" button and the
+    # POST /remediation/.../execute route itself (404s, not just hides the
+    # button, when this is off - same demo_enabled precedent above).
+    remediation_enabled: bool = os.environ.get("CULPRIT_REMEDIATION_ENABLED", "false").lower() == "true"
 
 
 settings = Settings()

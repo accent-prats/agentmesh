@@ -22,6 +22,7 @@ from culprit.api.auth_middleware import SESSION_COOKIE, RequireApiTokenMiddlewar
 from culprit.api.root_path_middleware import RootPathFromHeaderMiddleware, root_path
 from culprit.api.routes_chat import router as chat_router
 from culprit.api.routes_preflight import router as preflight_router
+from culprit.api.routes_remediation import router as remediation_router
 from culprit.api.routes_runs import router as runs_router
 from culprit.api.routes_settings import router as settings_router
 from culprit.api.routes_verdicts import router as verdicts_router
@@ -149,6 +150,7 @@ app.include_router(verdicts_router)
 app.include_router(chat_router)
 app.include_router(events_router)
 app.include_router(preflight_router)
+app.include_router(remediation_router)
 
 
 @app.get("/health")

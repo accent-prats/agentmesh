@@ -156,6 +156,33 @@ class PreflightFindingRecord(Base):
     finding_json: Mapped[dict] = mapped_column(JSON)
 
 
+class RemediationActionRecord(Base):
+    """One row per machine targeted by a Phase 2 remediation attempt
+    (culprit/remediation/, api/routes_remediation.py) - an append-only
+    audit log, not an upsert-by-natural-key table like MachineOutcomeRecord,
+    since the same VM can legitimately be remediated more than once over
+    time and each attempt is its own distinct event worth keeping.
+    `status`/`cause_family`/`action_type` are plain indexed String columns
+    holding each enum's `.value` (this file's house style - see
+    VerdictRecord.cause_family/.verdict) rather than a native SQL Enum
+    type, since nothing here needs that extra constraint and every other
+    enum-shaped column in this file is stored the same way."""
+
+    __tablename__ = "remediation_actions"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    run_id: Mapped[str] = mapped_column(ForeignKey("runs.run_id"), index=True)
+    cluster_id: Mapped[str] = mapped_column(ForeignKey("clusters.cluster_id"), index=True)
+    vm_id: Mapped[str] = mapped_column(String, index=True)
+    vm_name: Mapped[str] = mapped_column(String)
+    cause_family: Mapped[str] = mapped_column(String, index=True)
+    action_type: Mapped[str] = mapped_column(String)
+    requested_by: Mapped[str] = mapped_column(String)
+    requested_at: Mapped[datetime] = mapped_column(DateTime, index=True)
+    status: Mapped[str] = mapped_column(String)
+    message: Mapped[str] = mapped_column(Text, default="")
+
+
 class SettingsRecord(Base):
     """One row per provider ("azure" | "datadog"). `data_json` holds
     plain-text fields as-is and secret fields (client_secret, api_key,
