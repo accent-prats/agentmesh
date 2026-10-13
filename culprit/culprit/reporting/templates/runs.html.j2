@@ -17,7 +17,7 @@
   <div class="grid grid-cols-2 sm:grid-cols-4 gap-px bg-gray-100 border border-gray-100 rounded-xl overflow-hidden mb-5">
     <div class="bg-white px-4 py-3.5"><b id="stat-total" class="block text-2xl font-bold text-gray-900 tabular-nums">{{ runs|length }}</b><span class="block text-[11px] text-gray-400 mt-1">Runs shown</span></div>
     <div class="bg-white px-4 py-3.5"><b id="stat-complete" class="block text-2xl font-bold text-gray-900 tabular-nums">0</b><span class="block text-[11px] text-gray-400 mt-1">Completed</span></div>
-    <div class="bg-white px-4 py-3.5"><b id="stat-failed-runs" class="block text-2xl font-bold text-gray-900 tabular-nums">0</b><span class="block text-[11px] text-gray-400 mt-1">Failed runs</span></div>
+    <div class="bg-white px-4 py-3.5"><b id="stat-failed-runs" class="block text-2xl font-bold text-gray-900 tabular-nums">0</b><span class="block text-[11px] text-gray-400 mt-1" title="Runs where the pipeline itself crashed (a Claude/Azure/DB error) before producing a report - not how many machines failed to patch. See &quot;Machines failed&quot; for that.">Pipeline errors</span></div>
     <div class="bg-white px-4 py-3.5"><b id="stat-failed-machines" class="block text-2xl font-bold text-gray-900 tabular-nums">0</b><span class="block text-[11px] text-gray-400 mt-1">Machines failed</span></div>
   </div>
 
