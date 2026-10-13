@@ -2,16 +2,34 @@
 demo pipeline components, so routes don't each re-derive them."""
 from __future__ import annotations
 
+import threading
 from functools import lru_cache
 
 from culprit.config import settings
 from culprit.db.engine import make_engine, make_session_factory
 
+# lru_cache's own internal lock only guards the cache dict itself - it's
+# released before calling the wrapped function, so concurrent first-ever
+# calls (e.g. a cold process's first page load firing several routes at
+# once, each hitting FastAPI's threadpool since these handlers are sync
+# `def`, not `async def`) can all miss the cache together and all run
+# make_session_factory() - and therefore Base.metadata.create_all() -  at
+# the same time. SQLite's create_all is not safe against that: two
+# threads can both see a table as "not yet created" and race to create it,
+# one losing with `sqlite3.OperationalError: table runs already exists`.
+# Found 2026-10-13 reviewing the Settings redesign - every page load that
+# fires loadAzure()/loadDatadog()/loadSchedule() concurrently on a fresh
+# process could hit this. This lock only ever contends during that one
+# cold-start race window - once the lru_cache is populated, no later call
+# re-enters the function body at all, lock included.
+_session_factory_lock = threading.Lock()
+
 
 @lru_cache
 def get_session_factory():
-    engine = make_engine(settings.database_url)
-    return make_session_factory(engine)
+    with _session_factory_lock:
+        engine = make_engine(settings.database_url)
+        return make_session_factory(engine)
 
 
 @lru_cache
