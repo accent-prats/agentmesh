@@ -6,7 +6,7 @@ from __future__ import annotations
 
 from datetime import datetime, timezone
 
-from sqlalchemy import delete, select
+from sqlalchemy import delete, func, select
 from sqlalchemy.orm import Session
 
 from culprit.db.models import (
@@ -326,6 +326,98 @@ def load_fleet_report(session: Session, run_id: str):
         return None
     trend = compute_trend(session, run_id)
     return report.model_copy(update={"trend": trend})
+
+
+def latest_completed_run_id(session: Session) -> str | None:
+    """The single most recent RunStage.COMPLETE run, across every
+    scope_name - unlike `_previous_completed_run`, this needs no existing
+    run to compare against (the Console dashboard's starting point: "what
+    should it show with nothing else to go on"). None when nothing has
+    ever completed yet."""
+    stmt = (
+        select(RunRecord.run_id)
+        .where(RunRecord.stage == RunStage.COMPLETE.value)
+        .order_by(RunRecord.started_at.desc())
+        .limit(1)
+    )
+    return session.execute(stmt).scalars().first()
+
+
+def compliance_trend(session: Session, scope_name: str, limit: int = 10):
+    """The last `limit` completed runs for one scope_name, oldest first
+    (left-to-right charting order) - the Console dashboard's trend line.
+
+    Deliberately NOT built on `_load_fleet_report_core`/`compute_trend`
+    (which reconstruct every Cluster and RCAResult just to read two
+    scalars) - total_machines/failed_machines are plain columns already
+    on RunRecord, so this is a single flat query with no cluster walk at
+    all, cheap enough to run for N points instead of the 1 `compute_trend`
+    needs."""
+    from culprit.models.dashboard import ComplianceTrendPoint
+
+    stmt = (
+        select(RunRecord)
+        .where(RunRecord.scope_name == scope_name, RunRecord.stage == RunStage.COMPLETE.value)
+        .order_by(RunRecord.started_at.desc())
+        .limit(limit)
+    )
+    records = session.execute(stmt).scalars().all()
+    points = [
+        ComplianceTrendPoint(
+            run_id=r.run_id,
+            started_at=r.started_at,
+            compliance_pct=round(100.0 * (r.total_machines - r.failed_machines) / r.total_machines, 1)
+            if r.total_machines
+            else 100.0,
+        )
+        for r in records
+    ]
+    points.reverse()  # the query above is newest-first (for LIMIT to keep the *latest* N); charting wants oldest-first
+    return points
+
+
+def top_causes(session: Session, run_id: str, limit: int = len(CauseFamily)):
+    """Which cause families account for the most failed machines in one
+    run, ranked - the Console dashboard's "what's actually breaking
+    things" list. A cheap aggregate over RCAResultRecord.cause_family
+    (its own indexed column) and ClusterRecord.size - no
+    RCAResult.model_validate, no title/remediation/evidence read at all,
+    since only the label and a count are needed here.
+
+    `limit` defaults to every possible CauseFamily value (11, as of this
+    writing) - there is no pathological case to truncate against (a run
+    can never have more distinct cause families than the enum has
+    values), and silently cutting off the smallest one looked actively
+    wrong next to the dashboard's own "N distinct causes" stat tile
+    (found 2026-10-15 reviewing the dashboard with the demo scenario's
+    6-cause run showing only 5 rows)."""
+    from culprit.models.dashboard import CauseBreakdownEntry
+
+    stmt = (
+        select(RCAResultRecord.cause_family, func.sum(ClusterRecord.size))
+        .join(ClusterRecord, ClusterRecord.cluster_id == RCAResultRecord.cluster_id)
+        .where(ClusterRecord.run_id == run_id)
+        .group_by(RCAResultRecord.cause_family)
+        .order_by(func.sum(ClusterRecord.size).desc())
+        .limit(limit)
+    )
+    return [CauseBreakdownEntry(cause_family=CauseFamily(family), machines=machines) for family, machines in session.execute(stmt).all()]
+
+
+def build_dashboard_summary(session: Session):
+    """Everything the Console page's dashboard needs, in one call - see
+    models/dashboard.py::DashboardSummary for what each piece means and
+    why "no completed runs yet" isn't an error."""
+    from culprit.models.dashboard import DashboardSummary
+
+    run_id = latest_completed_run_id(session)
+    if run_id is None:
+        return DashboardSummary()
+
+    latest_run = load_fleet_report(session, run_id)
+    trend = compliance_trend(session, latest_run.run.scope_name)
+    causes = top_causes(session, run_id)
+    return DashboardSummary(latest_run=latest_run, compliance_trend=trend, top_causes=causes)
 
 
 def get_machine_detail(session: Session, run_id: str, vm_name: str):

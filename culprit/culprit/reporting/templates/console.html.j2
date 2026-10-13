@@ -2,13 +2,117 @@
 {% block title %}Culprit{% endblock %}
 
 {% block content %}
-<div class="max-w-3xl mx-auto px-8 py-12">
+<div class="max-w-4xl mx-auto px-8 py-10">
 
   <div class="flex items-center gap-2 mb-1">
     <span class="text-[11px] font-semibold tracking-wide uppercase text-brand bg-brand/10 px-2 py-0.5 rounded-full">Phase 1 &middot; read-only</span>
   </div>
-  <h1 class="text-3xl font-bold text-gray-900 tracking-tight mt-3">Culprit</h1>
-  <p class="text-sm font-medium text-brand mt-1">Every failed patch has a culprit.</p>
+  <h1 class="text-2xl font-bold text-gray-900 tracking-tight mt-2">Culprit</h1>
+  <p class="text-sm font-medium text-brand mt-0.5">Every failed patch has a culprit.</p>
+
+  {% if dashboard.latest_run %}
+  {% set report = dashboard.latest_run %}
+  <p class="text-sm text-gray-500 mt-4">
+    Latest cycle: <span class="font-medium text-gray-700">{{ report.run.scope_name }}</span>
+    &middot; {{ report.run.started_at.strftime('%Y-%m-%d %H:%M UTC') }}
+    &middot; <a href="runs/{{ report.run.run_id }}/report.html" class="text-brand hover:underline font-medium">View full report &rarr;</a>
+  </p>
+
+  <div class="grid grid-cols-3 sm:grid-cols-6 gap-px bg-gray-100 border border-gray-100 rounded-xl overflow-hidden mt-4 mb-5">
+    <div class="bg-white px-4 py-3.5"><b class="block text-2xl font-bold text-gray-900 tabular-nums">{{ report.total_machines }}</b><span class="block text-[11px] text-gray-400 mt-1">Total machines</span></div>
+    <div class="bg-white px-4 py-3.5">
+      <b class="block text-2xl font-bold text-gray-900 tabular-nums">{{ report.total_failed }}</b>
+      <span class="block text-[11px] text-gray-400 mt-1">
+        Failed
+        {% if report.trend %}
+          {% if report.trend.failed_delta < 0 %}<span class="text-emerald-600 font-semibold">&darr;{{ -report.trend.failed_delta }}</span>
+          {% elif report.trend.failed_delta > 0 %}<span class="text-red-600 font-semibold">&uarr;{{ report.trend.failed_delta }}</span>
+          {% else %}<span class="text-gray-400">&middot; flat</span>{% endif %}
+        {% endif %}
+      </span>
+    </div>
+    <div class="bg-white px-4 py-3.5"><b class="block text-2xl font-bold text-gray-900 tabular-nums">{{ report.total_clusters }}</b><span class="block text-[11px] text-gray-400 mt-1">Distinct causes</span></div>
+    <div class="bg-white px-4 py-3.5">
+      <b class="block text-2xl font-bold text-gray-900 tabular-nums">{{ report.compliance_pct }}%</b>
+      <span class="block text-[11px] text-gray-400 mt-1">
+        Compliance
+        {% if report.trend %}
+          {% if report.trend.compliance_delta_pct > 0 %}<span class="text-emerald-600 font-semibold">&uarr;{{ report.trend.compliance_delta_pct }}</span>
+          {% elif report.trend.compliance_delta_pct < 0 %}<span class="text-red-600 font-semibold">&darr;{{ -report.trend.compliance_delta_pct }}</span>
+          {% else %}<span class="text-gray-400">&middot; flat</span>{% endif %}
+        {% endif %}
+      </span>
+    </div>
+    <div class="bg-white px-4 py-3.5"><b class="block text-2xl font-bold text-gray-900 tabular-nums">{{ report.repeat_offender_count }}</b><span class="block text-[11px] text-gray-400 mt-1">Repeat offenders</span></div>
+    <div class="bg-white px-4 py-3.5"><b class="block text-2xl font-bold text-gray-900 tabular-nums">{{ report.unresolved_count }}</b><span class="block text-[11px] text-gray-400 mt-1">Unresolved</span></div>
+  </div>
+
+  <div class="grid grid-cols-1 sm:grid-cols-2 gap-5 mb-6">
+    <div class="bg-white rounded-2xl shadow-sm border border-gray-100 p-6">
+      <h6 class="text-[10px] font-semibold uppercase tracking-wide text-gray-400 mb-3">
+        Compliance trend &middot; last {{ dashboard.compliance_trend|length }} cycles
+      </h6>
+      {% if trend_chart %}
+      <div class="relative">
+        <svg viewBox="0 0 {{ trend_chart.width }} {{ trend_chart.height }}" class="w-full" style="height:{{ trend_chart.height }}px" id="trend-svg">
+          <polyline points="{{ trend_chart.polyline }}" fill="none" stroke="#E11D48" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" />
+          {% for pt in trend_chart.points %}
+          <circle cx="{{ pt.x }}" cy="{{ pt.y }}" r="8" fill="transparent" class="trend-point" data-pct="{{ pt.pct }}%" data-date="{{ pt.date }}" style="cursor:pointer" />
+          <circle cx="{{ pt.x }}" cy="{{ pt.y }}" r="3" fill="#E11D48" class="pointer-events-none" />
+          {% endfor %}
+        </svg>
+        <div id="trend-tooltip" class="hidden absolute text-[11px] bg-gray-900 text-white px-2 py-1 rounded shadow-lg pointer-events-none whitespace-nowrap -translate-x-1/2 -translate-y-[130%]"></div>
+      </div>
+      <p class="text-[11px] text-gray-400 mt-2">
+        {{ trend_chart.points[0].pct }}% &rarr; {{ trend_chart.points[-1].pct }}%
+        across {{ trend_chart.points[0].date }}&ndash;{{ trend_chart.points[-1].date }}
+      </p>
+      {% else %}
+      <p class="text-sm text-gray-400 py-7 text-center">
+        Not enough completed cycles yet to chart a trend &mdash; this shows up after the
+        next "{{ report.run.scope_name }}" run.
+      </p>
+      {% endif %}
+    </div>
+
+    <div class="bg-white rounded-2xl shadow-sm border border-gray-100 p-6">
+      <h6 class="text-[10px] font-semibold uppercase tracking-wide text-gray-400 mb-3">Cause breakdown &middot; this cycle</h6>
+      {% if dashboard.top_causes %}
+      <div class="space-y-2.5">
+        {% for entry in dashboard.top_causes %}
+        <div>
+          <div class="flex items-center justify-between text-xs mb-1">
+            <span class="text-gray-700 font-medium">{{ entry.cause_family.value|replace('_', ' ')|capitalize }}</span>
+            <span class="text-gray-400 tabular-nums">{{ entry.machines }}</span>
+          </div>
+          <div class="h-1.5 bg-gray-100 rounded-full overflow-hidden">
+            <div class="h-full bg-brand rounded-full" style="width: {{ (100 * entry.machines / dashboard.top_causes[0].machines) | round }}%"></div>
+          </div>
+        </div>
+        {% endfor %}
+      </div>
+      {% else %}
+      <p class="text-sm text-gray-400 py-7 text-center">No diagnosed causes this cycle.</p>
+      {% endif %}
+    </div>
+  </div>
+
+  <div class="flex flex-wrap items-center gap-3">
+    {% if demo_enabled %}
+    <button id="run-btn" onclick="runDemo()"
+      class="inline-flex items-center gap-2 bg-brand hover:bg-brand-dark text-white text-sm font-medium
+             px-4 py-2.5 rounded-lg transition-colors disabled:opacity-50 disabled:cursor-not-allowed">
+      <i data-lucide="zap" class="w-4 h-4"></i> Run demo scenario
+    </button>
+    {% endif %}
+    <a href="settings" class="inline-flex items-center gap-2 bg-white hover:bg-gray-50 text-gray-700 text-sm font-medium
+             px-4 py-2.5 rounded-lg border border-gray-200 transition-colors">
+      <i data-lucide="plug" class="w-4 h-4 text-gray-500"></i> Configure live analysis
+    </a>
+    <span id="status" class="text-sm text-gray-500 min-h-[20px]"></span>
+  </div>
+
+  {% else %}
   <p class="text-gray-500 text-sm leading-relaxed mt-4 max-w-xl">
     Autonomous root-cause analysis for failed Azure Update Manager patch deployments &mdash;
     collapses hundreds of failures into a handful of distinct causes, settles the obvious
@@ -53,6 +157,11 @@
     </a>
   </div>
 
+  {% if not demo_enabled %}
+  <div id="status" class="text-sm text-gray-500 mt-3 min-h-[20px]"></div>
+  {% endif %}
+  {% endif %}
+
 </div>
 {% endblock %}
 
@@ -62,7 +171,7 @@ async function runDemo() {
   const btn = document.getElementById('run-btn');
   const status = document.getElementById('status');
   btn.disabled = true;
-  status.className = 'text-sm text-gray-500 mt-3 min-h-[20px]';
+  status.className = 'text-sm text-gray-500 min-h-[20px]';
   status.textContent = 'Collecting evidence, clustering, diagnosing…';
   try {
     const res = await fetch('runs/demo', { method: 'POST' });
@@ -72,10 +181,32 @@ async function runDemo() {
       ' machines failed, ' + report.total_clusters + ' distinct causes. Opening report…';
     window.location.href = 'runs/' + report.run.run_id + '/report.html';
   } catch (err) {
-    status.className = 'text-sm text-red-600 mt-3 min-h-[20px]';
+    status.className = 'text-sm text-red-600 min-h-[20px]';
     status.textContent = 'Run failed: ' + err.message;
     btn.disabled = false;
   }
 }
+
+// Compliance trend hover - the invisible, generously-sized circle is the
+// hit target (an 8px-radius dot at this chart's scale is too small to
+// hover reliably); the visible 3px dot stays purely decorative.
+document.querySelectorAll('.trend-point').forEach(function (hitCircle) {
+  hitCircle.addEventListener('mouseenter', function () {
+    const svg = document.getElementById('trend-svg');
+    const tooltip = document.getElementById('trend-tooltip');
+    const svgRect = svg.getBoundingClientRect();
+    const pt = svg.createSVGPoint();
+    pt.x = hitCircle.cx.baseVal.value;
+    pt.y = hitCircle.cy.baseVal.value;
+    const screenPt = pt.matrixTransform(svg.getScreenCTM());
+    tooltip.textContent = hitCircle.dataset.date + ' — ' + hitCircle.dataset.pct;
+    tooltip.style.left = (screenPt.x - svgRect.left) + 'px';
+    tooltip.style.top = (screenPt.y - svgRect.top) + 'px';
+    tooltip.classList.remove('hidden');
+  });
+  hitCircle.addEventListener('mouseleave', function () {
+    document.getElementById('trend-tooltip').classList.add('hidden');
+  });
+});
 </script>
 {% endblock %}

@@ -34,15 +34,55 @@ def render_runs_html(runs, demo_enabled: bool = True) -> str:
     return template.render(runs=runs, active="runs", demo_enabled=demo_enabled)
 
 
-def render_console_html(demo_enabled: bool = True) -> str:
+def _trend_chart_geometry(trend, width: int = 300, height: int = 72, pad_x: float = 4, pad_y: float = 8):
+    """SVG coordinates for the Console dashboard's compliance trend line.
+    Computed here, not in the template - scaling the line to its own
+    data's min/max (not a fixed 0-100 axis, which would flatten real-world
+    compliance% variation most runs never leave the 80-100 band in to a
+    near-flat line) is a float computation across every point, not a
+    single Jinja filter expression."""
+    values = [p.compliance_pct for p in trend]
+    lo, hi = min(values), max(values)
+    if hi == lo:  # every point identical - avoid a divide by zero, draw a flat middle line instead
+        lo, hi = lo - 1, hi + 1
+
+    n = len(trend)
+    points = []
+    for i, p in enumerate(trend):
+        x = width / 2 if n == 1 else pad_x + (i / (n - 1)) * (width - 2 * pad_x)
+        y = pad_y + (1 - (p.compliance_pct - lo) / (hi - lo)) * (height - 2 * pad_y)
+        points.append({"x": round(x, 1), "y": round(y, 1), "pct": p.compliance_pct, "date": p.started_at.strftime("%Y-%m-%d")})
+
+    return {
+        "width": width,
+        "height": height,
+        "points": points,
+        "polyline": " ".join(f"{pt['x']},{pt['y']}" for pt in points),
+    }
+
+
+def render_console_html(demo_enabled: bool = True, dashboard=None) -> str:
     """The app's landing page - what the AgentMesh launcher's 'Launch'
-    button sends people to. `active` just drives which sidebar nav item
-    (in base.html.j2, shared with every Culprit page) is highlighted;
-    the page has no report data of its own to render. `demo_enabled`
-    hides the "Demo scenario" card to match api/routes_runs.py's own
-    config.settings.demo_enabled-gated route - see config.py."""
+    button sends people to, and now a real dashboard (see
+    db/repository.py::build_dashboard_summary /
+    models/dashboard.py::DashboardSummary), not just a launcher.
+    `active` just drives which sidebar nav item (in base.html.j2, shared
+    with every Culprit page) is highlighted. `demo_enabled` hides the
+    "Demo scenario" card to match api/routes_runs.py's own
+    config.settings.demo_enabled-gated route - see config.py.
+    `dashboard` defaults to an empty DashboardSummary (not None passed
+    through) so the template never has to guard against a missing
+    object, only against its fields being empty - the same "absence
+    isn't an error" shape as FleetTrend/DashboardSummary.latest_run."""
+    from culprit.models.dashboard import DashboardSummary
+
+    dashboard = dashboard or DashboardSummary()
+    # Fewer than 2 points isn't a trend, it's a dot - same "nothing to
+    # compare against yet" shape as FleetTrend being None for a first cycle.
+    trend_chart = _trend_chart_geometry(dashboard.compliance_trend) if len(dashboard.compliance_trend) >= 2 else None
+
     template = _env().get_template("console.html.j2")
-    return template.render(active="console", demo_enabled=demo_enabled)
+    return template.render(active="console", demo_enabled=demo_enabled, dashboard=dashboard, trend_chart=trend_chart)
 
 
 def render_settings_html() -> str:

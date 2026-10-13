@@ -33,11 +33,20 @@ def test_demo_is_on_by_default(client):
     extra configuration."""
     assert config.settings.demo_enabled is True
 
+    # Before any run exists, the Console page is the onboarding/empty
+    # state - the full "Demo scenario" card is what shows there.
+    html = client.get("/").text
+    assert "Demo scenario" in html
+
     resp = client.post("/runs/demo")
     assert resp.status_code == 200
 
+    # After a run completes, the Console page becomes the dashboard
+    # state - the demo trigger is now a condensed action button instead
+    # of repeating the full card (see console.html.j2), so check for the
+    # button itself rather than the now-dashboard-only heading text.
     html = client.get("/").text
-    assert "Demo scenario" in html
+    assert 'id="run-btn"' in html
 
 
 def test_demo_disabled_404s_the_route_and_hides_the_card(client, monkeypatch):

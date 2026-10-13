@@ -139,12 +139,18 @@ def health() -> dict:
 
 @app.get("/", response_class=HTMLResponse)
 def console() -> str:
-    """The AgentMesh launcher's 'Launch' target for Culprit - a one-button
-    console that triggers the demo scenario and hands off to the rendered
-    fleet report. Everything it calls (POST /runs/demo, GET /runs/{id}/report.html)
-    is a route already defined above; this page adds no pipeline logic of
-    its own."""
-    return render_console_html(demo_enabled=config.settings.demo_enabled)
+    """The AgentMesh launcher's 'Launch' target for Culprit - now a real
+    dashboard (the latest completed run's headline numbers, a compliance
+    trend, and a top-causes breakdown - see db/repository.py::
+    build_dashboard_summary) rather than just a launcher. The demo/live
+    triggers are still here too; everything they call (POST /runs/demo,
+    GET /runs/{id}/report.html) is a route already defined above."""
+    from culprit.api import deps
+    from culprit.db import repository
+
+    with deps.get_session_factory()() as session:
+        dashboard = repository.build_dashboard_summary(session)
+    return render_console_html(demo_enabled=config.settings.demo_enabled, dashboard=dashboard)
 
 
 @app.get("/settings", response_class=HTMLResponse)
