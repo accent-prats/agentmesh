@@ -253,7 +253,7 @@ def test_precision_html_page_renders(client):
     test_client.post("/runs/demo")
     resp = test_client.get("/precision.html")
     assert resp.status_code == 200
-    assert "Phase 2 gate" in resp.text
+    assert "automation gate" in resp.text
 
 
 def test_machine_drill_down_page_renders_for_a_cluster_member(client):

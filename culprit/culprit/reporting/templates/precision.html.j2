@@ -1,10 +1,10 @@
 {% extends "base.html.j2" %}
-{% block title %}Precision & Phase 2 gate{% endblock %}
+{% block title %}Precision & automation gate{% endblock %}
 
 {% block content %}
 <div class="max-w-4xl mx-auto px-8 py-10">
 
-  <h1 class="text-2xl font-bold text-gray-900 tracking-tight">Precision &amp; the Phase 2 gate</h1>
+  <h1 class="text-2xl font-bold text-gray-900 tracking-tight">Precision &amp; the automation gate</h1>
   <p class="text-sm text-gray-500 mt-1 mb-6 max-w-2xl">
     Automated remediation unlocks one cause family at a time, only once that family has sustained
     <b>&ge;{{ '%.0f' % (precision.threshold * 100) }}% precision over at least {{ precision.min_sample }}
@@ -21,7 +21,7 @@
           <th class="px-5 py-3 text-right">Reviewed</th>
           <th class="px-5 py-3 text-right">Precision</th>
           <th class="px-5 py-3 text-right">Clean precision</th>
-          <th class="px-5 py-3 text-left">Phase 2 status</th>
+          <th class="px-5 py-3 text-left">Automation status</th>
         </tr>
       </thead>
       <tbody class="divide-y divide-gray-100">
