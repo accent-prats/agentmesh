@@ -16,6 +16,7 @@
     reasoning and remediation guidance.
   </p>
 
+  {% if demo_enabled %}
   <div class="bg-white rounded-2xl shadow-sm border border-gray-100 p-7 mt-8">
     <div class="flex items-center gap-3 mb-1">
       <div class="w-9 h-9 rounded-xl bg-brand/10 flex items-center justify-center shrink-0">
@@ -35,8 +36,9 @@
     </button>
     <div id="status" class="text-sm text-gray-500 mt-3 min-h-[20px]"></div>
   </div>
+  {% endif %}
 
-  <div class="bg-white rounded-2xl shadow-sm border border-gray-100 p-7 mt-5">
+  <div class="bg-white rounded-2xl shadow-sm border border-gray-100 p-7 {{ 'mt-5' if demo_enabled else 'mt-8' }}">
     <div class="flex items-center gap-3 mb-1">
       <div class="w-9 h-9 rounded-xl bg-gray-100 flex items-center justify-center shrink-0">
         <i data-lucide="plug" class="w-4 h-4 text-gray-500"></i>

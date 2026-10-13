@@ -63,9 +63,19 @@ def _notify_if_configured(report: FleetReport, request: Request) -> None:
 
 @router.post("/demo", response_model=FleetReport)
 def trigger_demo_run(request: Request) -> FleetReport:
+    from culprit import config as config_module
     from culprit.db import repository
     from culprit.demo.generate_scenario import TOTAL_MACHINES, build_scenario
     from culprit.pipeline.orchestrator import Pipeline
+
+    # Via the module, not the `settings` name already imported above (that
+    # binds to whatever Settings instance existed at import time - see
+    # auth_middleware.py's own docstring on this exact gotcha) - a test
+    # flipping this off replaces the whole `config.settings` object, which
+    # only a fresh module-attribute read picks up. 404, not 403 - a
+    # deployment with this off shouldn't reveal the route exists at all.
+    if not config_module.settings.demo_enabled:
+        raise HTTPException(status_code=404)
 
     run, bundles = build_scenario()
     pipeline = Pipeline(

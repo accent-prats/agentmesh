@@ -147,6 +147,11 @@ services:
       # Default already matches the portal-api service name below; only
       # override for a non-standard topology.
       CULPRIT_PORTAL_INTERNAL_URL: ${CULPRIT_PORTAL_INTERNAL_URL:-http://portal-api:8000}
+      # On by default - the Console page's "Demo scenario" card and its
+      # POST /runs/demo route (a synthetic fleet, no real credentials
+      # needed). Set to false in any deployment a real stakeholder or end
+      # user reaches directly - see docs/SETUP.md.
+      CULPRIT_DEMO_ENABLED: ${CULPRIT_DEMO_ENABLED:-true}
     volumes:
       - culprit_data:/app/data
     networks: [platform]

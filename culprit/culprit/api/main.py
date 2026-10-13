@@ -144,7 +144,7 @@ def console() -> str:
     fleet report. Everything it calls (POST /runs/demo, GET /runs/{id}/report.html)
     is a route already defined above; this page adds no pipeline logic of
     its own."""
-    return render_console_html()
+    return render_console_html(demo_enabled=config.settings.demo_enabled)
 
 
 @app.get("/settings", response_class=HTMLResponse)

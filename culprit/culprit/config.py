@@ -65,6 +65,15 @@ class Settings:
     # leaves the host. Swapping this requires re-embedding everything
     # already stored (a different model means a different vector space).
     memory_embed_model: str = os.environ.get("CULPRIT_MEMORY_EMBED_MODEL", "multi-qa-MiniLM-L6-cos-v1")
+    # On by default - preserves the existing dev/demo/test experience with
+    # zero configuration. Set to false for any deployment a real stakeholder
+    # or end user reaches directly (POST /runs/demo fabricates a synthetic
+    # 312-machine fleet; a live system shouldn't expose a button that
+    # conjures fake data). Gates both the Console page's "Demo scenario"
+    # card and the route itself (api/routes_runs.py::trigger_demo_run
+    # 404s, not just hides the button, when this is off) - found 2026-10-14,
+    # same code either way, this is a deployment-config difference only.
+    demo_enabled: bool = os.environ.get("CULPRIT_DEMO_ENABLED", "true").lower() == "true"
 
 
 settings = Settings()

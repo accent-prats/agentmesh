@@ -99,6 +99,15 @@ An already-authenticated Portal user who clicks the Culprit card is signed in au
 no separate Culprit login. This requires `CULPRIT_PORTAL_JWT_SECRET` (Culprit) to match
 `SECRET_KEY` (Portal). See [portal/README.md](../portal/README.md#configuration).
 
+### Demo scenario (disable for a real deployment)
+
+Culprit's console page (`/culprit/`) has a "Demo scenario" card that runs the full pipeline
+against a synthetic 312-machine fleet — no Azure/Datadog credentials needed, useful for a
+rehearsal or kicking the tires. It's on by default. Before a deployment any real stakeholder
+or end user reaches directly, set `CULPRIT_DEMO_ENABLED=false` — this hides the card *and*
+404s the underlying `POST /runs/demo` route itself, so a live system never exposes a button
+that fabricates fake data.
+
 ### Autonomous scheduling (optional)
 
 By default Culprit only runs when someone clicks a button or calls `/runs/live`. Set

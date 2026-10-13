@@ -31,13 +31,15 @@ def render_runs_html(runs) -> str:
     return template.render(runs=runs, active="runs")
 
 
-def render_console_html() -> str:
+def render_console_html(demo_enabled: bool = True) -> str:
     """The app's landing page - what the AgentMesh launcher's 'Launch'
     button sends people to. `active` just drives which sidebar nav item
     (in base.html.j2, shared with every Culprit page) is highlighted;
-    the page has no report data of its own to render."""
+    the page has no report data of its own to render. `demo_enabled`
+    hides the "Demo scenario" card to match api/routes_runs.py's own
+    config.settings.demo_enabled-gated route - see config.py."""
     template = _env().get_template("console.html.j2")
-    return template.render(active="console")
+    return template.render(active="console", demo_enabled=demo_enabled)
 
 
 def render_settings_html() -> str:
