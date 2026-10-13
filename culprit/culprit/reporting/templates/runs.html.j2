@@ -11,28 +11,72 @@
   </p>
 
   {% if runs %}
+  <!-- Summary tiles - recomputed client-side from whatever the search/
+       filter toolbar below currently shows, not just the unfiltered
+       total, so they stay an honest "what am I looking at right now". -->
+  <div class="grid grid-cols-2 sm:grid-cols-4 gap-px bg-gray-100 border border-gray-100 rounded-xl overflow-hidden mb-5">
+    <div class="bg-white px-4 py-3.5"><b id="stat-total" class="block text-2xl font-bold text-gray-900 tabular-nums">{{ runs|length }}</b><span class="block text-[11px] text-gray-400 mt-1">Runs shown</span></div>
+    <div class="bg-white px-4 py-3.5"><b id="stat-complete" class="block text-2xl font-bold text-gray-900 tabular-nums">0</b><span class="block text-[11px] text-gray-400 mt-1">Completed</span></div>
+    <div class="bg-white px-4 py-3.5"><b id="stat-failed-runs" class="block text-2xl font-bold text-gray-900 tabular-nums">0</b><span class="block text-[11px] text-gray-400 mt-1">Failed runs</span></div>
+    <div class="bg-white px-4 py-3.5"><b id="stat-failed-machines" class="block text-2xl font-bold text-gray-900 tabular-nums">0</b><span class="block text-[11px] text-gray-400 mt-1">Machines failed</span></div>
+  </div>
+
+  <!-- Toolbar - all client-side over the already-rendered rows below
+       (this list is already capped at repository.py::list_runs's own
+       limit, never paginated), no new route or query param needed. -->
+  <div class="flex flex-wrap items-center gap-3 mb-4">
+    <div class="relative flex-1 min-w-[220px] max-w-sm">
+      <i data-lucide="search" class="w-4 h-4 text-gray-400 absolute left-3 top-1/2 -translate-y-1/2 pointer-events-none"></i>
+      <input id="runs-search" type="text" placeholder="Search update job or subscription&hellip;"
+        class="w-full border border-gray-300 rounded-lg pl-9 pr-3 py-2 text-sm focus:ring-2 focus:ring-brand focus:border-brand focus:outline-none">
+    </div>
+    <select id="runs-filter-trigger" class="border border-gray-300 rounded-lg px-3 py-2 text-sm text-gray-700 focus:ring-2 focus:ring-brand focus:border-brand focus:outline-none">
+      <option value="">All triggers</option>
+      {% for t in distinct_triggers %}<option value="{{ t }}">{{ t.replace('_', ' ')|title }}</option>{% endfor %}
+    </select>
+    <select id="runs-filter-status" class="border border-gray-300 rounded-lg px-3 py-2 text-sm text-gray-700 focus:ring-2 focus:ring-brand focus:border-brand focus:outline-none">
+      <option value="">All statuses</option>
+      {% for s in distinct_stages %}<option value="{{ s }}">{{ s|title }}</option>{% endfor %}
+    </select>
+  </div>
+
   <div class="bg-white rounded-2xl shadow-sm border border-gray-100 overflow-hidden">
     <table class="w-full text-sm table-fixed">
       <thead class="bg-gray-50 text-[11px] text-gray-500 uppercase tracking-wide">
         <tr>
-          <th class="px-5 py-3 text-left w-[30%]">Update job</th>
-          <th class="px-5 py-3 text-left w-[12%]">Trigger</th>
-          <th class="px-5 py-3 text-left w-[20%]">Started</th>
-          <th class="px-5 py-3 text-right w-[10%]">Machines</th>
-          <th class="px-5 py-3 text-right w-[10%]">Failed</th>
-          <th class="px-5 py-3 text-right w-[8%]">Causes</th>
+          <th class="px-5 py-3 text-left w-[25%] cursor-pointer select-none hover:text-gray-700" onclick="sortRuns('scope')">
+            <span id="sort-label-scope" class="inline-flex items-center gap-1">Update job <span id="sort-arrow-scope" class="text-brand text-[9px]"></span></span>
+          </th>
+          <th class="px-5 py-3 text-left w-[15%]">Trigger</th>
+          <th class="px-5 py-3 text-left w-[18%] cursor-pointer select-none hover:text-gray-700" onclick="sortRuns('started')">
+            <span id="sort-label-started" class="inline-flex items-center gap-1">Started <span id="sort-arrow-started" class="text-brand text-[9px]"></span></span>
+          </th>
+          <th class="px-5 py-3 text-right w-[10%] cursor-pointer select-none hover:text-gray-700" onclick="sortRuns('machines')">
+            <span id="sort-label-machines" class="inline-flex items-center justify-end gap-1">Machines <span id="sort-arrow-machines" class="text-brand text-[9px]"></span></span>
+          </th>
+          <th class="px-5 py-3 text-right w-[10%] cursor-pointer select-none hover:text-gray-700" onclick="sortRuns('failed')">
+            <span id="sort-label-failed" class="inline-flex items-center justify-end gap-1">Failed <span id="sort-arrow-failed" class="text-brand text-[9px]"></span></span>
+          </th>
+          <th class="px-5 py-3 text-right w-[8%] cursor-pointer select-none hover:text-gray-700" onclick="sortRuns('causes')">
+            <span id="sort-label-causes" class="inline-flex items-center justify-end gap-1">Causes <span id="sort-arrow-causes" class="text-brand text-[9px]"></span></span>
+          </th>
           <th class="px-5 py-3 text-left w-[10%]">Status</th>
         </tr>
       </thead>
-      <tbody class="divide-y divide-gray-100">
+      <tbody class="divide-y divide-gray-100" id="runs-tbody">
         {% for run in runs %}
-        <tr class="hover:bg-gray-50/60 cursor-pointer" onclick="window.location.href='runs/{{ run.run_id }}/report.html'">
+        <tr class="runs-row hover:bg-gray-50/60 cursor-pointer"
+          data-scope="{{ run.scope_name|lower }}" data-config="{{ run.maintenance_configuration_id|lower }}"
+          data-trigger="{{ run.trigger_mode }}" data-status="{{ run.stage }}"
+          data-started="{{ run.started_at.isoformat() }}" data-machines="{{ run.total_machines }}"
+          data-failed="{{ run.failed_machines }}" data-causes="{{ run.total_clusters }}"
+          onclick="window.location.href='runs/{{ run.run_id }}/report.html'">
           <td class="px-5 py-3.5 overflow-hidden">
             <span class="font-medium text-gray-900">{{ run.scope_name }}</span>
             <span class="block text-[11px] text-gray-400 mt-0.5 truncate" title="{{ run.maintenance_configuration_id }}">{{ run.maintenance_configuration_id }}</span>
           </td>
           <td class="px-5 py-3.5">
-            <span class="text-[10px] font-semibold uppercase tracking-wide px-2 py-0.5 rounded-full bg-gray-50 text-gray-600 border border-gray-200">{{ run.trigger_mode.replace('_', ' ') }}</span>
+            <span class="whitespace-nowrap text-[10px] font-semibold uppercase tracking-wide px-2 py-0.5 rounded-full bg-gray-50 text-gray-600 border border-gray-200">{{ run.trigger_mode.replace('_', ' ') }}</span>
           </td>
           <td class="px-5 py-3.5 text-gray-600 whitespace-nowrap">{{ run.started_at.strftime('%Y-%m-%d %H:%M UTC') }}</td>
           <td class="px-5 py-3.5 text-right tabular-nums text-gray-600">{{ run.total_machines }}</td>
@@ -51,6 +95,9 @@
         {% endfor %}
       </tbody>
     </table>
+    <div id="runs-empty-filtered" class="hidden p-8 text-center text-gray-400 text-sm">
+      No runs match your search or filters.
+    </div>
   </div>
   {% else %}
   <div class="bg-white rounded-2xl shadow-sm border border-gray-100 p-8 text-center text-gray-400 text-sm">
@@ -63,4 +110,97 @@
   {% endif %}
 
 </div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+const runRows = Array.from(document.querySelectorAll('#runs-tbody .runs-row'));
+
+// Numeric/date columns compare by value; everything else (currently just
+// "scope") compares as text. started_at is already the row's own
+// ISO-8601 string (data-started), so a plain string comparison already
+// sorts chronologically without parsing a Date - one less thing that can
+// disagree with how the server formatted it.
+const NUMERIC_SORT_KEYS = new Set(['machines', 'failed', 'causes']);
+
+let sortState = { key: 'started', dir: 'desc' };
+
+function applyRunsFilters() {
+  if (runRows.length === 0) return;
+  const q = document.getElementById('runs-search').value.trim().toLowerCase();
+  const trigger = document.getElementById('runs-filter-trigger').value;
+  const status = document.getElementById('runs-filter-status').value;
+
+  let visible = 0, complete = 0, failedRuns = 0, failedMachines = 0;
+
+  runRows.forEach(function (row) {
+    const matchesQuery = !q || row.dataset.scope.includes(q) || row.dataset.config.includes(q);
+    const matchesTrigger = !trigger || row.dataset.trigger === trigger;
+    const matchesStatus = !status || row.dataset.status === status;
+    const isVisible = matchesQuery && matchesTrigger && matchesStatus;
+    row.classList.toggle('hidden', !isVisible);
+    if (isVisible) {
+      visible++;
+      if (row.dataset.status === 'complete') complete++;
+      if (row.dataset.status === 'failed') failedRuns++;
+      failedMachines += parseInt(row.dataset.failed, 10) || 0;
+    }
+  });
+
+  document.getElementById('stat-total').textContent = visible;
+  document.getElementById('stat-complete').textContent = complete;
+  document.getElementById('stat-failed-runs').textContent = failedRuns;
+  document.getElementById('stat-failed-machines').textContent = failedMachines;
+  document.getElementById('runs-empty-filtered').classList.toggle('hidden', visible > 0);
+}
+
+function sortRuns(key) {
+  if (sortState.key === key) {
+    sortState.dir = sortState.dir === 'asc' ? 'desc' : 'asc';
+  } else {
+    // A fresh column defaults to descending for numbers/dates (biggest/
+    // newest first - what you almost always want for a run list) and
+    // ascending for the one text column (A-Z reads naturally first).
+    sortState = { key: key, dir: key === 'scope' ? 'asc' : 'desc' };
+  }
+
+  const dir = sortState.dir === 'asc' ? 1 : -1;
+  const sorted = runRows.slice().sort(function (a, b) {
+    let av = a.dataset[key], bv = b.dataset[key];
+    if (NUMERIC_SORT_KEYS.has(key)) {
+      av = parseFloat(av);
+      bv = parseFloat(bv);
+    }
+    if (av < bv) return -1 * dir;
+    if (av > bv) return 1 * dir;
+    return 0;
+  });
+
+  const tbody = document.getElementById('runs-tbody');
+  sorted.forEach(function (row) { tbody.appendChild(row); });
+  updateSortIndicators();
+}
+
+function updateSortIndicators() {
+  ['scope', 'started', 'machines', 'failed', 'causes'].forEach(function (key) {
+    const arrow = document.getElementById('sort-arrow-' + key);
+    const label = document.getElementById('sort-label-' + key);
+    if (key === sortState.key) {
+      arrow.textContent = sortState.dir === 'asc' ? '▲' : '▼';
+      label.classList.add('text-gray-900');
+    } else {
+      arrow.textContent = '';
+      label.classList.remove('text-gray-900');
+    }
+  });
+}
+
+if (runRows.length > 0) {
+  document.getElementById('runs-search').addEventListener('input', applyRunsFilters);
+  document.getElementById('runs-filter-trigger').addEventListener('change', applyRunsFilters);
+  document.getElementById('runs-filter-status').addEventListener('change', applyRunsFilters);
+  applyRunsFilters();
+  updateSortIndicators();  // rows already arrive started-desc from the server - just reflect that
+}
+</script>
 {% endblock %}

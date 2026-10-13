@@ -29,9 +29,21 @@ def render_runs_html(runs, demo_enabled: bool = True) -> str:
     same depth as console/settings/precision.html. `demo_enabled` only
     affects the empty-state copy (it points at the Console's demo
     button, which shouldn't be mentioned when that button doesn't
-    exist) - see render_console_html."""
+    exist) - see render_console_html.
+
+    `distinct_triggers`/`distinct_stages` populate the toolbar's filter
+    dropdowns - derived from whatever's actually present in `runs` (not
+    the full TriggerMode/RunStage enums) so a value nothing has ever used
+    yet doesn't show up as a dead filter option, and a new trigger/stage
+    value needs no template change to filter on once something actually
+    uses it. Sorted for a stable render (set iteration order isn't)."""
     template = _env().get_template("runs.html.j2")
-    return template.render(runs=runs, active="runs", demo_enabled=demo_enabled)
+    distinct_triggers = sorted({r.trigger_mode for r in runs})
+    distinct_stages = sorted({r.stage for r in runs})
+    return template.render(
+        runs=runs, active="runs", demo_enabled=demo_enabled,
+        distinct_triggers=distinct_triggers, distinct_stages=distinct_stages,
+    )
 
 
 def _trend_chart_geometry(trend, width: int = 300, height: int = 72, pad_x: float = 4, pad_y: float = 8):
