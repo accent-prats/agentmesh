@@ -105,10 +105,16 @@
       <i data-lucide="zap" class="w-4 h-4"></i> Run demo scenario
     </button>
     {% endif %}
-    <a href="settings" class="inline-flex items-center gap-2 bg-white hover:bg-gray-50 text-gray-700 text-sm font-medium
-             px-4 py-2.5 rounded-lg border border-gray-200 transition-colors">
-      <i data-lucide="plug" class="w-4 h-4 text-gray-500"></i> Configure live analysis
-    </a>
+    <div class="inline-flex items-center gap-2 bg-white border border-gray-200 rounded-lg pl-3 pr-1.5 py-1.5">
+      <label for="live-hours" class="text-xs text-gray-500">Hours back</label>
+      <input id="live-hours" type="number" value="24" min="1" max="720"
+        class="w-16 border border-gray-200 rounded px-1.5 py-1 text-sm focus:ring-2 focus:ring-brand focus:border-brand focus:outline-none">
+      <button id="live-btn" onclick="runLive()"
+        class="inline-flex items-center gap-1.5 bg-gray-900 hover:bg-black text-white text-sm font-medium
+               px-3 py-1.5 rounded-md transition-colors disabled:opacity-50 disabled:cursor-not-allowed">
+        <i data-lucide="radar" class="w-3.5 h-3.5"></i> Run live analysis
+      </button>
+    </div>
     <span id="status" class="text-sm text-gray-500 min-h-[20px]"></span>
   </div>
 
@@ -145,21 +151,29 @@
   <div class="bg-white rounded-2xl shadow-sm border border-gray-100 p-7 {{ 'mt-5' if demo_enabled else 'mt-8' }}">
     <div class="flex items-center gap-3 mb-1">
       <div class="w-9 h-9 rounded-xl bg-gray-100 flex items-center justify-center shrink-0">
-        <i data-lucide="plug" class="w-4 h-4 text-gray-500"></i>
+        <i data-lucide="radar" class="w-4 h-4 text-gray-500"></i>
       </div>
       <h2 class="font-semibold text-gray-900">Live analysis</h2>
     </div>
     <p class="text-sm text-gray-500 mt-2 mb-4">
-      Diagnose real patch failures from your own Azure subscription and Datadog org.
+      Diagnose real patch failures from your own Azure subscription and Datadog org -
+      <a href="settings" class="font-medium text-brand hover:text-brand-dark">configure access first</a> if you haven't.
+      Want this to run on its own? Set up a <a href="settings" class="font-medium text-brand hover:text-brand-dark">recurring schedule</a> instead.
     </p>
-    <a href="settings" class="inline-flex items-center gap-1.5 text-sm font-medium text-brand hover:text-brand-dark">
-      Configure Azure &amp; Datadog access <i data-lucide="arrow-right" class="w-3.5 h-3.5"></i>
-    </a>
+    <div class="flex items-end gap-3">
+      <div>
+        <label class="block text-xs font-medium text-gray-600 mb-1.5">Window (hours back)</label>
+        <input id="live-hours" type="number" value="24" min="1" max="720"
+          class="w-28 border border-gray-300 rounded-lg px-3 py-2 text-sm focus:ring-2 focus:ring-brand focus:border-brand focus:outline-none">
+      </div>
+      <button id="live-btn" onclick="runLive('live-status')"
+        class="flex items-center gap-2 bg-gray-900 hover:bg-black text-white text-sm font-medium
+               px-5 py-2.5 rounded-lg transition-colors disabled:opacity-50 disabled:cursor-not-allowed">
+        <i data-lucide="radar" class="w-4 h-4"></i> Run live analysis
+      </button>
+    </div>
+    <div id="live-status" class="text-sm text-gray-500 mt-3 min-h-[20px]"></div>
   </div>
-
-  {% if not demo_enabled %}
-  <div id="status" class="text-sm text-gray-500 mt-3 min-h-[20px]"></div>
-  {% endif %}
   {% endif %}
 
 </div>
@@ -183,6 +197,35 @@ async function runDemo() {
   } catch (err) {
     status.className = 'text-sm text-red-600 min-h-[20px]';
     status.textContent = 'Run failed: ' + err.message;
+    btn.disabled = false;
+  }
+}
+
+// Shared by both the dashboard state's inline trigger (onclick="runLive()",
+// reporting through the shared #status next to the demo button) and the
+// empty state's own "Live analysis" card (onclick="runLive('live-status')",
+// reporting into that card's own status line) - same request/response
+// shape as settings.html.j2's old "Run a live analysis" card, which this
+// replaces (moved here since triggering runs belongs on Console/Runs, not
+// Settings - see runs.html.j2's own "trigger ... from the Console" copy).
+async function runLive(statusElId) {
+  statusElId = statusElId || 'status';
+  const btn = document.getElementById('live-btn');
+  const status = document.getElementById(statusElId);
+  btn.disabled = true;
+  status.className = 'text-sm text-gray-500 min-h-[20px]';
+  status.textContent = 'Discovering failed machines and diagnosing…';
+  try {
+    const hours = parseInt(document.getElementById('live-hours').value, 10) || 24;
+    const res = await fetch('runs/live', { method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify({ window_hours: hours, scope_name: 'live' }) });
+    if (!res.ok) { const err = await res.json(); throw new Error(err.detail || ('HTTP ' + res.status)); }
+    const report = await res.json();
+    status.textContent = report.total_failed + '/' + report.total_machines +
+      ' machines failed, ' + report.total_clusters + ' distinct causes. Opening report…';
+    window.location.href = 'runs/' + report.run.run_id + '/report.html';
+  } catch (err) {
+    status.className = 'text-sm text-red-600 min-h-[20px]';
+    status.textContent = 'Live run failed: ' + err.message;
     btn.disabled = false;
   }
 }

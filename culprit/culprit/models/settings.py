@@ -16,7 +16,7 @@ from __future__ import annotations
 
 from datetime import datetime
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 
 
 class AzureSettingsInput(BaseModel):
@@ -82,3 +82,38 @@ class DatadogSettingsView(BaseModel):
     last_tested_at: datetime | None = None
     last_test_ok: bool | None = None
     last_test_message: str = ""
+
+
+class ScheduleSettingsInput(BaseModel):
+    """The recurring, unattended counterpart to POST /runs/live - same
+    discover -> collect -> diagnose path (pipeline/live_run.py), just
+    fired by cron instead of a button. See scheduler/cron.py for how this
+    reaches an already-running in-process scheduler without a restart."""
+
+    enabled: bool = False
+    # 5 space-separated fields (minute hour day month weekday), UTC -
+    # apscheduler.triggers.cron.CronTrigger.from_crontab's own format.
+    # Not fully cron-validated here (that needs apscheduler, which this
+    # model must stay free of - see save_schedule_settings's own note on
+    # why that import has to stay lazy); this is just the field-count
+    # sanity check that catches an empty or malformed string early,
+    # before it reaches a process that actually has a live scheduler.
+    cron_expression: str = "0 4 * * *"
+    window_hours: int = Field(default=192, ge=1, le=720)
+    scope_name: str = "scheduled"
+
+    @field_validator("cron_expression")
+    @classmethod
+    def _validate_field_count(cls, v: str) -> str:
+        if len(v.split()) != 5:
+            raise ValueError('cron_expression must have exactly 5 space-separated fields: "minute hour day month weekday"')
+        return v
+
+
+class ScheduleSettingsView(ScheduleSettingsInput):
+    # Whether *this process* actually has an in-process scheduler running
+    # (CULPRIT_SCHEDULER_ENABLED) - a save always persists to the DB
+    # regardless, but only a running scheduler can act on it immediately;
+    # see repository.py::schedule_settings_view.
+    scheduler_running: bool = False
+    next_run_at: datetime | None = None

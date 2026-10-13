@@ -57,17 +57,36 @@ async def _lifespan(_app: FastAPI):
 
     scheduler = None
     if config.settings.scheduler_enabled:
+        from culprit.api import deps
+        from culprit.db import repository
         from culprit.scheduler.cron import build_scheduler
 
+        # Seeds from whatever's saved on /culprit/settings' "Scheduled
+        # runs" card (falling back to CULPRIT_SCHEDULER_ENABLED/
+        # CULPRIT_SCHEDULED_CRON only if nothing's ever been saved there -
+        # see load_schedule_settings) - CULPRIT_SCHEDULER_ENABLED stays
+        # the one thing only an env var/redeploy controls: whether *this
+        # process* runs an in-process scheduler at all, vs. relying on an
+        # external one (k8s CronJob, Azure Function timer) hitting
+        # /runs/live itself. Everything past that (cron, window, scope,
+        # pause/resume) is DB-backed and edits live via apply_schedule -
+        # see routes_settings.py's PUT /settings/schedule.
+        with deps.get_session_factory()() as session:
+            schedule_cfg = repository.load_schedule_settings(session)
+
         scheduler = build_scheduler(
-            cron_expression=config.settings.scheduled_cron,
+            schedule_cfg=schedule_cfg,
             pre_flight_interval_minutes=config.settings.preflight_interval_minutes,
         )
         scheduler.start()
         log.info(
-            "In-process scheduler started - scheduled_cycle on '%s', pre_flight_check every %d min",
-            config.settings.scheduled_cron, config.settings.preflight_interval_minutes,
+            "In-process scheduler started - scheduled_cycle %s (cron '%s', scope '%s'), "
+            "pre_flight_check every %d min",
+            "enabled" if schedule_cfg.enabled else "disabled (enable it on /culprit/settings)",
+            schedule_cfg.cron_expression, schedule_cfg.scope_name, config.settings.preflight_interval_minutes,
         )
+
+    _app.state.scheduler = scheduler
 
     yield
 

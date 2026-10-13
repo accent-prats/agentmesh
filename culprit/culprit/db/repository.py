@@ -784,6 +784,80 @@ def azure_settings_view(session: Session):
     )
 
 
+def load_schedule_settings(session: Session):
+    """Returns the saved scheduled-run config, or - if nothing's ever been
+    saved on /culprit/settings - the CULPRIT_SCHEDULER_ENABLED/
+    CULPRIT_SCHEDULED_CRON env var defaults (culprit/config.py), same
+    "DB is authoritative once a row exists, env vars only seed the very
+    first read" convention as load_azure_settings. Read by main.py's
+    lifespan handler to build the initial in-process scheduler, and by
+    schedule_settings_view for the Settings screen."""
+    from culprit.config import settings as env_settings
+    from culprit.models.settings import ScheduleSettingsInput
+
+    record = session.get(SettingsRecord, "schedule")
+    if record is None:
+        return ScheduleSettingsInput(enabled=env_settings.scheduler_enabled, cron_expression=env_settings.scheduled_cron)
+    d = record.data_json
+    return ScheduleSettingsInput(
+        enabled=d.get("enabled", False),
+        cron_expression=d.get("cron_expression", "0 4 * * *"),
+        window_hours=d.get("window_hours", 192),
+        scope_name=d.get("scope_name", "scheduled"),
+    )
+
+
+def save_schedule_settings(session: Session, cfg) -> SettingsRecord:
+    """`cfg` is a culprit.models.settings.ScheduleSettingsInput. No secrets
+    here (unlike Azure/Datadog), so this is a plain overwrite - nothing to
+    preserve-on-blank."""
+    data = {
+        "enabled": cfg.enabled,
+        "cron_expression": cfg.cron_expression,
+        "window_hours": cfg.window_hours,
+        "scope_name": cfg.scope_name,
+    }
+    record = session.get(SettingsRecord, "schedule")
+    if record is None:
+        record = SettingsRecord(provider="schedule", data_json=data)
+        session.add(record)
+    else:
+        record.data_json = data
+    session.commit()
+    return record
+
+
+def schedule_settings_view(session: Session, scheduler=None):
+    """`scheduler` is the live in-process APScheduler instance
+    (app.state.scheduler - None whenever CULPRIT_SCHEDULER_ENABLED is off
+    on this process). Its own next_run_time is the only honest source for
+    "when does this actually fire next" - a saved cron expression alone
+    doesn't say whether anything is actually listening to it right now."""
+    from culprit.models.settings import ScheduleSettingsView
+
+    cfg = load_schedule_settings(session)
+    next_run_at = None
+    if scheduler is not None:
+        # Deferred: culprit.scheduler.cron imports apscheduler at module
+        # level, so this must stay inside the "a live scheduler already
+        # exists" branch - a non-None scheduler means apscheduler was
+        # already successfully imported once, in main.py's lifespan, so
+        # this is safe precisely when it's reached.
+        from culprit.scheduler.cron import SCHEDULED_JOB_ID
+
+        job = scheduler.get_job(SCHEDULED_JOB_ID)
+        if job is not None:
+            next_run_at = job.next_run_time
+    return ScheduleSettingsView(
+        enabled=cfg.enabled,
+        cron_expression=cfg.cron_expression,
+        window_hours=cfg.window_hours,
+        scope_name=cfg.scope_name,
+        scheduler_running=scheduler is not None,
+        next_run_at=next_run_at,
+    )
+
+
 def datadog_settings_view(session: Session):
     from culprit.models.settings import DatadogSettingsView
 

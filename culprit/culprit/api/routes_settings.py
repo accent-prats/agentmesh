@@ -11,7 +11,7 @@ AI Providers screen instead, not here - see
 """
 from __future__ import annotations
 
-from fastapi import APIRouter
+from fastapi import APIRouter, Request
 
 from culprit.api import deps
 from culprit.models.settings import (
@@ -19,6 +19,8 @@ from culprit.models.settings import (
     AzureSettingsView,
     DatadogSettingsInput,
     DatadogSettingsView,
+    ScheduleSettingsInput,
+    ScheduleSettingsView,
 )
 from culprit.security.credential_test import test_azure_credentials, test_datadog_credentials
 
@@ -83,3 +85,32 @@ def test_datadog(body: DatadogSettingsInput | None = None) -> dict:
         ok, message = test_datadog_credentials(cfg)
         repository.record_settings_test_result(session, "datadog", ok, message)
         return {"ok": ok, "message": message}
+
+
+@router.get("/schedule", response_model=ScheduleSettingsView)
+def get_schedule_settings(request: Request) -> ScheduleSettingsView:
+    from culprit.db import repository
+
+    scheduler = getattr(request.app.state, "scheduler", None)
+    with deps.get_session_factory()() as session:
+        return repository.schedule_settings_view(session, scheduler=scheduler)
+
+
+@router.put("/schedule", response_model=ScheduleSettingsView)
+def put_schedule_settings(body: ScheduleSettingsInput, request: Request) -> ScheduleSettingsView:
+    """Takes effect on the live in-process scheduler immediately, not just
+    in the DB - see culprit/scheduler/cron.py::apply_schedule. A deployment
+    where CULPRIT_SCHEDULER_ENABLED is off has no live scheduler to apply
+    to; this still saves the config for whenever it's next turned on -
+    the response's scheduler_running=False is what tells the settings
+    screen to say so, rather than implying this is live when it isn't."""
+    from culprit.db import repository
+
+    scheduler = getattr(request.app.state, "scheduler", None)
+    with deps.get_session_factory()() as session:
+        repository.save_schedule_settings(session, body)
+        if scheduler is not None:
+            from culprit.scheduler.cron import apply_schedule
+
+            apply_schedule(scheduler, body)
+        return repository.schedule_settings_view(session, scheduler=scheduler)

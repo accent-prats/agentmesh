@@ -70,11 +70,13 @@ never echoed back by any GET - the screen only ever reports whether one is
 configured.
 
 Once both are saved, **`POST /runs/live`** (or the "Run live analysis"
-button on the same page) discovers every machine with a non-succeeded
+trigger on the Console page) discovers every machine with a non-succeeded
 patch result in a given time window (default: the last 24h) via Resource
 Graph, collects real evidence for each, and runs it through the exact
 same pipeline the demo does. See `culprit/api/routes_settings.py` and
-`culprit/pipeline/discovery.py`.
+`culprit/pipeline/discovery.py`. To run this automatically on a recurring
+schedule instead of triggering it by hand, use the "Scheduled runs" card
+on `/settings` - see "Scheduling" in [`RUNBOOK.md`](RUNBOOK.md).
 
 ## Quickstart
 
@@ -110,6 +112,7 @@ uvicorn culprit.api.main:app --reload
 # GET  /settings/azure, /settings/datadog     - current view (secrets masked)
 # PUT  /settings/azure, /settings/datadog     - save
 # POST /settings/azure/test, /settings/datadog/test  - real connection test
+# GET/PUT /settings/schedule   - recurring live-run config (cron, window, scope) - see Scheduling below
 # POST /runs/demo             - trigger the demo scenario, get a FleetReport back
 # POST /runs/live             - discover + diagnose real failed machines (needs /settings configured)
 # GET  /runs/{run_id}/report - the same report, JSON
@@ -123,8 +126,11 @@ uvicorn culprit.api.main:app --reload
 # POST /webhooks/event-grid    - Event Grid receiver (validation handshake + dispatches a real run)
 ```
 
-Set `CULPRIT_SCHEDULER_ENABLED=true` to also run the scheduled and pre-flight
-autonomy modes in-process - see "Scheduling" in [`RUNBOOK.md`](RUNBOOK.md).
+Set `CULPRIT_SCHEDULER_ENABLED=true` so this process also runs the scheduled
+and pre-flight autonomy modes in-process; the recurring schedule itself
+(cron, window, scope, and the on/off toggle) is then edited live from the
+"Scheduled runs" card on `/settings`, no redeploy needed - see "Scheduling"
+in [`RUNBOOK.md`](RUNBOOK.md).
 
 Or with Docker Compose (Postgres + API):
 

@@ -100,16 +100,27 @@ you give it.
 
 Set `CULPRIT_SCHEDULER_ENABLED=true` (`.env.example`) and the app starts
 an in-process APScheduler on startup (`culprit/api/main.py`'s lifespan
-handler, via `culprit/scheduler/cron.py::build_scheduler`) with two jobs:
+handler, via `culprit/scheduler/cron.py::build_scheduler`) with two jobs.
+This env var is the only thing that's redeploy-only - it's a process-level
+decision (does *this* process run an in-process scheduler at all, vs.
+relying on an external one), separate from what the schedule actually
+does:
 
-- **`scheduled_cycle`** - fires on `CULPRIT_SCHEDULED_CRON` (default
-  `0 4 * * *`; set it to shortly after your maintenance window closes).
-  Reads whatever's saved on **`/settings`** at fire time (not a
-  subscription id baked into a job argument), then runs the exact same
-  discover -> collect -> diagnose path as `POST /runs/live`
-  (`culprit/pipeline/live_run.py::execute_live_run`) - same "everything
-  that failed in the window" approximation described above, just
-  triggered by cron instead of a request.
+- **`scheduled_cycle`** - fires on whatever's saved in the **"Scheduled
+  runs" card on `/settings`** (cron expression, window hours, scope name,
+  and the enabled toggle itself - `culprit/models/settings.py::
+  ScheduleSettingsInput`, persisted via `GET`/`PUT /settings/schedule`).
+  Editing it there takes effect immediately on the running process, no
+  restart needed (`culprit/scheduler/cron.py::apply_schedule` re-adds or
+  removes the job on the live scheduler) - `CULPRIT_SCHEDULED_CRON`
+  (`.env.example`, default `0 4 * * *`) only seeds the very first read, the
+  same "DB is authoritative once a row exists" convention Azure/Datadog
+  settings already use. Reads whatever's saved on **`/settings`**'s
+  Azure/Datadog cards at fire time (not a subscription id baked into a job
+  argument), then runs the exact same discover -> collect -> diagnose path
+  as `POST /runs/live` (`culprit/pipeline/live_run.py::execute_live_run`) -
+  same "everything that failed in the window" approximation described
+  above, just triggered by cron instead of a request or a button.
 - **`pre_flight_check`** - fires every `CULPRIT_PREFLIGHT_INTERVAL_MINUTES`
   (default 60). Enumerates every machine in the configured subscription(s)
   via `pipeline/discovery.py::discover_all_machines` (follows Resource

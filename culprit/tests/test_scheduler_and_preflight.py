@@ -165,6 +165,92 @@ def test_scheduled_cycle_notify_includes_a_report_link_when_public_url_is_set(cl
     assert captured["report_url"] == f"https://portal.local/culprit/runs/{captured['run_id']}/report.html"
 
 
+def test_scheduled_cycle_honors_a_custom_window_hours(client, monkeypatch):
+    """window_hours used to be a fixed module constant - now it's whatever
+    /culprit/settings' "Scheduled runs" card saved, passed through
+    apply_schedule's job kwargs. Confirms scheduled_cycle actually forwards
+    a non-default value to execute_live_run rather than ignoring it."""
+    import culprit.pipeline.live_run as live_run_module
+    from culprit.scheduler.cron import scheduled_cycle
+
+    captured = {}
+
+    def fake_execute_live_run(window_hours, scope_name, trigger_mode):
+        captured["window_hours"] = window_hours
+        raise live_run_module.NoSubscriptionConfigured("no sub configured")
+
+    monkeypatch.setattr(live_run_module, "execute_live_run", fake_execute_live_run)
+
+    scheduled_cycle(scope_name="nightly", window_hours=48)
+
+    assert captured["window_hours"] == 48
+
+
+def test_apply_schedule_adds_a_cron_job_when_enabled():
+    from culprit.models.settings import ScheduleSettingsInput
+    from culprit.scheduler.cron import SCHEDULED_JOB_ID, apply_schedule, build_scheduler
+
+    scheduler = build_scheduler(schedule_cfg=ScheduleSettingsInput(enabled=False), pre_flight_interval_minutes=60)
+    scheduler.start()
+    try:
+        assert scheduler.get_job(SCHEDULED_JOB_ID) is None
+
+        apply_schedule(
+            scheduler,
+            ScheduleSettingsInput(enabled=True, cron_expression="0 */6 * * *", window_hours=48, scope_name="nightly"),
+        )
+        job = scheduler.get_job(SCHEDULED_JOB_ID)
+        assert job is not None
+        assert job.kwargs == {"scope_name": "nightly", "window_hours": 48}
+
+        # Disabling again must remove the job, not leave a stale one firing
+        # on the old cron.
+        apply_schedule(scheduler, ScheduleSettingsInput(enabled=False))
+        assert scheduler.get_job(SCHEDULED_JOB_ID) is None
+    finally:
+        scheduler.shutdown(wait=False)
+
+
+def test_put_settings_schedule_applies_live_to_a_running_scheduler(client, monkeypatch):
+    """When this process does have an in-process scheduler running
+    (app.state.scheduler set, as main.py's lifespan does when
+    CULPRIT_SCHEDULER_ENABLED=true), saving on /settings/schedule must
+    call apply_schedule on it immediately - the whole point of moving this
+    off a redeploy-only env var onto a live-editable settings screen."""
+    import culprit.api.main as main_module
+    from culprit.models.settings import ScheduleSettingsInput
+    from culprit.scheduler.cron import build_scheduler
+
+    scheduler = build_scheduler(schedule_cfg=ScheduleSettingsInput(enabled=False), pre_flight_interval_minutes=60)
+    scheduler.start()
+    # main_module.app is RootPathFromHeaderMiddleware's plain ASGI wrapper
+    # (main.py rebinds the module-level name to it at the bottom of the
+    # file) - it has no .state of its own. request.app inside a route
+    # handler resolves to the *inner* FastAPI instance instead (Starlette's
+    # own __call__ sets scope["app"] = self on whichever app's __call__
+    # actually runs, i.e. the inner one the wrapper delegates to) - that
+    # inner instance is reachable here as the wrapper's own .app.
+    main_module.app.app.state.scheduler = scheduler
+    try:
+        resp = client.put(
+            "/settings/schedule",
+            json={"enabled": True, "cron_expression": "0 4 * * *", "window_hours": 24, "scope_name": "nightly"},
+        )
+        assert resp.status_code == 200
+        body = resp.json()
+        assert body["scheduler_running"] is True
+        assert body["next_run_at"] is not None
+
+        from culprit.scheduler.cron import SCHEDULED_JOB_ID
+
+        job = scheduler.get_job(SCHEDULED_JOB_ID)
+        assert job is not None
+        assert job.kwargs == {"scope_name": "nightly", "window_hours": 24}
+    finally:
+        main_module.app.app.state.scheduler = None
+        scheduler.shutdown(wait=False)
+
+
 def test_event_grid_handler_dispatches_a_live_run_in_the_background(client, monkeypatch):
     """The webhook itself must respond immediately - the actual run is a
     background task, so this drives _handle_maintenance_event directly

@@ -30,24 +30,36 @@ log = logging.getLogger(__name__)
 # How far back a scheduled cycle looks for failed patch results - the
 # window between two runs of the same maintenance configuration is
 # normally under a week; a day of slack either side covers a late-running
-# job without re-diagnosing an entire prior cycle's failures again.
+# job without re-diagnosing an entire prior cycle's failures again. Still
+# the default shown on /culprit/settings' "Scheduled runs" card - editable
+# there (ScheduleSettingsInput.window_hours) without a redeploy.
 _SCHEDULED_WINDOW_HOURS = 24 * 8
 
+# Fixed regardless of scope_name, unlike build_scheduler's old
+# per-scope-name id - there is exactly one scheduled-run config now (the
+# Settings screen edits one row, not one per scope), so apply_schedule can
+# always find and replace/remove this same job.
+SCHEDULED_JOB_ID = "scheduled_cycle"
 
-def scheduled_cycle(scope_name: str = "scheduled") -> None:
+
+def scheduled_cycle(scope_name: str = "scheduled", window_hours: int = _SCHEDULED_WINDOW_HOURS) -> None:
     """Fires after a maintenance window closes. Exactly the same
     discover -> collect -> diagnose path `POST /runs/live` uses
     (culprit/pipeline/live_run.py), just triggered by cron instead of an
     HTTP request - there's no inbound request here to build a report link
     from the way routes_runs.py's _report_url does, so the digest's link
-    (if any) comes from CULPRIT_PUBLIC_URL instead (see _notify below)."""
+    (if any) comes from CULPRIT_PUBLIC_URL instead (see _notify below).
+
+    `window_hours` defaults to the module constant for any direct caller
+    (e.g. this file's own tests) but is always passed explicitly by
+    apply_schedule, from whatever's saved on /culprit/settings."""
     from culprit.models.patch_run import TriggerMode
     from culprit.pipeline.live_run import NoSubscriptionConfigured, execute_live_run
 
     log.info("Scheduled cycle firing for scope=%s", scope_name)
     try:
         report = execute_live_run(
-            window_hours=_SCHEDULED_WINDOW_HOURS, scope_name=scope_name, trigger_mode=TriggerMode.SCHEDULED
+            window_hours=window_hours, scope_name=scope_name, trigger_mode=TriggerMode.SCHEDULED
         )
     except NoSubscriptionConfigured:
         log.info("Scheduled cycle skipped - no Azure subscription configured on /culprit/settings yet")
@@ -122,25 +134,38 @@ def _notify(report) -> None:
         log.exception("Failed to post digest for run %s to webhook", report.run.run_id)
 
 
-def build_scheduler(
-    scope_name: str = "scheduled",
-    cron_expression: str = "0 4 * * *",
-    pre_flight_interval_minutes: int = 60,
-) -> BackgroundScheduler:
+def apply_schedule(scheduler: BackgroundScheduler, cfg) -> None:
+    """(Re)applies `cfg` (a culprit.models.settings.ScheduleSettingsInput,
+    as saved on /culprit/settings) to an already-running scheduler -
+    called once at startup (main.py's lifespan, seeded from whatever the
+    DB already has) and again every time PUT /settings/schedule saves a
+    change, so editing the cron expression, window, scope, or the enabled
+    toggle itself all take effect immediately, with no restart - the same
+    "DB is authoritative, takes effect live" contract Azure/Datadog
+    settings already have."""
+    if cfg.enabled:
+        scheduler.add_job(
+            scheduled_cycle,
+            trigger=CronTrigger.from_crontab(cfg.cron_expression),
+            kwargs={"scope_name": cfg.scope_name, "window_hours": cfg.window_hours},
+            id=SCHEDULED_JOB_ID,
+            replace_existing=True,
+        )
+    elif scheduler.get_job(SCHEDULED_JOB_ID):
+        scheduler.remove_job(SCHEDULED_JOB_ID)
+
+
+def build_scheduler(schedule_cfg, pre_flight_interval_minutes: int = 60) -> BackgroundScheduler:
     """Both jobs read Azure settings from /culprit/settings at fire time
     (see scheduled_cycle/pre_flight_check above) rather than taking a
     subscription id here - that's the whole point of the settings screen:
-    change it without a redeploy. `cron_expression` defaults to a nightly
-    4am run; point it at whatever actually matches this environment's
-    maintenance window schedule."""
+    change it without a redeploy. `schedule_cfg` is whatever's saved there
+    at process startup (culprit/db/repository.py::load_schedule_settings);
+    main.py's lifespan handler is what loads it and re-applies live edits
+    afterwards via apply_schedule() - this function only builds the
+    scheduler once, at process start."""
     scheduler = BackgroundScheduler(timezone=timezone.utc)
-    scheduler.add_job(
-        scheduled_cycle,
-        trigger=CronTrigger.from_crontab(cron_expression),
-        args=[scope_name],
-        id=f"scheduled_cycle:{scope_name}",
-        replace_existing=True,
-    )
+    apply_schedule(scheduler, schedule_cfg)
     scheduler.add_job(
         pre_flight_check,
         trigger="interval",

@@ -236,3 +236,46 @@ def test_datadog_test_connection(client, monkeypatch):
 
     view = client.get("/settings/datadog").json()
     assert view["last_test_ok"] is True
+
+
+def test_schedule_settings_default_view_is_disabled_with_no_live_scheduler(client):
+    """No CULPRIT_SCHEDULER_ENABLED in this test process - app.state.scheduler
+    is never set, so scheduler_running must honestly report False rather
+    than implying a save here is actually live."""
+    resp = client.get("/settings/schedule")
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["enabled"] is False
+    assert body["cron_expression"] == "0 4 * * *"
+    assert body["window_hours"] == 192
+    assert body["scope_name"] == "scheduled"
+    assert body["scheduler_running"] is False
+    assert body["next_run_at"] is None
+
+
+def test_schedule_settings_save_and_reload(client):
+    resp = client.put(
+        "/settings/schedule",
+        json={"enabled": True, "cron_expression": "0 */6 * * *", "window_hours": 48, "scope_name": "nightly"},
+    )
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["enabled"] is True
+    assert body["cron_expression"] == "0 */6 * * *"
+    assert body["window_hours"] == 48
+    assert body["scope_name"] == "nightly"
+    # No live scheduler in this test process to apply it to - saved for
+    # whenever one starts, not acted on immediately.
+    assert body["scheduler_running"] is False
+    assert body["next_run_at"] is None
+
+    reloaded = client.get("/settings/schedule").json()
+    assert reloaded["enabled"] is True
+    assert reloaded["cron_expression"] == "0 */6 * * *"
+    assert reloaded["window_hours"] == 48
+    assert reloaded["scope_name"] == "nightly"
+
+
+def test_schedule_settings_rejects_a_malformed_cron_expression(client):
+    resp = client.put("/settings/schedule", json={"enabled": True, "cron_expression": "not a cron"})
+    assert resp.status_code == 422
