@@ -142,6 +142,39 @@ def test_build_dashboard_summary_populated_after_a_run(session_factory):
     # correctly-populated list, not an empty one.
     assert len(summary.compliance_trend) == 1
     assert summary.compliance_trend[0].run_id == output.run.run_id
+    # Only one completed run for this scope - no prior cycle to diff against.
+    assert summary.failed_delta is None
+    assert summary.compliance_delta_pct is None
+
+
+def test_build_dashboard_summary_computes_deltas_from_two_runs(session_factory):
+    with session_factory() as session:
+        _make_run(session, "run-1", "scope-a", datetime(2026, 1, 1, tzinfo=timezone.utc), 100, 20)  # 80%
+        _make_run(session, "run-2", "scope-a", datetime(2026, 1, 2, tzinfo=timezone.utc), 100, 5)  # 95%
+
+        summary = repository.build_dashboard_summary(session)
+
+    assert summary.failed_delta == -15  # 5 - 20
+    assert summary.compliance_delta_pct == 15.0  # 95.0 - 80.0
+
+
+def test_build_dashboard_summary_does_not_need_previous_runs_clusters(session_factory):
+    """The whole point of the optimization: build_dashboard_summary must no
+    longer call compute_trend/_load_fleet_report_core on the *previous* run -
+    a previous run with no Cluster/RCAResult rows at all (just the bare
+    RunRecord _make_run creates) must still produce correct deltas instead
+    of erroring or silently returning None, proving the dashboard reads
+    failed_machines straight off RunRecord rather than reconstructing the
+    previous run's clusters."""
+    with session_factory() as session:
+        _make_run(session, "run-1", "scope-a", datetime(2026, 1, 1, tzinfo=timezone.utc), 100, 30)  # 70%, no clusters
+        _make_run(session, "run-2", "scope-a", datetime(2026, 1, 2, tzinfo=timezone.utc), 100, 10)  # 90%, no clusters
+
+        summary = repository.build_dashboard_summary(session)
+
+    assert summary.failed_delta == -20
+    assert summary.compliance_delta_pct == 20.0
+    assert summary.latest_run.trend is None  # see DashboardSummary's docstring
 
 
 @pytest.fixture

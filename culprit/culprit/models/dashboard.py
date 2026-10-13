@@ -19,10 +19,15 @@ class ComplianceTrendPoint(BaseModel):
     """One completed run's compliance %, for the Console dashboard's
     trend line - oldest first (left-to-right charting order), scoped to
     a single scope_name the same way FleetTrend already is (a different
-    maintenance job's history isn't a fair comparison point)."""
+    maintenance job's history isn't a fair comparison point).
+    `failed_machines` rides along for free (same query, same row) so the
+    dashboard's own tile-arrow deltas can be read off the last two points
+    here instead of needing a separate, expensive FleetTrend/compute_trend
+    call - see db/repository.py::build_dashboard_summary."""
 
     run_id: str
     started_at: datetime
+    failed_machines: int
     compliance_pct: float
 
 
@@ -44,8 +49,21 @@ class DashboardSummary(BaseModel):
     of empty/zero-filled tiles. `compliance_trend` has fewer than 2
     points whenever there's nothing to meaningfully chart yet (first
     cycle, or latest_run itself is None) - not an error, same shape as
-    FleetTrend's own None-means-no-prior-cycle convention."""
+    FleetTrend's own None-means-no-prior-cycle convention.
+
+    `latest_run.trend` is deliberately always None here - unlike the
+    fleet report page's own copy of the same run, this dashboard never
+    displays `previous_repeat_offender_count` (the one FleetTrend field
+    with no cheap, column-only equivalent), so computing a full
+    FleetTrend here would mean reconstructing the previous run's
+    clusters/RCAResults purely to throw that one field away. Use
+    `failed_delta`/`compliance_delta_pct` below instead - the same two
+    numbers the fleet report page's tile arrows show, derived from
+    `compliance_trend`'s own last two points (already fetched, zero
+    extra cost) rather than a second, expensive reconstruction."""
 
     latest_run: FleetReport | None = None
     compliance_trend: list[ComplianceTrendPoint] = Field(default_factory=list)
     top_causes: list[CauseBreakdownEntry] = Field(default_factory=list)
+    failed_delta: int | None = None
+    compliance_delta_pct: float | None = None

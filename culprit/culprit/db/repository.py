@@ -284,12 +284,22 @@ def _previous_completed_run(session: Session, run_record: RunRecord) -> RunRecor
     return session.execute(stmt).scalars().first()
 
 
-def compute_trend(session: Session, run_id: str):
+def compute_trend(session: Session, run_id: str, current_report=None):
     """The prior-cycle comparison for the same scope_name (proposal
     Section 8: "trend against previous cycles"). None when there's no
     earlier *completed* run to compare against - an in-progress or failed
     prior run isn't a fair baseline, so it's skipped rather than compared
-    against."""
+    against.
+
+    `current_report`, if the caller already has one (as `load_fleet_report`
+    always does), is reused instead of reconstructing the exact same
+    run's clusters/RCAResults a second time just to read two scalars off
+    it - found 2026-10-16 while removing a *different*, dashboard-only
+    redundancy; this one benefits every caller, including the fleet
+    report page, since the value is identical either way, just cheaper
+    to get. The previous run still needs its own reconstruction -
+    repeat_offender_count has no cheaper equivalent (it isn't a plain
+    column anywhere)."""
     from culprit.models.report import FleetTrend
 
     run_record = session.get(RunRecord, run_id)
@@ -302,7 +312,8 @@ def compute_trend(session: Session, run_id: str):
     if previous_report is None:
         return None
 
-    current_report = _load_fleet_report_core(session, run_id)
+    if current_report is None:
+        current_report = _load_fleet_report_core(session, run_id)
     if current_report is None:
         return None
 
@@ -324,7 +335,7 @@ def load_fleet_report(session: Session, run_id: str):
     report = _load_fleet_report_core(session, run_id)
     if report is None:
         return None
-    trend = compute_trend(session, run_id)
+    trend = compute_trend(session, run_id, current_report=report)
     return report.model_copy(update={"trend": trend})
 
 
@@ -366,6 +377,7 @@ def compliance_trend(session: Session, scope_name: str, limit: int = 10):
         ComplianceTrendPoint(
             run_id=r.run_id,
             started_at=r.started_at,
+            failed_machines=r.failed_machines,
             compliance_pct=round(100.0 * (r.total_machines - r.failed_machines) / r.total_machines, 1)
             if r.total_machines
             else 100.0,
@@ -407,17 +419,37 @@ def top_causes(session: Session, run_id: str, limit: int = len(CauseFamily)):
 def build_dashboard_summary(session: Session):
     """Everything the Console page's dashboard needs, in one call - see
     models/dashboard.py::DashboardSummary for what each piece means and
-    why "no completed runs yet" isn't an error."""
+    why "no completed runs yet" isn't an error.
+
+    Uses `_load_fleet_report_core` directly, not `load_fleet_report` -
+    deliberately skips `compute_trend` (which would reconstruct the
+    *previous* run's clusters/RCAResults purely to compute
+    previous_repeat_offender_count, a number this dashboard never shows -
+    see DashboardSummary's own docstring). failed_delta/compliance_delta_pct
+    are read off compliance_trend's own last two points instead, which
+    were already fetched for the chart at effectively no extra cost."""
     from culprit.models.dashboard import DashboardSummary
 
     run_id = latest_completed_run_id(session)
     if run_id is None:
         return DashboardSummary()
 
-    latest_run = load_fleet_report(session, run_id)
+    latest_run = _load_fleet_report_core(session, run_id)
     trend = compliance_trend(session, latest_run.run.scope_name)
     causes = top_causes(session, run_id)
-    return DashboardSummary(latest_run=latest_run, compliance_trend=trend, top_causes=causes)
+
+    failed_delta = compliance_delta_pct = None
+    if len(trend) >= 2:
+        failed_delta = trend[-1].failed_machines - trend[-2].failed_machines
+        compliance_delta_pct = round(trend[-1].compliance_pct - trend[-2].compliance_pct, 1)
+
+    return DashboardSummary(
+        latest_run=latest_run,
+        compliance_trend=trend,
+        top_causes=causes,
+        failed_delta=failed_delta,
+        compliance_delta_pct=compliance_delta_pct,
+    )
 
 
 def get_machine_detail(session: Session, run_id: str, vm_name: str):

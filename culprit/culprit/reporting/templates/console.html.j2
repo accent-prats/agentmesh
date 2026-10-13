@@ -24,9 +24,9 @@
       <b class="block text-2xl font-bold text-gray-900 tabular-nums">{{ report.total_failed }}</b>
       <span class="block text-[11px] text-gray-400 mt-1">
         Failed
-        {% if report.trend %}
-          {% if report.trend.failed_delta < 0 %}<span class="text-emerald-600 font-semibold">&darr;{{ -report.trend.failed_delta }}</span>
-          {% elif report.trend.failed_delta > 0 %}<span class="text-red-600 font-semibold">&uarr;{{ report.trend.failed_delta }}</span>
+        {% if dashboard.failed_delta is not none %}
+          {% if dashboard.failed_delta < 0 %}<span class="text-emerald-600 font-semibold">&darr;{{ -dashboard.failed_delta }}</span>
+          {% elif dashboard.failed_delta > 0 %}<span class="text-red-600 font-semibold">&uarr;{{ dashboard.failed_delta }}</span>
           {% else %}<span class="text-gray-400">&middot; flat</span>{% endif %}
         {% endif %}
       </span>
@@ -36,9 +36,9 @@
       <b class="block text-2xl font-bold text-gray-900 tabular-nums">{{ report.compliance_pct }}%</b>
       <span class="block text-[11px] text-gray-400 mt-1">
         Compliance
-        {% if report.trend %}
-          {% if report.trend.compliance_delta_pct > 0 %}<span class="text-emerald-600 font-semibold">&uarr;{{ report.trend.compliance_delta_pct }}</span>
-          {% elif report.trend.compliance_delta_pct < 0 %}<span class="text-red-600 font-semibold">&darr;{{ -report.trend.compliance_delta_pct }}</span>
+        {% if dashboard.compliance_delta_pct is not none %}
+          {% if dashboard.compliance_delta_pct > 0 %}<span class="text-emerald-600 font-semibold">&uarr;{{ dashboard.compliance_delta_pct }}</span>
+          {% elif dashboard.compliance_delta_pct < 0 %}<span class="text-red-600 font-semibold">&darr;{{ -dashboard.compliance_delta_pct }}</span>
           {% else %}<span class="text-gray-400">&middot; flat</span>{% endif %}
         {% endif %}
       </span>
