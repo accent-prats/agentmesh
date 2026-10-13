@@ -279,3 +279,20 @@ def test_schedule_settings_save_and_reload(client):
 def test_schedule_settings_rejects_a_malformed_cron_expression(client):
     resp = client.put("/settings/schedule", json={"enabled": True, "cron_expression": "not a cron"})
     assert resp.status_code == 422
+
+
+def test_schedule_settings_rejects_a_semantically_invalid_cron_expression(client):
+    """"60 99 * * *" has the right field COUNT (5) - the Pydantic model's
+    own validator passes it - but 99 isn't a legal hour. Found in review
+    2026-10-13: without a second, semantic check, this used to save with
+    a 200 whenever no live scheduler was attached, then crash the whole
+    app at the next startup with the scheduler enabled - see
+    scheduler/cron.py::validate_cron_expression."""
+    resp = client.put("/settings/schedule", json={"enabled": True, "cron_expression": "60 99 * * *"})
+    assert resp.status_code == 422
+    assert "cron_expression" in resp.json()["detail"]
+
+    # Must never have been persisted - a bad value rejected here, with no
+    # live scheduler to also reject it, must not silently reappear.
+    reloaded = client.get("/settings/schedule").json()
+    assert reloaded["cron_expression"] != "60 99 * * *"

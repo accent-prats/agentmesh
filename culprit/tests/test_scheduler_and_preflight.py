@@ -211,6 +211,38 @@ def test_apply_schedule_adds_a_cron_job_when_enabled():
         scheduler.shutdown(wait=False)
 
 
+def test_apply_schedule_does_not_raise_on_an_invalid_cron_already_in_the_db():
+    """Second line of defense, for a row written before cron validation
+    existed (or edited directly in the DB) - apply_schedule must log and
+    leave the job absent, not propagate. This is what main.py's lifespan
+    calls at startup with no request to turn a raised exception into a
+    4xx - before this guard, a bad row here crashed the entire app."""
+    from culprit.models.settings import ScheduleSettingsInput
+    from culprit.scheduler.cron import SCHEDULED_JOB_ID, apply_schedule, build_scheduler
+
+    # "60 99 * * *" has the right field COUNT (5), so it passes
+    # ScheduleSettingsInput's own validator just fine - this models a row
+    # that already made it into the DB (e.g. from before
+    # routes_settings.py's own semantic validation existed).
+    bad_cfg = ScheduleSettingsInput(enabled=True, cron_expression="60 99 * * *", window_hours=24, scope_name="scheduled")
+
+    # The exact crash scenario: building the scheduler at startup (as
+    # main.py's lifespan does) with a bad row already in the DB must not
+    # raise - this is what used to take the whole app down.
+    scheduler = build_scheduler(schedule_cfg=bad_cfg, pre_flight_interval_minutes=60)
+    scheduler.start()
+    try:
+        assert scheduler.get_job(SCHEDULED_JOB_ID) is None
+
+        # Also covers a live PUT /settings/schedule somehow reaching
+        # apply_schedule with a bad cfg (defense in depth past the
+        # route's own validation).
+        apply_schedule(scheduler, bad_cfg)
+        assert scheduler.get_job(SCHEDULED_JOB_ID) is None
+    finally:
+        scheduler.shutdown(wait=False)
+
+
 def test_put_settings_schedule_applies_live_to_a_running_scheduler(client, monkeypatch):
     """When this process does have an in-process scheduler running
     (app.state.scheduler set, as main.py's lifespan does when

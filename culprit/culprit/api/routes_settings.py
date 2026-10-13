@@ -11,7 +11,7 @@ AI Providers screen instead, not here - see
 """
 from __future__ import annotations
 
-from fastapi import APIRouter, Request
+from fastapi import APIRouter, HTTPException, Request
 
 from culprit.api import deps
 from culprit.models.settings import (
@@ -103,8 +103,22 @@ def put_schedule_settings(body: ScheduleSettingsInput, request: Request) -> Sche
     where CULPRIT_SCHEDULER_ENABLED is off has no live scheduler to apply
     to; this still saves the config for whenever it's next turned on -
     the response's scheduler_running=False is what tells the settings
-    screen to say so, rather than implying this is live when it isn't."""
+    screen to say so, rather than implying this is live when it isn't.
+
+    Validates cron_expression *before* saving anything - found in review
+    2026-10-13: ScheduleSettingsInput's own validator only checks the
+    field count (e.g. "60 99 * * *" passes it and is still nonsense), and
+    without this, a bad value could be accepted here with a 200 whenever
+    no live scheduler happened to be attached, sit in the DB unnoticed,
+    and only surface as a crash at the next process start with the
+    scheduler enabled - see validate_cron_expression's own docstring."""
     from culprit.db import repository
+    from culprit.scheduler.cron import validate_cron_expression
+
+    try:
+        validate_cron_expression(body.cron_expression)
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=f"Invalid cron_expression: {exc}") from exc
 
     scheduler = getattr(request.app.state, "scheduler", None)
     with deps.get_session_factory()() as session:
