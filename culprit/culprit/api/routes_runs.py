@@ -145,9 +145,15 @@ def get_report_html(run_id: str):
         # Read fresh on every render, same as the execute route itself -
         # this is what lets the "eligible once X clears review: N/50..."
         # message stay accurate as verdicts are submitted, not a stale
-        # snapshot from whenever the page was last generated.
+        # snapshot from whenever the page was last generated. The gate
+        # values themselves are read the same way (DB-backed, falling
+        # back to config.settings) so a just-saved Settings change shows
+        # up here immediately too - see repository.py::get_current_promotion_gate.
         family_precision = compute_family_precision(repository.all_verdicts(session))
-    return HTMLResponse(render_fleet_report_html(report, family_precision=family_precision))
+        threshold, min_sample = repository.get_current_promotion_gate(session)
+    return HTMLResponse(render_fleet_report_html(
+        report, family_precision=family_precision, promotion_threshold=threshold, promotion_min_sample=min_sample,
+    ))
 
 
 @router.get("/{run_id}/machines/{vm_name}.html")

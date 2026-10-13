@@ -17,30 +17,45 @@ def _env() -> Environment:
     # a new parameter through every single render_*_html function and
     # call site - every template already goes through this one function,
     # so this is the one place that needs to know about the flag at all.
-    # supported_action_families/promotion_threshold/promotion_min_sample
-    # are static, process-wide config too (not per-request data like
-    # family_precision, which stays an explicit render parameter) - same
-    # reasoning, same treatment.
+    # supported_action_families is static, process-wide config too (not
+    # per-request data like family_precision, which stays an explicit
+    # render parameter) - same reasoning, same treatment.
+    #
+    # promotion_threshold/promotion_min_sample are deliberately NOT here
+    # any more (moved 2026-10-14, "make the gate editable" feature) - they
+    # used to be read straight from config.settings, but they're now a
+    # DB-backed value the Settings screen can override at runtime
+    # (repository.py::get_current_promotion_gate), so each render call
+    # that needs them takes them as an explicit parameter instead, same
+    # as family_precision - a Jinja global set once per Environment
+    # construction would go stale the moment someone saved a new gate
+    # value without a process restart.
     from culprit.config import settings
     from culprit.models.remediation import SUPPORTED_ACTIONS
+    from culprit.models.settings import GATE_MIN_SAMPLE_FLOOR, GATE_THRESHOLD_FLOOR
 
     env = Environment(loader=FileSystemLoader(str(_TEMPLATE_DIR)), autoescape=select_autoescape(["html"]))
     env.globals["remediation_enabled"] = settings.remediation_enabled
     env.globals["supported_action_families"] = SUPPORTED_ACTIONS
-    env.globals["promotion_threshold"] = settings.promotion_precision_threshold
-    env.globals["promotion_min_sample"] = settings.promotion_min_sample
+    # The gate's editable floor (see models/settings.py) - genuinely
+    # static, unlike promotion_threshold/promotion_min_sample above, so
+    # this gets the same global treatment supported_action_families does.
+    env.globals["gate_threshold_floor"] = GATE_THRESHOLD_FLOOR
+    env.globals["gate_min_sample_floor"] = GATE_MIN_SAMPLE_FLOOR
     return env
 
 
-def render_fleet_report_html(report: FleetReport, family_precision=None) -> str:
+def render_fleet_report_html(report: FleetReport, family_precision=None, promotion_threshold: float = 0.95, promotion_min_sample: int = 50) -> str:
     """`family_precision` (dict[CauseFamily, FamilyPrecision]) is a
     render-only input, deliberately kept off `FleetReport` itself (that
     model is also returned as plain JSON from GET /runs/{run_id}/report) -
     same "UI-only data stays a render parameter, not a model field"
     convention render_console_html already uses for `demo_enabled`. Used
     to decide what the "Run remediation" control under each cluster's
-    Phase 2 badge shows once a family clears the gate - see
-    routes_runs.py::get_report_html for where it's computed.
+    Automation candidate badge shows once a family clears the gate - see
+    routes_runs.py::get_report_html for where it (and promotion_threshold/
+    promotion_min_sample, via repository.py::get_current_promotion_gate)
+    are computed.
     `remediation_enabled` itself is a Jinja global (see _env()), not
     passed here - whether the button exists at all vs. not rendering is
     gated in the template directly."""
@@ -49,7 +64,10 @@ def render_fleet_report_html(report: FleetReport, family_precision=None) -> str:
     # unlike every other page here - nav_prefix corrects the shared sidebar's
     # otherwise-root-relative links (base.html.j2) so they still resolve
     # correctly from this depth.
-    return template.render(report=report, active="console", nav_prefix="../../", family_precision=family_precision or {})
+    return template.render(
+        report=report, active="console", nav_prefix="../../", family_precision=family_precision or {},
+        promotion_threshold=promotion_threshold, promotion_min_sample=promotion_min_sample,
+    )
 
 
 def render_runs_html(runs, demo_enabled: bool = True) -> str:

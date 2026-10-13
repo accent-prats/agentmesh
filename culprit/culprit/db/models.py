@@ -12,7 +12,7 @@ from __future__ import annotations
 import enum
 from datetime import datetime
 
-from sqlalchemy import Boolean, DateTime, Enum, ForeignKey, Integer, JSON, String, Text
+from sqlalchemy import Boolean, DateTime, Enum, Float, ForeignKey, Integer, JSON, String, Text
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship
 
 
@@ -181,6 +181,27 @@ class RemediationActionRecord(Base):
     requested_at: Mapped[datetime] = mapped_column(DateTime, index=True)
     status: Mapped[str] = mapped_column(String)
     message: Mapped[str] = mapped_column(Text, default="")
+
+
+class PromotionGateChangeRecord(Base):
+    """Every change ever made to the precision gate's threshold/min_sample
+    (culprit/api/routes_settings.py's GET/PUT /settings/gate) - an
+    append-only audit log, same reasoning as RemediationActionRecord: this
+    setting decides when automated remediation is allowed to run at all,
+    so who changed it and when has to stay visible, not just the current
+    value. The current effective value is simply the latest row (highest
+    id) - no separate "current settings" row to keep in sync with this
+    history, see repository.py::get_current_promotion_gate. No rows yet
+    means nothing has ever been overridden - callers fall back to
+    config.settings' env-var defaults in that case."""
+
+    __tablename__ = "promotion_gate_changes"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    changed_at: Mapped[datetime] = mapped_column(DateTime, index=True)
+    changed_by: Mapped[str] = mapped_column(String)
+    threshold: Mapped[float] = mapped_column(Float)
+    min_sample: Mapped[int] = mapped_column(Integer)
 
 
 class SettingsRecord(Base):

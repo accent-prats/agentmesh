@@ -117,3 +117,56 @@ class ScheduleSettingsView(ScheduleSettingsInput):
     # see repository.py::schedule_settings_view.
     scheduler_running: bool = False
     next_run_at: datetime | None = None
+
+
+# The precision gate's editable floor - deliberately conservative and not
+# itself configurable: this is what keeps "the gate can be tuned" from
+# turning into "the gate can be switched off" via a careless or malicious
+# save. A deployment that genuinely needs looser values makes that case
+# in a code review of this constant, not through the settings screen.
+GATE_THRESHOLD_FLOOR = 0.80
+GATE_MIN_SAMPLE_FLOOR = 10
+
+
+class GateSettingsInput(BaseModel):
+    """What PUT /settings/gate accepts. `threshold`/`min_sample` can only
+    be tightened or loosened within [floor, 1.0] / [floor, +inf) - Field's
+    own ge/le raise a 422 automatically, same mechanism already used for
+    ScheduleSettingsInput.window_hours, before this ever reaches the
+    repository layer. `changed_by` is required and blank-rejected for the
+    same reason RemediationActionRequest.requested_by is: every change to
+    a setting that gates real infrastructure mutation needs an
+    identifiable human attached, not just a truthy string."""
+
+    threshold: float = Field(..., ge=GATE_THRESHOLD_FLOOR, le=1.0)
+    min_sample: int = Field(..., ge=GATE_MIN_SAMPLE_FLOOR)
+    changed_by: str = Field(..., min_length=1)
+
+    @field_validator("changed_by")
+    @classmethod
+    def _changed_by_must_not_be_blank(cls, v: str) -> str:
+        stripped = v.strip()
+        if not stripped:
+            raise ValueError("changed_by must not be blank")
+        return stripped
+
+
+class GateSettingsView(BaseModel):
+    threshold: float
+    min_sample: int
+    # True when nothing has ever been saved via PUT /settings/gate - the
+    # values shown are config.py's env-var defaults, not a stored override.
+    is_default: bool = True
+    updated_at: datetime | None = None
+    updated_by: str = ""
+
+
+class GateChangeEntry(BaseModel):
+    """One row of GET /settings/gate/history - the audit trail behind the
+    current value, most recent first."""
+
+    id: int
+    changed_at: datetime
+    changed_by: str
+    threshold: float
+    min_sample: int

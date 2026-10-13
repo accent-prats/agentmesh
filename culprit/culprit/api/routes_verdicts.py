@@ -8,7 +8,6 @@ from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
 
 from culprit.api import deps
-from culprit.config import settings
 from culprit.models.taxonomy import CauseFamily
 from culprit.models.verdict import Verdict, VerdictValue, compute_family_precision
 
@@ -85,19 +84,22 @@ def _precision_payload() -> dict:
 
     with deps.get_session_factory()() as session:
         verdicts = repository.all_verdicts(session)
+        # Read fresh, same session as the verdicts above - a gate value
+        # just saved from the Settings screen must be reflected here on
+        # the very next request, not after a restart (see
+        # repository.py::get_current_promotion_gate).
+        threshold, min_sample = repository.get_current_promotion_gate(session)
 
     by_family = compute_family_precision(verdicts)
     return {
-        "threshold": settings.promotion_precision_threshold,
-        "min_sample": settings.promotion_min_sample,
+        "threshold": threshold,
+        "min_sample": min_sample,
         "families": {
             family.value: {
                 "sample_size": fp.sample_size,
                 "precision": round(fp.precision, 4),
                 "clean_precision": round(fp.clean_precision, 4),
-                "meets_promotion_bar": fp.meets_promotion_bar(
-                    settings.promotion_precision_threshold, settings.promotion_min_sample
-                ),
+                "meets_promotion_bar": fp.meets_promotion_bar(threshold, min_sample),
             }
             for family, fp in by_family.items()
         },

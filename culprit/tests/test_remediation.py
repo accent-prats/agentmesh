@@ -377,3 +377,70 @@ def test_parse_remediation_result_failure_line():
 
 def test_parse_remediation_result_missing_block_is_a_failure():
     assert parse_remediation_result("nothing relevant here")["status"] == "failed"
+
+
+def test_execute_stops_processing_remaining_machines_when_the_gate_value_itself_changes_mid_batch(client, session_factory, monkeypatch):
+    """Same mechanism as test_execute_stops_processing_remaining_machines_when_gate_drops_mid_batch,
+    but the disruption is a PUT /settings/gate call (tightening the
+    threshold past what the cluster's own precision still clears) instead
+    of a verdict change - found worth testing explicitly in review
+    2026-10-14 since _check_gate's per-machine re-check doesn't
+    distinguish the two causes, but nothing had exercised this one."""
+    with session_factory() as session:
+        run_id, cluster_id, members = _seed_cluster(session, member_count=3)
+        _submit_verdicts_to_clear_the_bar(session)  # 100% precision, 50 reviewed - clears the default bar
+
+    call_log = []
+
+    def fake_run_disk_cleanup(self, subscription_id, resource_group, vm_name, os_family, mount):
+        call_log.append(vm_name)
+        if vm_name == "vm-0":
+            # Tighten min_sample past what's actually been reviewed (50) -
+            # precision can't be pushed past the already-perfect 100%, so
+            # min_sample is the lever this test uses to flip the bar.
+            client.put("/settings/gate", json={"threshold": 0.95, "min_sample": 51, "changed_by": "qa@example.com"})
+        return {"status": "success", "message": "ok", "free_bytes_after": 999}
+
+    monkeypatch.setattr("culprit.remediation.runner.RemediationRunner.run_disk_cleanup", fake_run_disk_cleanup)
+
+    resp = client.post(f"/remediation/runs/{run_id}/clusters/{cluster_id}/execute", json={"action_type": "disk_cleanup", "requested_by": "a@b.com"})
+    assert resp.status_code == 200
+    body = resp.json()
+
+    assert call_log == ["vm-0"]
+    statuses = {r["vm_name"]: r["status"] for r in body["results"]}
+    assert statuses["vm-0"] == "success"
+    assert statuses["vm-1"] == "failed"
+    assert statuses["vm-2"] == "failed"
+    assert "no longer held" in next(r["message"] for r in body["results"] if r["vm_name"] == "vm-1")
+
+
+def test_execute_uses_a_saved_gate_override_not_just_the_config_default(client, session_factory, monkeypatch):
+    """The "make the gate editable" feature (2026-10-14): PUT /settings/gate
+    writes an append-only PromotionGateChangeRecord, and
+    routes_remediation.py's _check_gate must read that override live, the
+    same way it already re-reads verdict data live - not just the
+    config.settings env-var default, and not a value cached from process
+    start. 20 verdicts clears a min_sample=10 override but not the
+    config default of 50, so this also proves the override, not some
+    other change, is what flips the decision."""
+    with session_factory() as session:
+        run_id, cluster_id, _ = _seed_cluster(session, member_count=1)
+        _submit_verdicts_to_clear_the_bar(session, count=20)
+
+    # Still the config default (50) - 20 reviewed isn't enough yet.
+    resp = client.post(f"/remediation/runs/{run_id}/clusters/{cluster_id}/execute", json={"action_type": "disk_cleanup", "requested_by": "a@b.com"})
+    assert resp.status_code == 409
+    assert resp.json()["detail"]["min_sample"] == 50
+
+    gate_resp = client.put("/settings/gate", json={"threshold": 0.95, "min_sample": 10, "changed_by": "qa@example.com"})
+    assert gate_resp.status_code == 200
+    assert gate_resp.json()["is_default"] is False
+
+    monkeypatch.setattr(
+        "culprit.remediation.runner.RemediationRunner.run_disk_cleanup",
+        lambda self, subscription_id, resource_group, vm_name, os_family, mount: {"status": "success", "message": "ok", "free_bytes_after": 999},
+    )
+    resp = client.post(f"/remediation/runs/{run_id}/clusters/{cluster_id}/execute", json={"action_type": "disk_cleanup", "requested_by": "a@b.com"})
+    assert resp.status_code == 200
+    assert resp.json()["succeeded_count"] == 1

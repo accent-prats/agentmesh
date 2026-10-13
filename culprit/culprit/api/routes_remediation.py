@@ -67,21 +67,26 @@ def execute_remediation(run_id: str, cluster_id: str, body: RemediationActionReq
         if result.remediation is None or not result.remediation.phase2_candidate:
             raise HTTPException(status_code=409, detail={"reason": "not_phase2_candidate"})
 
-        from culprit import config as config_module
+        # DB-backed, not config_module.settings directly - the Settings
+        # screen's "Automation gate" tab can now override these at
+        # runtime (repository.py::get_current_promotion_gate falls back
+        # to config.settings' env-var defaults when nothing's been
+        # saved there yet), and this must see a just-saved change on the
+        # very next request, same freshness requirement as the precision
+        # read right above it.
+        threshold, min_sample = repository.get_current_promotion_gate(session)
 
         by_family = compute_family_precision(repository.all_verdicts(session))
         family_precision = by_family.get(result.cause_family)
-        if family_precision is None or not family_precision.meets_promotion_bar(
-            config_module.settings.promotion_precision_threshold, config_module.settings.promotion_min_sample
-        ):
+        if family_precision is None or not family_precision.meets_promotion_bar(threshold, min_sample):
             raise HTTPException(
                 status_code=409,
                 detail={
                     "reason": "promotion_bar_not_met",
                     "sample_size": family_precision.sample_size if family_precision else 0,
-                    "min_sample": config_module.settings.promotion_min_sample,
+                    "min_sample": min_sample,
                     "precision": round(family_precision.precision, 4) if family_precision else 0.0,
-                    "threshold": config_module.settings.promotion_precision_threshold,
+                    "threshold": threshold,
                 },
             )
 

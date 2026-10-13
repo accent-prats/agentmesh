@@ -13,6 +13,7 @@ from culprit.db.models import (
     ClusterRecord,
     MachineOutcomeRecord,
     PreflightFindingRecord,
+    PromotionGateChangeRecord,
     RCAResultRecord,
     RemediationActionRecord,
     RunRecord,
@@ -643,6 +644,74 @@ def list_remediation_actions(session: Session, limit: int = 200) -> list[Remedia
         )
         for r in records
     ]
+
+
+# ── Precision gate settings ────────────────────────────────────────────────────
+# The threshold/min_sample pair the remediation gate checks against
+# (culprit/api/routes_remediation.py, culprit/models/verdict.py::
+# FamilyPrecision.meets_promotion_bar) used to be fixed at process start
+# from config.settings' env vars; these let it be tuned at runtime from the
+# Settings screen instead, persisted as an append-only history
+# (PromotionGateChangeRecord) rather than a single editable row - the
+# current value is just the latest entry, so "what's it set to" and "who
+# changed it and when" are always the same query, never two things that
+# can drift out of sync.
+
+def get_current_promotion_gate(session: Session) -> tuple[float, int]:
+    """The gate's effective (threshold, min_sample) right now - the most
+    recent saved change, or config.settings' env-var defaults if nothing
+    has ever been saved. Read fresh on every call, same freshness
+    discipline as every other promotion-bar check in this app - a value
+    just saved from the Settings screen must take effect on the very next
+    request, not after a restart."""
+    from culprit import config as config_module
+
+    row = session.execute(
+        select(PromotionGateChangeRecord).order_by(PromotionGateChangeRecord.id.desc()).limit(1)
+    ).scalar_one_or_none()
+    if row is None:
+        return config_module.settings.promotion_precision_threshold, config_module.settings.promotion_min_sample
+    return row.threshold, row.min_sample
+
+
+def save_promotion_gate_change(session: Session, *, threshold: float, min_sample: int, changed_by: str) -> PromotionGateChangeRecord:
+    record = PromotionGateChangeRecord(
+        changed_at=datetime.now(timezone.utc), changed_by=changed_by, threshold=threshold, min_sample=min_sample,
+    )
+    session.add(record)
+    session.commit()
+    return record
+
+
+def list_promotion_gate_changes(session: Session, limit: int = 20) -> list[PromotionGateChangeRecord]:
+    """Most recent first - the small audit list the Settings screen shows
+    under the editable fields, same "already small, never paginated"
+    convention as list_remediation_actions."""
+    return list(
+        session.execute(
+            select(PromotionGateChangeRecord).order_by(PromotionGateChangeRecord.id.desc()).limit(limit)
+        ).scalars().all()
+    )
+
+
+def gate_settings_view(session: Session):
+    from culprit.models.settings import GateSettingsView
+
+    row = session.execute(
+        select(PromotionGateChangeRecord).order_by(PromotionGateChangeRecord.id.desc()).limit(1)
+    ).scalar_one_or_none()
+    if row is None:
+        from culprit import config as config_module
+
+        return GateSettingsView(
+            threshold=config_module.settings.promotion_precision_threshold,
+            min_sample=config_module.settings.promotion_min_sample,
+            is_default=True,
+        )
+    return GateSettingsView(
+        threshold=row.threshold, min_sample=row.min_sample, is_default=False,
+        updated_at=row.changed_at, updated_by=row.changed_by,
+    )
 
 
 # ── Pre-flight predictions ─────────────────────────────────────────────────────

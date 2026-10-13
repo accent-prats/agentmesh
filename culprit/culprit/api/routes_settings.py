@@ -19,6 +19,9 @@ from culprit.models.settings import (
     AzureSettingsView,
     DatadogSettingsInput,
     DatadogSettingsView,
+    GateChangeEntry,
+    GateSettingsInput,
+    GateSettingsView,
     ScheduleSettingsInput,
     ScheduleSettingsView,
 )
@@ -128,3 +131,45 @@ def put_schedule_settings(body: ScheduleSettingsInput, request: Request) -> Sche
 
             apply_schedule(scheduler, body)
         return repository.schedule_settings_view(session, scheduler=scheduler)
+
+
+@router.get("/gate", response_model=GateSettingsView)
+def get_gate_settings() -> GateSettingsView:
+    from culprit.db import repository
+
+    with deps.get_session_factory()() as session:
+        return repository.gate_settings_view(session)
+
+
+@router.put("/gate", response_model=GateSettingsView)
+def put_gate_settings(body: GateSettingsInput) -> GateSettingsView:
+    """Floor enforcement (threshold >= GATE_THRESHOLD_FLOOR, min_sample >=
+    GATE_MIN_SAMPLE_FLOOR) already happened in GateSettingsInput's own
+    Field constraints before this body ever parsed - a request outside
+    that range never reaches this function at all, it's a 422. Takes
+    effect on the very next gate check (culprit/db/repository.py::
+    get_current_promotion_gate reads fresh, no caching, no restart
+    needed) - same immediacy as every other live-checked gate condition
+    in culprit/api/routes_remediation.py."""
+    from culprit.db import repository
+
+    with deps.get_session_factory()() as session:
+        repository.save_promotion_gate_change(
+            session, threshold=body.threshold, min_sample=body.min_sample, changed_by=body.changed_by,
+        )
+        return repository.gate_settings_view(session)
+
+
+@router.get("/gate/history", response_model=list[GateChangeEntry])
+def get_gate_settings_history() -> list[GateChangeEntry]:
+    from culprit.db import repository
+
+    with deps.get_session_factory()() as session:
+        rows = repository.list_promotion_gate_changes(session, limit=20)
+    return [
+        GateChangeEntry(
+            id=r.id, changed_at=r.changed_at, changed_by=r.changed_by,
+            threshold=r.threshold, min_sample=r.min_sample,
+        )
+        for r in rows
+    ]

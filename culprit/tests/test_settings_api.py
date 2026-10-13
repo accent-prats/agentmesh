@@ -296,3 +296,78 @@ def test_schedule_settings_rejects_a_semantically_invalid_cron_expression(client
     # live scheduler to also reject it, must not silently reappear.
     reloaded = client.get("/settings/schedule").json()
     assert reloaded["cron_expression"] != "60 99 * * *"
+
+
+def test_gate_settings_default_view_uses_config_defaults(client):
+    """Nothing saved yet - GET must report the config.settings env-var
+    defaults (CULPRIT_PROMOTION_THRESHOLD/CULPRIT_PROMOTION_MIN_SAMPLE,
+    0.95/50 unless overridden), flagged is_default so the Settings screen
+    can say "using this deployment's configured defaults" rather than
+    implying someone saved these exact numbers."""
+    resp = client.get("/settings/gate")
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["is_default"] is True
+    assert body["threshold"] == 0.95
+    assert body["min_sample"] == 50
+    assert body["updated_by"] == ""
+    assert body["updated_at"] is None
+
+
+def test_gate_settings_save_and_reload(client):
+    resp = client.put("/settings/gate", json={"threshold": 0.90, "min_sample": 30, "changed_by": "alice@example.com"})
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["threshold"] == 0.90
+    assert body["min_sample"] == 30
+    assert body["is_default"] is False
+    assert body["updated_by"] == "alice@example.com"
+    assert body["updated_at"] is not None
+
+    reloaded = client.get("/settings/gate").json()
+    assert reloaded["threshold"] == 0.90
+    assert reloaded["min_sample"] == 30
+    assert reloaded["is_default"] is False
+
+
+def test_gate_settings_rejects_threshold_below_the_floor(client):
+    """GATE_THRESHOLD_FLOOR (0.80) exists specifically so this setting
+    can't be loosened enough to make the "95% precision" promise
+    meaningless - found worth testing explicitly since this is the one
+    guardrail standing between "tunable" and "can be switched off"."""
+    resp = client.put("/settings/gate", json={"threshold": 0.5, "min_sample": 50, "changed_by": "a@b.com"})
+    assert resp.status_code == 422
+
+    # Must never have been persisted.
+    reloaded = client.get("/settings/gate").json()
+    assert reloaded["is_default"] is True
+
+
+def test_gate_settings_rejects_min_sample_below_the_floor(client):
+    resp = client.put("/settings/gate", json={"threshold": 0.95, "min_sample": 5, "changed_by": "a@b.com"})
+    assert resp.status_code == 422
+
+    reloaded = client.get("/settings/gate").json()
+    assert reloaded["is_default"] is True
+
+
+def test_gate_settings_rejects_blank_changed_by(client):
+    """Mirrors RemediationActionRequest.requested_by's own blank-identity
+    bypass fix - Field(min_length=1) alone counts characters, not content,
+    so a whitespace-only value needs the same field_validator treatment."""
+    resp = client.put("/settings/gate", json={"threshold": 0.95, "min_sample": 50, "changed_by": "   "})
+    assert resp.status_code == 422
+
+
+def test_gate_settings_history_records_every_change_most_recent_first(client):
+    client.put("/settings/gate", json={"threshold": 0.90, "min_sample": 30, "changed_by": "alice@example.com"})
+    client.put("/settings/gate", json={"threshold": 0.95, "min_sample": 50, "changed_by": "bob@example.com"})
+
+    history = client.get("/settings/gate/history").json()
+    assert len(history) == 2
+    assert history[0]["changed_by"] == "bob@example.com"
+    assert history[1]["changed_by"] == "alice@example.com"
+
+
+def test_gate_settings_history_is_empty_before_any_change(client):
+    assert client.get("/settings/gate/history").json() == []

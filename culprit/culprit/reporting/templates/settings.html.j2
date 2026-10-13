@@ -37,6 +37,12 @@
         </span>
         <span id="schedule-nav-dot" class="w-1.5 h-1.5 rounded-full bg-gray-300 shrink-0"></span>
       </a>
+      <a href="#gate" data-tab="gate" class="settings-tab flex items-center justify-between gap-2 px-3 py-2.5 rounded-lg text-sm transition-colors">
+        <span class="flex items-center gap-2.5">
+          <i data-lucide="sliders-horizontal" class="w-4 h-4"></i> Automation gate
+        </span>
+        <span id="gate-nav-dot" class="w-1.5 h-1.5 rounded-full bg-gray-300 shrink-0"></span>
+      </a>
     </nav>
 
     <div class="flex-1 min-w-0">
@@ -256,6 +262,58 @@
         <p class="text-xs text-gray-400 mt-3" id="sched-status-detail"></p>
       </section>
 
+      <!-- Automation gate -->
+      <section id="panel-gate" class="settings-panel hidden bg-white rounded-2xl shadow-sm border border-gray-100 p-7">
+        <div class="flex items-start justify-between gap-4 mb-1">
+          <div class="flex items-center gap-3">
+            <div class="w-9 h-9 rounded-xl bg-rose-50 flex items-center justify-center shrink-0">
+              <i data-lucide="sliders-horizontal" class="w-4 h-4 text-rose-600"></i>
+            </div>
+            <h2 class="font-semibold text-gray-900">Automation gate</h2>
+          </div>
+          <span id="gate-status" class="shrink-0"></span>
+        </div>
+        <p class="text-sm text-gray-500 mt-2 mb-5">
+          How much reviewed evidence a cause family needs before automated remediation unlocks for it &mdash; see the
+          <a href="precision.html" class="text-brand hover:text-brand-dark font-medium">Precision gate</a> for where
+          each family currently stands. Takes effect immediately, no restart needed. Floored at
+          {{ '%.0f'|format(gate_threshold_floor * 100) }}% precision / {{ gate_min_sample_floor }} reviewed instances
+          so it can't be loosened enough to defeat the point of the gate.
+        </p>
+
+        <div class="space-y-4">
+          <div class="grid grid-cols-2 gap-4">
+            <div>
+              <label class="block text-xs font-medium text-gray-600 mb-1.5">Precision threshold (%)</label>
+              <input id="gate-threshold" type="number" min="{{ '%.0f'|format(gate_threshold_floor * 100) }}" max="100" step="1"
+                class="w-full border border-gray-300 rounded-lg px-3 py-2 text-sm focus:ring-2 focus:ring-brand focus:border-brand focus:outline-none">
+            </div>
+            <div>
+              <label class="block text-xs font-medium text-gray-600 mb-1.5">Minimum reviewed instances</label>
+              <input id="gate-min-sample" type="number" min="{{ gate_min_sample_floor }}" step="1"
+                class="w-full border border-gray-300 rounded-lg px-3 py-2 text-sm focus:ring-2 focus:ring-brand focus:border-brand focus:outline-none">
+            </div>
+          </div>
+          <div>
+            <label class="block text-xs font-medium text-gray-600 mb-1.5">Your email</label>
+            <input id="gate-changed-by" type="text" placeholder="you@example.com"
+              class="w-full border border-gray-300 rounded-lg px-3 py-2 text-sm focus:ring-2 focus:ring-brand focus:border-brand focus:outline-none">
+            <p class="text-xs text-gray-400 mt-1.5">Required &mdash; recorded against this change in the history below.</p>
+          </div>
+        </div>
+
+        <div class="flex items-center gap-3 mt-5 pt-5 border-t border-gray-100">
+          <button onclick="saveGate()" class="bg-brand hover:bg-brand-dark text-white text-sm font-medium px-4 py-2 rounded-lg transition-colors">Save</button>
+          <span class="text-sm" id="gate-result"></span>
+        </div>
+        <p class="text-xs text-gray-400 mt-3" id="gate-status-detail"></p>
+
+        <div class="mt-6 pt-5 border-t border-gray-100">
+          <h3 class="text-[11px] font-semibold uppercase tracking-wide text-gray-400 mb-2.5">Recent changes</h3>
+          <div id="gate-history" class="space-y-1.5 text-xs text-gray-500"></div>
+        </div>
+      </section>
+
     </div>
   </div>
 
@@ -266,7 +324,7 @@
 <script>
 // Hash-routed sub-nav (bookmarkable, back-button-friendly, no framework) -
 // one panel visible at a time, active nav item highlighted to match.
-const SETTINGS_TABS = ['azure', 'datadog', 'schedule'];
+const SETTINGS_TABS = ['azure', 'datadog', 'schedule', 'gate'];
 
 function showSettingsTab(tab) {
   if (!SETTINGS_TABS.includes(tab)) tab = 'azure';
@@ -601,8 +659,96 @@ async function saveSchedule() {
   loadSchedule();
 }
 
+// Same "never show a raw JSON/validation-error blob on screen" discipline
+// as fleet_report.html.j2's describeRemediationError - but this route's
+// 422s come straight from FastAPI/Pydantic's own Field(ge=..., le=...)
+// validation (GateSettingsInput), which shapes `detail` as a *list* of
+// {loc, msg, type} objects, not the single {reason: ...} dict
+// routes_remediation.py's custom checks return - a different error shape
+// needs a different formatter, not a shared one that'd have to guess.
+function describeSettingsError(detail, statusCode) {
+  if (typeof detail === 'string') return detail;
+  if (Array.isArray(detail)) {
+    return detail.map(function (d) { return d && d.msg ? d.msg : JSON.stringify(d); }).join('; ');
+  }
+  return detail ? JSON.stringify(detail) : ('HTTP ' + statusCode);
+}
+
+function renderGateStatus(view) {
+  const badge = document.getElementById('gate-status');
+  const detail = document.getElementById('gate-status-detail');
+  const dot = document.getElementById('gate-nav-dot');
+  badge.textContent = '';
+  detail.textContent = '';
+
+  const pill = (bg, text, label) => {
+    badge.className = 'inline-flex items-center px-2.5 py-1 rounded-full text-xs font-medium ' + bg + ' ' + text;
+    badge.textContent = label;
+  };
+
+  if (view.is_default) {
+    pill('bg-gray-100', 'text-gray-500', 'Default');
+    dot.className = 'w-1.5 h-1.5 rounded-full bg-gray-300 shrink-0';
+    detail.textContent = "Using this deployment's configured defaults - nothing has been saved here yet.";
+    return;
+  }
+  pill('bg-emerald-50', 'text-emerald-700', 'Custom');
+  dot.className = 'w-1.5 h-1.5 rounded-full bg-emerald-500 shrink-0';
+  detail.textContent = 'Last changed by ' + view.updated_by +
+    (view.updated_at ? ' on ' + new Date(view.updated_at).toLocaleString() : '') + '.';
+}
+
+async function loadGate() {
+  const view = await (await fetch('settings/gate')).json();
+  document.getElementById('gate-threshold').value = Math.round(view.threshold * 100);
+  document.getElementById('gate-min-sample').value = view.min_sample;
+  renderGateStatus(view);
+}
+
+// textContent only, never innerHTML - changed_by is a free-text field an
+// operator typed in, same reasoning as renderStatus's own comment above
+// about last_test_message.
+async function loadGateHistory() {
+  const rows = await (await fetch('settings/gate/history')).json();
+  const container = document.getElementById('gate-history');
+  container.textContent = '';
+  if (rows.length === 0) {
+    const p = document.createElement('p');
+    p.className = 'text-gray-400';
+    p.textContent = "No changes recorded yet - this deployment's configured defaults are in effect.";
+    container.appendChild(p);
+    return;
+  }
+  rows.forEach(function (r) {
+    const p = document.createElement('p');
+    p.textContent = Math.round(r.threshold * 100) + '% / ' + r.min_sample + ' reviewed — ' +
+      r.changed_by + ' — ' + new Date(r.changed_at).toLocaleString();
+    container.appendChild(p);
+  });
+}
+
+async function saveGate() {
+  const body = {
+    threshold: (parseFloat(document.getElementById('gate-threshold').value) || 0) / 100,
+    min_sample: parseInt(document.getElementById('gate-min-sample').value, 10) || 0,
+    changed_by: document.getElementById('gate-changed-by').value.trim(),
+  };
+  const res = await fetch('settings/gate', { method: 'PUT', headers: {'Content-Type':'application/json'}, body: JSON.stringify(body) });
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({}));
+    setResult('gate-result', 'Failed: ' + describeSettingsError(err.detail, res.status), false);
+    return;
+  }
+  document.getElementById('gate-changed-by').value = '';
+  setResult('gate-result', 'Saved.', true);
+  loadGate();
+  loadGateHistory();
+}
+
 loadAzure();
 loadDatadog();
 loadSchedule();
+loadGate();
+loadGateHistory();
 </script>
 {% endblock %}
