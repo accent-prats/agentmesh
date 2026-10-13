@@ -140,6 +140,17 @@ try {
     Start-Service -Name wuauserv -ErrorAction SilentlyContinue
 }
 
+# Explicit verification, not just a best-effort restart - leaving Windows
+# Update stopped is a worse outcome than the low disk space this script
+# was sent to fix in the first place, on a tool whose entire purpose is
+# Azure Update Manager. Checked below and folded into the pass/fail
+# verdict, not left as a silent side effect only visible by reading this
+# step's own stdout.
+$wuauservRunning = (Get-Service -Name wuauserv -ErrorAction SilentlyContinue).Status -eq 'Running'
+if (-not $wuauservRunning) {
+    Write-Output "WARNING: wuauserv is not Running after the cleanup attempt."
+}
+
 # 2. System temp only - C:\Windows\Temp is machine-owned scratch space by
 #    convention, never a user document. Files older than 7 days, files
 #    only (never a directory), so anything this very maintenance run
@@ -166,6 +177,11 @@ Write-Output $freeAfter
 Write-Output "---REMEDIATION_RESULT---"
 if ($null -eq $freeAfter) {
     Write-Output "status=failed reason=`"could not read free space on $Mount after cleanup`""
+    exit 1
+} elseif (-not $wuauservRunning) {
+    # A hard gate, not just a logged warning - freed space does not
+    # offset Windows Update being left disabled on this machine.
+    Write-Output "status=failed reason=`"wuauserv is not running after cleanup - Windows Update is left disabled on this machine, regardless of freed space`" mount=$Mount free_bytes_after=$freeAfter"
     exit 1
 } elseif ($freeAfter -ge $TargetFreeBytes) {
     Write-Output "status=success mount=$Mount free_bytes_after=$freeAfter"

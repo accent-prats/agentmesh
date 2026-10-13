@@ -8,7 +8,7 @@ from __future__ import annotations
 import enum
 from datetime import datetime
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 
 from culprit.models.taxonomy import CauseFamily
 
@@ -46,6 +46,20 @@ class RemediationActionRequest(BaseModel):
     # precedent: SubmitVerdictBody.reviewer in routes_verdicts.py.
     requested_by: str = Field(..., min_length=1)
     vm_ids: list[str] | None = Field(default=None, description="None = every member of the cluster")
+
+    @field_validator("requested_by")
+    @classmethod
+    def _requested_by_must_not_be_blank(cls, v: str) -> str:
+        # min_length=1 alone counts characters, not content - "   " passes
+        # it. Found in review: a caller that skips the browser widget
+        # (curl, a script) could otherwise execute a real remediation with
+        # no identifiable human attached, directly undermining the "a
+        # human confirms, every time" guarantee this whole feature is
+        # built around.
+        stripped = v.strip()
+        if not stripped:
+            raise ValueError("requested_by must not be blank")
+        return stripped
 
 
 class RemediationMachineResult(BaseModel):

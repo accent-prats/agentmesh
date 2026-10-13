@@ -230,6 +230,76 @@ def test_execute_rejects_vm_id_not_in_cluster(client, session_factory):
     assert resp.status_code == 400
 
 
+def test_execute_rejects_blank_requested_by(client, session_factory):
+    """min_length=1 alone counts characters, not content - "   " would
+    otherwise pass. Found in review: a caller that skips the browser
+    widget's client-side .trim() check (curl, a script) could execute a
+    real remediation with no identifiable human attached."""
+    with session_factory() as session:
+        run_id, cluster_id, _ = _seed_cluster(session)
+        _submit_verdicts_to_clear_the_bar(session)
+
+    resp = client.post(f"/remediation/runs/{run_id}/clusters/{cluster_id}/execute", json={"action_type": "disk_cleanup", "requested_by": "   "})
+    assert resp.status_code == 422
+
+    with session_factory() as session:
+        assert repository.list_remediation_actions(session) == []
+
+
+def test_execute_strips_requested_by(client, session_factory, monkeypatch):
+    with session_factory() as session:
+        run_id, cluster_id, _ = _seed_cluster(session, member_count=1)
+        _submit_verdicts_to_clear_the_bar(session)
+
+    monkeypatch.setattr(
+        "culprit.remediation.runner.RemediationRunner.run_disk_cleanup",
+        lambda self, subscription_id, resource_group, vm_name, os_family, mount: {"status": "success", "message": "ok", "free_bytes_after": 999},
+    )
+    resp = client.post(f"/remediation/runs/{run_id}/clusters/{cluster_id}/execute", json={"action_type": "disk_cleanup", "requested_by": "  a@b.com  "})
+    assert resp.status_code == 200
+    assert resp.json()["requested_by"] == "a@b.com"
+
+
+def test_execute_stops_processing_remaining_machines_when_gate_drops_mid_batch(client, session_factory, monkeypatch):
+    """A cluster with many members loops sequentially, each Run Command
+    call potentially taking real time - the gate must be re-checked before
+    *every* machine, not just once for the whole batch. Simulates a
+    reviewer correcting a wrong diagnosis (submitting disqualifying
+    verdicts) in between two machines of the same in-flight request."""
+    with session_factory() as session:
+        run_id, cluster_id, members = _seed_cluster(session, member_count=3)
+        _submit_verdicts_to_clear_the_bar(session)
+
+    call_log = []
+
+    def fake_run_disk_cleanup(self, subscription_id, resource_group, vm_name, os_family, mount):
+        call_log.append(vm_name)
+        if vm_name == "vm-0":
+            with session_factory() as s:
+                for i in range(50):
+                    repository.save_verdict(s, Verdict(
+                        cluster_id=f"disrupt-{i}", cause_family=CauseFamily.CAPACITY, verdict=VerdictValue.WRONG,
+                        reviewer="auditor@example.com", reviewed_at=datetime.now(timezone.utc),
+                    ))
+        return {"status": "success", "message": "ok", "free_bytes_after": 999}
+
+    monkeypatch.setattr("culprit.remediation.runner.RemediationRunner.run_disk_cleanup", fake_run_disk_cleanup)
+
+    resp = client.post(f"/remediation/runs/{run_id}/clusters/{cluster_id}/execute", json={"action_type": "disk_cleanup", "requested_by": "a@b.com"})
+    assert resp.status_code == 200
+    body = resp.json()
+
+    # Only vm-0 ever actually reached the Run Command call - the gate
+    # re-check before vm-1/vm-2 correctly caught the mid-batch disruption
+    # and skipped them rather than running the script anyway.
+    assert call_log == ["vm-0"]
+    statuses = {r["vm_name"]: r["status"] for r in body["results"]}
+    assert statuses["vm-0"] == "success"
+    assert statuses["vm-1"] == "failed"
+    assert statuses["vm-2"] == "failed"
+    assert "no longer held" in next(r["message"] for r in body["results"] if r["vm_name"] == "vm-1")
+
+
 def test_execute_reflects_a_verdict_submitted_moments_earlier(client, session_factory, monkeypatch):
     """Proves there is no stale caching of the precision gate - a verdict
     submitted via POST /verdicts in the same test flips a previously-409

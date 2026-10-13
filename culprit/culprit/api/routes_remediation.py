@@ -15,7 +15,6 @@ from datetime import datetime, timezone
 from fastapi import APIRouter, HTTPException
 
 from culprit.api import deps
-from culprit.config import settings
 from culprit.models.remediation import (
     SUPPORTED_ACTIONS,
     RemediationActionRequest,
@@ -43,7 +42,23 @@ def execute_remediation(run_id: str, cluster_id: str, body: RemediationActionReq
     from culprit.db import repository
     from culprit.models.verdict import compute_family_precision
 
-    with deps.get_session_factory()() as session:
+    def _check_gate(session):
+        """The three eligibility checks that must hold for *this* cluster -
+        called once up front, and again before every individual machine in
+        the loop below, not just once for the whole batch. Found in review:
+        a cluster with many members loops sequentially, each Run Command
+        call blocking up to 60s - a many-minute batch with the gate read
+        only once at the top left a real window where a reviewer
+        correcting a wrong diagnosis mid-batch (submitting a "wrong"
+        verdict, exactly the UI action this product encourages) couldn't
+        stop machines later in that same request from still getting the
+        script run. Re-reading it (uncached, same as the top-level check)
+        before each machine closes that window at the cost of one extra
+        query per machine - cheap next to the Run Command network call
+        it's about to make.
+
+        Returns (cluster, result, mount) on success, or raises the same
+        HTTPException the top-level check would."""
         found = repository.get_cluster_with_result(session, run_id, cluster_id)
         if found is None:
             raise HTTPException(status_code=404, detail=f"Cluster {cluster_id} not found in run {run_id}")
@@ -52,24 +67,31 @@ def execute_remediation(run_id: str, cluster_id: str, body: RemediationActionReq
         if result.remediation is None or not result.remediation.phase2_candidate:
             raise HTTPException(status_code=409, detail={"reason": "not_phase2_candidate"})
 
+        from culprit import config as config_module
+
         by_family = compute_family_precision(repository.all_verdicts(session))
         family_precision = by_family.get(result.cause_family)
         if family_precision is None or not family_precision.meets_promotion_bar(
-            settings.promotion_precision_threshold, settings.promotion_min_sample
+            config_module.settings.promotion_precision_threshold, config_module.settings.promotion_min_sample
         ):
             raise HTTPException(
                 status_code=409,
                 detail={
                     "reason": "promotion_bar_not_met",
                     "sample_size": family_precision.sample_size if family_precision else 0,
-                    "min_sample": settings.promotion_min_sample,
+                    "min_sample": config_module.settings.promotion_min_sample,
                     "precision": round(family_precision.precision, 4) if family_precision else 0.0,
-                    "threshold": settings.promotion_precision_threshold,
+                    "threshold": config_module.settings.promotion_precision_threshold,
                 },
             )
 
         if SUPPORTED_ACTIONS.get(result.cause_family) != body.action_type:
             raise HTTPException(status_code=409, detail={"reason": "action_type_not_supported_for_cause_family"})
+
+        return cluster, result
+
+    with deps.get_session_factory()() as session:
+        cluster, result = _check_gate(session)
 
         member_by_vm_id = {m.vm_id: m for m in cluster.members}
         if body.vm_ids is None:
@@ -92,8 +114,17 @@ def execute_remediation(run_id: str, cluster_id: str, body: RemediationActionReq
 
     runner = RemediationRunner()
     results: list[RemediationMachineResult] = []
+    gate_still_holds = True
     for member in targets:
-        if not member.resource_group or not member.subscription_id:
+        if not gate_still_holds:
+            outcome = {
+                "status": "failed",
+                "message": "Skipped - the precision gate no longer held partway through this batch "
+                "(a verdict likely changed the cause family's standing while earlier machines in "
+                "this same request were still running).",
+                "free_bytes_after": None,
+            }
+        elif not member.resource_group or not member.subscription_id:
             outcome = {
                 "status": "failed",
                 "message": "This machine has no resource_group/subscription_id recorded "
@@ -101,10 +132,25 @@ def execute_remediation(run_id: str, cluster_id: str, body: RemediationActionReq
                 "free_bytes_after": None,
             }
         else:
-            outcome = runner.run_disk_cleanup(
-                member.subscription_id, member.resource_group, member.vm_name,
-                cluster.fingerprint.os_family, mount,
-            )
+            # Re-check immediately before this specific machine's Run
+            # Command call - see _check_gate's own docstring.
+            try:
+                with deps.get_session_factory()() as session:
+                    _check_gate(session)
+            except HTTPException:
+                gate_still_holds = False
+                outcome = {
+                    "status": "failed",
+                    "message": "Skipped - the precision gate no longer held partway through this batch "
+                    "(a verdict likely changed the cause family's standing while earlier machines in "
+                    "this same request were still running).",
+                    "free_bytes_after": None,
+                }
+            else:
+                outcome = runner.run_disk_cleanup(
+                    member.subscription_id, member.resource_group, member.vm_name,
+                    cluster.fingerprint.os_family, mount,
+                )
         results.append(RemediationMachineResult(
             vm_id=member.vm_id, vm_name=member.vm_name,
             status=RemediationStatus(outcome["status"]), message=outcome["message"],

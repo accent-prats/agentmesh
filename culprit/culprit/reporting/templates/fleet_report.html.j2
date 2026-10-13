@@ -224,7 +224,8 @@
       {% if entry.result.remediation.phase2_candidate and entry.result.cause_family in supported_action_families %}
         {% set fp = family_precision.get(entry.result.cause_family) %}
         {% set action_type = supported_action_families[entry.result.cause_family] %}
-        {% if remediation_enabled and fp and fp.meets_promotion_bar(promotion_threshold, promotion_min_sample) %}
+        {% set bar_met = fp and fp.meets_promotion_bar(promotion_threshold, promotion_min_sample) %}
+        {% if remediation_enabled and bar_met %}
         <div class="remediation-widget mb-4 p-4 rounded-xl bg-gray-50 border border-gray-200"
           data-run-id="{{ report.run.run_id }}" data-cluster-id="{{ entry.cluster.cluster_id }}" data-action-type="{{ action_type.value }}">
           <h6 class="text-[10px] font-semibold uppercase tracking-wide text-gray-400 mb-2">Run remediation</h6>
@@ -248,6 +249,12 @@
           </div>
           <div class="remediation-results mt-3 space-y-1 text-xs"></div>
         </div>
+        {% elif bar_met %}
+        <p class="text-xs text-gray-500 mb-4">
+          {{ entry.result.cause_family.value|replace('_', ' ')|capitalize }} has cleared review
+          ({{ fp.sample_size }}/{{ promotion_min_sample }} reviewed, {{ "%.0f"|format(fp.precision * 100) }}% precision)
+          but automated remediation is turned off for this deployment.
+        </p>
         {% elif fp %}
         <p class="text-xs text-gray-500 mb-4">
           Eligible once {{ entry.result.cause_family.value|replace('_', ' ') }} clears review:
