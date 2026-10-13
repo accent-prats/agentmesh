@@ -136,9 +136,12 @@ def test_build_dashboard_summary_populated_after_a_run(session_factory):
     assert summary.latest_run.run.run_id == output.run.run_id
     assert summary.latest_run.total_failed == 47
     assert summary.top_causes  # populated, exact ranking covered above
-    # A single run has nothing to trend against yet - FleetTrend's own
-    # "no prior cycle" case, not an error.
-    assert summary.compliance_trend == [] or len(summary.compliance_trend) == 1
+    # compliance_trend always includes the run itself (it's a completed
+    # run for this scope, same as any other) - a single point isn't a
+    # *trend* (render.py gates the chart on >= 2), but it's a real,
+    # correctly-populated list, not an empty one.
+    assert len(summary.compliance_trend) == 1
+    assert summary.compliance_trend[0].run_id == output.run.run_id
 
 
 @pytest.fixture
