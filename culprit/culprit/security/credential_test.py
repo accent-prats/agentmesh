@@ -11,7 +11,7 @@ admin-managed concern owned by the Portal, not Culprit; see
 """
 from __future__ import annotations
 
-from culprit.models.settings import AzureSettingsInput, DatadogSettingsInput
+from culprit.models.settings import AzureSettingsInput, DatadogSettingsInput, SmtpSettingsInput
 
 
 def test_azure_credentials(cfg: AzureSettingsInput) -> tuple[bool, str]:
@@ -96,3 +96,31 @@ def test_datadog_credentials(cfg: DatadogSettingsInput) -> tuple[bool, str]:
             return False, f"Datadog reported {via} as invalid"
     except Exception as exc:  # noqa: BLE001
         return False, f"Tried {via}: {str(exc)[:480]}"
+
+
+def test_smtp_credentials(cfg: SmtpSettingsInput) -> tuple[bool, str]:
+    """Opens the real connection and authenticates - the exact same
+    sequence culprit/notifications/email_sender.py::send_email uses, up
+    to but not including actually sending a message, so a pass here means
+    the real send will connect and authenticate the same way."""
+    import smtplib
+
+    if not cfg.host:
+        return False, "No SMTP host given"
+
+    try:
+        if cfg.encryption == "ssl":
+            server = smtplib.SMTP_SSL(cfg.host, cfg.port, timeout=10)
+        else:
+            server = smtplib.SMTP(cfg.host, cfg.port, timeout=10)
+        try:
+            if cfg.encryption == "starttls":
+                server.starttls()
+            if cfg.username:
+                server.login(cfg.username, cfg.password)
+                return True, f"Connected to {cfg.host}:{cfg.port} and authenticated as {cfg.username}"
+            return True, f"Connected to {cfg.host}:{cfg.port} (no credentials given, so login wasn't attempted)"
+        finally:
+            server.quit()
+    except Exception as exc:  # noqa: BLE001
+        return False, str(exc)[:480]

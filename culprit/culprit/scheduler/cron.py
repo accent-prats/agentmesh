@@ -47,7 +47,7 @@ def scheduled_cycle(scope_name: str = "scheduled", window_hours: int = _SCHEDULE
     discover -> collect -> diagnose path `POST /runs/live` uses
     (culprit/pipeline/live_run.py), just triggered by cron instead of an
     HTTP request - there's no inbound request here to build a report link
-    from the way routes_runs.py's _report_url does, so the digest's link
+    from the way reporting/notify.py's report_url_from_request does, so the digest's link
     (if any) comes from CULPRIT_PUBLIC_URL instead (see _notify below).
 
     `window_hours` defaults to the module constant for any direct caller

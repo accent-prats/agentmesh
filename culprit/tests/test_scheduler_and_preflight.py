@@ -104,7 +104,7 @@ def test_scheduled_cycle_runs_the_real_pipeline_with_mocked_discovery(client, mo
 def test_scheduled_cycle_notify_includes_a_report_link_when_public_url_is_set(client, monkeypatch):
     """CULPRIT_PUBLIC_URL is the scheduler's only way to build a working
     "Open full report" link, since there's no inbound HTTP request to
-    build one from the way routes_runs.py's _report_url does."""
+    build one from the way reporting/notify.py's report_url_from_request does."""
     import dataclasses
 
     import culprit.api.deps as deps_module

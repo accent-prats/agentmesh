@@ -14,6 +14,7 @@ from __future__ import annotations
 from fastapi import APIRouter, HTTPException, Request
 
 from culprit.api import deps
+from culprit.models.email import EmailLogEntry
 from culprit.models.settings import (
     AzureSettingsInput,
     AzureSettingsView,
@@ -24,8 +25,10 @@ from culprit.models.settings import (
     GateSettingsView,
     ScheduleSettingsInput,
     ScheduleSettingsView,
+    SmtpSettingsInput,
+    SmtpSettingsView,
 )
-from culprit.security.credential_test import test_azure_credentials, test_datadog_credentials
+from culprit.security.credential_test import test_azure_credentials, test_datadog_credentials, test_smtp_credentials
 
 router = APIRouter(prefix="/settings", tags=["settings"])
 
@@ -173,3 +176,57 @@ def get_gate_settings_history() -> list[GateChangeEntry]:
         )
         for r in rows
     ]
+
+
+@router.get("/smtp", response_model=SmtpSettingsView)
+def get_smtp_settings() -> SmtpSettingsView:
+    from culprit.db import repository
+
+    with deps.get_session_factory()() as session:
+        return repository.smtp_settings_view(session)
+
+
+@router.put("/smtp", response_model=SmtpSettingsView)
+def put_smtp_settings(body: SmtpSettingsInput) -> SmtpSettingsView:
+    from culprit.db import repository
+
+    with deps.get_session_factory()() as session:
+        repository.save_smtp_settings(session, body)
+        return repository.smtp_settings_view(session)
+
+
+@router.post("/smtp/test")
+def test_smtp(body: SmtpSettingsInput | None = None) -> dict:
+    """Tests the given values if provided (so you can verify before
+    saving), otherwise re-tests whatever is already stored - mirrors
+    test_azure/test_datadog, but with one deliberate difference (found in
+    review 2026-10-14): the Email tab's password field is never
+    re-populated after a page load or a save (passwords are never echoed
+    back - see SmtpSettingsView), so a body submitted from that form
+    always carries password="" except in the one moment right after
+    someone typed a new one. Testing the submitted body's blank password
+    literally would make "Save" then "Test connection" - the one natural
+    flow this whole button exists for - fail authentication against
+    almost any real server, immediately after a successful save. A blank
+    submitted password falls back to whatever's already stored, the same
+    "blank preserves existing" rule save_smtp_settings already applies."""
+    from culprit.db import repository
+
+    with deps.get_session_factory()() as session:
+        if body and body.host:
+            cfg = body if body.password else body.model_copy(update={"password": repository.load_smtp_settings(session).password})
+        else:
+            cfg = repository.load_smtp_settings(session)
+        ok, message = test_smtp_credentials(cfg)
+        repository.record_settings_test_result(session, "smtp", ok, message)
+        return {"ok": ok, "message": message}
+
+
+@router.get("/smtp/log", response_model=list[EmailLogEntry])
+def get_smtp_log() -> list[EmailLogEntry]:
+    """Every report email ever sent, most recent first - the compact
+    "Recent sends" list on the Email tab."""
+    from culprit.db import repository
+
+    with deps.get_session_factory()() as session:
+        return repository.list_email_log(session, limit=50)

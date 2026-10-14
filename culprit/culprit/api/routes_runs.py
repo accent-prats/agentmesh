@@ -17,7 +17,6 @@ from fastapi import APIRouter, HTTPException, Request
 from pydantic import BaseModel, Field
 
 from culprit.api import deps
-from culprit.api.root_path_middleware import root_path
 from culprit.config import settings
 from culprit.models.report import FleetReport
 
@@ -36,13 +35,6 @@ class LiveRunRequest(BaseModel):
     scope_name: str = "live"
 
 
-def _report_url(request: Request, run_id: str) -> str:
-    """Absolute link back to this run's rendered report, reverse-proxy
-    prefix included - what the Teams/Slack digest's "Open full report"
-    button links to (culprit/reporting/notify.py)."""
-    return f"{str(request.base_url).rstrip('/')}{root_path(request)}/runs/{run_id}/report.html"
-
-
 def _notify_if_configured(report: FleetReport, request: Request) -> None:
     """Push the digest to whichever webhook is configured (proposal
     Section 10: "delivery meets people where they already are"). Best-
@@ -52,10 +44,10 @@ def _notify_if_configured(report: FleetReport, request: Request) -> None:
     if not webhook:
         return
     try:
-        from culprit.reporting.notify import post_to_slack, post_to_teams
+        from culprit.reporting.notify import post_to_slack, post_to_teams, report_url_from_request
 
         poster = post_to_teams if settings.teams_webhook_url else post_to_slack
-        response = poster(webhook, report, report_url=_report_url(request, report.run.run_id))
+        response = poster(webhook, report, report_url=report_url_from_request(request, report.run.run_id))
         log.info("Posted digest for run %s to webhook - status %s", report.run.run_id, response.status_code)
     except Exception:  # noqa: BLE001 - a notification failure must not fail the run
         log.exception("Failed to post digest for run %s to webhook", report.run.run_id)
@@ -151,8 +143,10 @@ def get_report_html(run_id: str):
         # up here immediately too - see repository.py::get_current_promotion_gate.
         family_precision = compute_family_precision(repository.all_verdicts(session))
         threshold, min_sample = repository.get_current_promotion_gate(session)
+        smtp = repository.smtp_settings_view(session)
     return HTMLResponse(render_fleet_report_html(
         report, family_precision=family_precision, promotion_threshold=threshold, promotion_min_sample=min_sample,
+        smtp_configured=smtp.configured, default_recipients=smtp.default_recipients,
     ))
 
 

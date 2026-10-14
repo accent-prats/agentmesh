@@ -1,0 +1,88 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Culprit &middot; {{ report.run.scope_name }}</title>
+</head>
+<body style="margin:0; padding:0; background:#f4f4f5; font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;">
+<table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="background:#f4f4f5; padding:24px 0;">
+<tr><td align="center">
+<table role="presentation" width="560" cellpadding="0" cellspacing="0" style="background:#ffffff; border-radius:12px; overflow:hidden;">
+
+  <tr><td style="background:#1C0A0F; padding:20px 28px;">
+    <span style="color:#ffffff; font-size:16px; font-weight:700;">Culprit</span>
+    <span style="color:#9ca3af; font-size:12px; margin-left:8px;">Patch Failure RCA Agent</span>
+  </td></tr>
+
+  <tr><td style="padding:24px 28px 8px 28px;">
+    <h1 style="margin:0; font-size:18px; color:#111827;">{{ report.run.scope_name }}</h1>
+    <p style="margin:4px 0 0 0; font-size:12px; color:#6b7280;">
+      Run {{ report.run.run_id }} &middot; started {{ report.run.started_at.strftime('%Y-%m-%d %H:%M UTC') }}
+    </p>
+  </td></tr>
+
+  {% if note %}
+  <tr><td style="padding:0 28px 8px 28px;">
+    <div style="background:#fff7ed; border:1px solid #fed7aa; border-radius:8px; padding:12px 14px; font-size:13px; color:#9a3412;">
+      {{ note }}
+    </div>
+  </td></tr>
+  {% endif %}
+
+  <tr><td style="padding:12px 28px;">
+    <table role="presentation" width="100%" cellpadding="0" cellspacing="0">
+      <tr>
+        <td style="width:25%; padding:8px 4px; text-align:center;">
+          <div style="font-size:20px; font-weight:700; color:#111827;">{{ report.total_failed }}/{{ report.total_machines }}</div>
+          <div style="font-size:10px; color:#9ca3af; text-transform:uppercase;">Failed</div>
+        </td>
+        <td style="width:25%; padding:8px 4px; text-align:center;">
+          <div style="font-size:20px; font-weight:700; color:#111827;">{{ report.total_clusters }}</div>
+          <div style="font-size:10px; color:#9ca3af; text-transform:uppercase;">Distinct causes</div>
+        </td>
+        <td style="width:25%; padding:8px 4px; text-align:center;">
+          <div style="font-size:20px; font-weight:700; color:#111827;">{{ '%.1f'|format(report.compliance_pct) }}%</div>
+          <div style="font-size:10px; color:#9ca3af; text-transform:uppercase;">Compliance</div>
+        </td>
+        <td style="width:25%; padding:8px 4px; text-align:center;">
+          <div style="font-size:20px; font-weight:700; color:#111827;">{{ report.repeat_offender_count }}</div>
+          <div style="font-size:10px; color:#9ca3af; text-transform:uppercase;">Repeat offenders</div>
+        </td>
+      </tr>
+    </table>
+  </td></tr>
+
+  <tr><td style="padding:4px 28px;"><div style="border-top:1px solid #e5e7eb;"></div></td></tr>
+
+  {% for entry in top_entries %}
+  <tr><td style="padding:14px 28px 2px 28px;">
+    <p style="margin:0; font-size:13px; color:#111827; font-weight:600;">
+      {{ entry.cluster.size }} machine{{ 's' if entry.cluster.size != 1 else '' }} &mdash; {{ entry.result.title }}
+      {% if entry.recurrence_badge %}<span style="color:#dc2626; font-weight:400;">&nbsp;{{ entry.recurrence_badge }}</span>{% endif %}
+    </p>
+    <p style="margin:2px 0 0 0; font-size:12px; color:#6b7280;">
+      Confidence {{ '%.0f'|format(entry.result.confidence * 100) }}% &middot; {{ entry.result.cause_family.value }}
+    </p>
+  </td></tr>
+  {% endfor %}
+
+  {% if report_url %}
+  <tr><td style="padding:24px 28px 28px 28px;">
+    <a href="{{ report_url }}" style="display:inline-block; background:#E11D48; color:#ffffff; text-decoration:none; font-size:13px; font-weight:600; padding:10px 18px; border-radius:8px;">
+      Open full report
+    </a>
+  </td></tr>
+  {% endif %}
+
+  <tr><td style="padding:16px 28px; background:#f9fafb; border-top:1px solid #e5e7eb;">
+    <p style="margin:0; font-size:11px; color:#9ca3af;">
+      Sent by {{ requested_by }} via Culprit &middot; AgentMesh Enterprise Agentic Platform
+    </p>
+  </td></tr>
+
+</table>
+</td></tr>
+</table>
+</body>
+</html>

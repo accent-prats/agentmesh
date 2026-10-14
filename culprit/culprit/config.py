@@ -32,9 +32,10 @@ class Settings:
     slack_webhook_url: str = os.environ.get("CULPRIT_SLACK_WEBHOOK_URL", "")
     # Only consulted by the scheduler/event-driven notify path (scheduler/cron.py)
     # - there's no inbound HTTP request there to build a report link from the
-    # way /runs/live's route does (routes_runs.py::_report_url). Leave unset
-    # to omit the "Open full report" link from those digests entirely rather
-    # than guess at a URL. Include the reverse-proxy prefix if there is one,
+    # way /runs/live's route does (reporting/notify.py::report_url_from_request).
+    # Leave unset to omit the "Open full report" link from those digests
+    # entirely rather than guess at a URL. Include the reverse-proxy prefix
+    # if there is one,
     # e.g. "https://portal.local/culprit".
     public_url: str = os.environ.get("CULPRIT_PUBLIC_URL", "").rstrip("/")
     # Off by default - a deployment that already has an external scheduler

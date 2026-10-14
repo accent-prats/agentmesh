@@ -204,6 +204,26 @@ class PromotionGateChangeRecord(Base):
     min_sample: Mapped[int] = mapped_column(Integer)
 
 
+class EmailLogRecord(Base):
+    """One row per report-email send attempt (api/routes_notifications.py)
+    - an append-only audit log, same reasoning as RemediationActionRecord:
+    the same run can legitimately be re-sent (a new stakeholder, a retry
+    after a bounce), so each attempt is its own distinct event worth
+    keeping, not an upsert-by-run-id table. `recipients_json` is a JSON
+    list rather than a joined string so the exact recipient set of each
+    historical send stays queryable/displayable without re-parsing."""
+
+    __tablename__ = "email_log"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    run_id: Mapped[str] = mapped_column(ForeignKey("runs.run_id"), index=True)
+    recipients_json: Mapped[list] = mapped_column(JSON)
+    requested_by: Mapped[str] = mapped_column(String)
+    sent_at: Mapped[datetime] = mapped_column(DateTime, index=True)
+    status: Mapped[str] = mapped_column(String)
+    message: Mapped[str] = mapped_column(Text, default="")
+
+
 class SettingsRecord(Base):
     """One row per provider ("azure" | "datadog"). `data_json` holds
     plain-text fields as-is and secret fields (client_secret, api_key,

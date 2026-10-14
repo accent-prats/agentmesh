@@ -11,6 +11,7 @@ from sqlalchemy.orm import Session
 
 from culprit.db.models import (
     ClusterRecord,
+    EmailLogRecord,
     MachineOutcomeRecord,
     PreflightFindingRecord,
     PromotionGateChangeRecord,
@@ -1044,3 +1045,121 @@ def datadog_settings_view(session: Session):
         last_test_ok=record.last_test_ok,
         last_test_message=record.last_test_message,
     )
+
+
+# ── Email / SMTP settings ──────────────────────────────────────────────────────
+# Same provider-row mechanism as Azure/Datadog above (SettingsRecord,
+# provider="smtp") - blank password preserves whatever's already stored,
+# same reasoning as save_azure_settings's own client_secret handling.
+
+def save_smtp_settings(session: Session, cfg) -> SettingsRecord:
+    """`cfg` is a culprit.models.settings.SmtpSettingsInput."""
+    from culprit.security.crypto import encrypt
+
+    record = session.get(SettingsRecord, "smtp")
+    existing_password_ciphertext = record.data_json.get("password_ciphertext", "") if record else ""
+
+    password_ciphertext = encrypt(cfg.password) if cfg.password else existing_password_ciphertext
+
+    data = {
+        "host": cfg.host,
+        "port": cfg.port,
+        "username": cfg.username,
+        "password_ciphertext": password_ciphertext,
+        "encryption": cfg.encryption,
+        "from_address": cfg.from_address,
+        "from_name": cfg.from_name,
+        "default_recipients": cfg.default_recipients,
+    }
+    if record is None:
+        record = SettingsRecord(provider="smtp", data_json=data)
+        session.add(record)
+    else:
+        record.data_json = data
+    session.commit()
+    return record
+
+
+def load_smtp_settings(session: Session):
+    """Returns a fully decrypted `SmtpSettingsInput` (password in plain
+    text, in memory only) for the real SMTP connection - used by the
+    settings screen's 'Test connection' button and by
+    api/routes_notifications.py's send path, never persisted or logged."""
+    from culprit.models.settings import SmtpSettingsInput
+    from culprit.security.crypto import decrypt
+
+    record = session.get(SettingsRecord, "smtp")
+    if record is None:
+        return SmtpSettingsInput()
+    d = record.data_json
+    return SmtpSettingsInput(
+        host=d.get("host", ""),
+        port=d.get("port", 587),
+        username=d.get("username", ""),
+        password=decrypt(d["password_ciphertext"]) if d.get("password_ciphertext") else "",
+        encryption=d.get("encryption", "starttls"),
+        from_address=d.get("from_address", ""),
+        from_name=d.get("from_name", "Culprit"),
+        default_recipients=d.get("default_recipients", []),
+    )
+
+
+def smtp_settings_view(session: Session):
+    from culprit.models.settings import SmtpSettingsView
+
+    record = session.get(SettingsRecord, "smtp")
+    if record is None:
+        return SmtpSettingsView()
+    d = record.data_json
+    return SmtpSettingsView(
+        host=d.get("host", ""),
+        port=d.get("port", 587),
+        username=d.get("username", ""),
+        password_configured=bool(d.get("password_ciphertext")),
+        encryption=d.get("encryption", "starttls"),
+        from_address=d.get("from_address", ""),
+        from_name=d.get("from_name", "Culprit"),
+        default_recipients=d.get("default_recipients", []),
+        # A host is the one thing every send genuinely needs - username/
+        # password can legitimately be blank (an open relay), same
+        # "the field that's always required is what decides `configured`"
+        # reasoning as Azure's subscription_ids.
+        configured=bool(d.get("host")),
+        last_tested_at=record.last_tested_at,
+        last_test_ok=record.last_test_ok,
+        last_test_message=record.last_test_message,
+    )
+
+
+def save_email_log(
+    session: Session, *, run_id: str, recipients: list[str], requested_by: str, sent_at, status, message: str,
+):
+    """One row per report-email send attempt - an append-only audit log,
+    same reasoning as save_remediation_action (a run can legitimately be
+    re-sent)."""
+    record = EmailLogRecord(
+        run_id=run_id, recipients_json=recipients, requested_by=requested_by,
+        sent_at=sent_at, status=status.value if hasattr(status, "value") else status, message=message,
+    )
+    session.add(record)
+    session.commit()
+    return record
+
+
+def list_email_log(session: Session, limit: int = 50) -> list:
+    """Every report email ever sent, most recent first - the compact
+    "Recent sends" list on the Settings screen's Email tab. Capped at
+    `limit`, same "already small, never paginated" convention as
+    list_remediation_actions."""
+    from culprit.models.email import EmailLogEntry, EmailStatus
+
+    records = session.execute(
+        select(EmailLogRecord).order_by(EmailLogRecord.sent_at.desc()).limit(limit)
+    ).scalars().all()
+    return [
+        EmailLogEntry(
+            id=r.id, run_id=r.run_id, recipients=r.recipients_json, requested_by=r.requested_by,
+            sent_at=r.sent_at, status=EmailStatus(r.status), message=r.message,
+        )
+        for r in records
+    ]

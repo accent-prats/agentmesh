@@ -15,8 +15,27 @@ platform-level, admin-managed setting owned by the Portal instead - see
 from __future__ import annotations
 
 from datetime import datetime
+from typing import Literal
 
 from pydantic import BaseModel, Field, field_validator
+
+# Not a full RFC 5322 validator - just enough to catch an obviously-wrong
+# value (a typo, a pasted name instead of an address) AND to reject
+# anything that isn't a plain email shape. Deliberately restrictive, not
+# just "no @ or whitespace" (found in review 2026-10-14: that older,
+# looser version let "><script>alert(1)</script>@evil.com" through as a
+# "valid" recipient, which - combined with a separate autoescape bug,
+# since fixed in reporting/render.py::_env() - was a real stored-XSS path
+# via a saved default recipient rendered back into the Fleet Report
+# page's pre-filled "To" field). This shape (alphanumerics plus
+# `._%+-` in the local part, `.-` in the domain, a letters-only TLD)
+# structurally cannot contain `<>"'`, a second `@`, or any whitespace/
+# control character (closing the same review's CRLF-header-injection
+# finding too, in models/email.py::SendReportRequest.recipients, which
+# reuses this pattern). Exported (not module-private) because
+# models/email.py imports it - the same validation has to apply to a
+# per-send recipient override, not just the stored default list.
+EMAIL_ADDRESS_RE = r"^[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}$"
 
 
 class AzureSettingsInput(BaseModel):
@@ -170,3 +189,59 @@ class GateChangeEntry(BaseModel):
     changed_by: str
     threshold: float
     min_sample: int
+
+
+class SmtpSettingsInput(BaseModel):
+    """What PUT /settings/smtp accepts - the outbound mail server used to
+    email a run's report (api/routes_notifications.py), plus the default
+    recipient list (DL) that action pre-fills from. Same "blank password
+    preserves whatever's already stored" rule as Azure's client_secret -
+    see repository.py::save_smtp_settings."""
+
+    host: str = ""
+    port: int = Field(default=587, ge=1, le=65535)
+    username: str = ""
+    password: str = ""
+    # "none" (unencrypted, local/test relays only), "starttls" (the common
+    # case - port 587, upgrade after connecting), "ssl" (implicit TLS from
+    # the start - port 465). A plain bool couldn't represent the 465/SSL
+    # case alongside STARTTLS without a second flag, so this is one
+    # 3-valued field instead of two booleans that could disagree.
+    encryption: Literal["none", "starttls", "ssl"] = "starttls"
+    from_address: str = ""
+    from_name: str = "Culprit"
+    default_recipients: list[str] = Field(default_factory=list)
+
+    @field_validator("from_address")
+    @classmethod
+    def _from_address_must_look_like_an_email(cls, v: str) -> str:
+        import re
+
+        if v and not re.match(EMAIL_ADDRESS_RE, v):
+            raise ValueError(f"'{v}' doesn't look like an email address")
+        return v
+
+    @field_validator("default_recipients")
+    @classmethod
+    def _recipients_must_look_like_emails(cls, v: list[str]) -> list[str]:
+        import re
+
+        for addr in v:
+            if not re.match(EMAIL_ADDRESS_RE, addr):
+                raise ValueError(f"'{addr}' doesn't look like an email address")
+        return v
+
+
+class SmtpSettingsView(BaseModel):
+    host: str = ""
+    port: int = 587
+    username: str = ""
+    password_configured: bool = False
+    encryption: Literal["none", "starttls", "ssl"] = "starttls"
+    from_address: str = ""
+    from_name: str = "Culprit"
+    default_recipients: list[str] = Field(default_factory=list)
+    configured: bool = False
+    last_tested_at: datetime | None = None
+    last_test_ok: bool | None = None
+    last_test_message: str = ""

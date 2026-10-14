@@ -3,7 +3,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from jinja2 import Environment, FileSystemLoader, select_autoescape
+from jinja2 import Environment, FileSystemLoader
 
 from culprit.models.report import FleetReport
 
@@ -34,7 +34,16 @@ def _env() -> Environment:
     from culprit.models.remediation import SUPPORTED_ACTIONS
     from culprit.models.settings import GATE_MIN_SAMPLE_FLOOR, GATE_THRESHOLD_FLOOR
 
-    env = Environment(loader=FileSystemLoader(str(_TEMPLATE_DIR)), autoescape=select_autoescape(["html"]))
+    # Found in review 2026-10-14 (the "email a report" feature): every
+    # template this app has is named "*.html.j2", but select_autoescape
+    # matches on a template name's actual final suffix - ".j2", not
+    # ".html" - so select_autoescape(["html"]) silently returned False
+    # for every single page this app has ever rendered, and autoescaping
+    # has been off app-wide since this file was first written. Every
+    # template here genuinely is HTML and always has been, so there is no
+    # case where escaping should be skipped - autoescape=True
+    # unconditionally, not another attempt at extension-matching.
+    env = Environment(loader=FileSystemLoader(str(_TEMPLATE_DIR)), autoescape=True)
     env.globals["remediation_enabled"] = settings.remediation_enabled
     # "/" (site root) unless this deployment set CULPRIT_PORTAL_PUBLIC_URL
     # because Culprit's own origin isn't also Portal's - see
@@ -49,7 +58,10 @@ def _env() -> Environment:
     return env
 
 
-def render_fleet_report_html(report: FleetReport, family_precision=None, promotion_threshold: float = 0.95, promotion_min_sample: int = 50) -> str:
+def render_fleet_report_html(
+    report: FleetReport, family_precision=None, promotion_threshold: float = 0.95, promotion_min_sample: int = 50,
+    smtp_configured: bool = False, default_recipients: list | None = None,
+) -> str:
     """`family_precision` (dict[CauseFamily, FamilyPrecision]) is a
     render-only input, deliberately kept off `FleetReport` itself (that
     model is also returned as plain JSON from GET /runs/{run_id}/report) -
@@ -71,6 +83,7 @@ def render_fleet_report_html(report: FleetReport, family_precision=None, promoti
     return template.render(
         report=report, active="console", nav_prefix="../../", family_precision=family_precision or {},
         promotion_threshold=promotion_threshold, promotion_min_sample=promotion_min_sample,
+        smtp_configured=smtp_configured, default_recipients=default_recipients or [],
     )
 
 
@@ -191,6 +204,21 @@ def render_remediation_log_html(records) -> str:
     rendered completely unstyled."""
     template = _env().get_template("remediation_log.html.j2")
     return template.render(active="remediation", records=records, nav_prefix="../")
+
+
+def render_email_report_html(report: FleetReport, top_entries: list, report_url: str | None, note: str, requested_by: str) -> str:
+    """The HTML body of a "Email report" send (api/routes_notifications.py,
+    culprit/notifications/email_sender.py) - standalone (no `extends
+    base.html.j2`, same reasoning as render_login_html: nothing to put in
+    a sidebar for an email client to render, and no Tailwind CDN script
+    either, since email clients strip <script>/external <link> tags - this
+    template is plain inline-styled HTML, a different rendering contract
+    from every other page `_env()` serves. `top_entries` is
+    notify.py::top_entries(report)'s own selection, reused rather than
+    duplicated so the email's "top findings" list always matches the
+    Teams/Slack digest's."""
+    template = _env().get_template("email_report.html.j2")
+    return template.render(report=report, top_entries=top_entries, report_url=report_url, note=note, requested_by=requested_by)
 
 
 def render_login_html(next_path: str = "/", error: str = "", show_token_login: bool = True) -> str:
