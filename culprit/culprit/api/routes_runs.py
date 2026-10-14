@@ -33,7 +33,12 @@ router = APIRouter(prefix="/runs", tags=["runs"])
 
 class LiveRunRequest(BaseModel):
     window_hours: int = Field(default=24, ge=1, le=720)
-    scope_name: str = "live"
+    # "Full fleet scan" rather than the old bare "live" - that literal
+    # string showed up, unexplained and identical across every run, as the
+    # "Update job" column on /runs and as the title of every report built
+    # from an ad-hoc trigger (fleet_report.html.j2, installation_report.
+    # html.j2, email_report.html.j2 all key off PatchRun.scope_name).
+    scope_name: str = "Full fleet scan"
 
 
 def _notify_if_configured(report: FleetReport, request: Request) -> None:

@@ -93,6 +93,44 @@ def test_live_run_happy_path_with_mocked_discovery(client, monkeypatch):
     assert body["run"]["scope_name"] == "live-test"
 
 
+def test_live_run_defaults_to_a_meaningful_scope_name_when_none_is_given(client, monkeypatch):
+    """The Console's "Run now" button (and any API caller omitting
+    scope_name) used to fall back to the bare literal "live" - identical
+    across every ad-hoc run and meaningless on the /runs list's "Update
+    job" column. It should now read as an actual description of what the
+    run covers."""
+    import culprit.api.deps as deps_module
+
+    client.put("/settings/azure", json={"subscription_ids": ["sub-1"], "client_secret": "x"})
+
+    fake_machine = MachineIdentity(
+        vm_id="/subscriptions/sub-1/resourceGroups/rg/providers/Microsoft.Compute/virtualMachines/vm-1",
+        vm_name="vm-1", resource_group="rg", subscription_id="sub-1", os_family=OSFamily.LINUX,
+    )
+
+    class FakeControlPlaneCollector:
+        def collect(self, request):
+            from culprit.collectors.base import CollectionResult
+
+            return CollectionResult(events=[], outcome=PatchOutcome(status="Failed", error_code="UnknownError"))
+
+    def fake_build_live_collectors(session):
+        return {Source.AZURE_CONTROL_PLANE: FakeControlPlaneCollector()}, _FakeAzureCfg(), object()
+
+    monkeypatch.setattr(deps_module, "build_live_collectors", fake_build_live_collectors)
+
+    import culprit.pipeline.discovery as discovery_module
+
+    monkeypatch.setattr(discovery_module, "discover_failed_machines", lambda *a, **k: [fake_machine])
+    monkeypatch.setattr(discovery_module, "count_total_machines", lambda *a, **k: 1)
+
+    resp = client.post("/runs/live", json={"window_hours": 12})
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["run"]["scope_name"] == "Full fleet scan"
+    assert "not tied to a maintenance schedule" in body["run"]["maintenance_configuration_id"].lower()
+
+
 class _FakeAzureCfg:
     subscription_ids = ["sub-1"]
     log_analytics_workspace_id = ""

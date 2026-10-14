@@ -23,7 +23,7 @@ def execute_live_run(
     window_hours: int,
     scope_name: str,
     trigger_mode: TriggerMode,
-    maintenance_configuration_id: str = "(live discovery - not tied to one maintenanceConfigurations run)",
+    maintenance_configuration_id: str = "Not tied to a maintenance schedule",
 ):
     """Discovers every machine with a non-succeeded patch result in the
     window, collects real evidence for each, and diagnoses it exactly
