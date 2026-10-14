@@ -82,10 +82,21 @@ def build_installation_report(
     for r in non_failure_rows:
         if r["vm_id"] in covered_vm_ids:
             continue
+        # error_code/error_message come straight from the bulk query
+        # (discovery.py::_ALL_PATCH_RESULTS_QUERY now projects them) -
+        # found in review: a genuinely Failed machine beyond
+        # discover_failed_machines's own _MAX_MACHINES_PER_RUN cap (a
+        # large-fleet run with >200 concurrent failures, exactly the
+        # case this report exists for) would otherwise reach this branch
+        # with no diagnostic information at all, not even the raw Azure
+        # error - a "Failed" row with nothing else to show. There's no
+        # log_path here (unlike the failed_bundles branch above) since
+        # the bulk query has no OS family to pick a convention path from.
         rows.append(InstallationOutcomeRow(
             vm_id=r["vm_id"], vm_name=r["vm_name"], status=_status_from_raw(r["status"]),
             subscription_id=r["subscription_id"], resource_group=r["resource_group"],
             started_at=r.get("started_at"), ended_at=r.get("ended_at"),
+            error_code=r.get("error_code"), error_message=r.get("error_message"),
         ))
 
     return InstallationReport(run=run, rows=rows, excluded_count=excluded_count)

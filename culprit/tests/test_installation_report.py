@@ -24,11 +24,13 @@ def test_rows_to_outcomes_parses_fields_and_drops_blanks():
         {"vmId": "/subscriptions/s/.../vm-1", "status": "Succeeded", "startDateTime": "2026-09-26T04:00:00Z", "lastModifiedDateTime": "2026-09-26T04:12:00Z"},
         {"vmId": ""},  # dropped - no vm id at all
         {"vmId": "/subscriptions/s/.../vm-2", "status": None, "startDateTime": None, "lastModifiedDateTime": None},
+        {"vmId": "/subscriptions/s/.../vm-3", "status": "Failed", "startDateTime": "2026-09-26T04:00:00Z", "lastModifiedDateTime": None, "errorCode": "PackageManagerFailure", "errorMessage": "repo unreachable"},
     ]
     outcomes = _rows_to_outcomes(rows)
     assert outcomes == [
-        ("/subscriptions/s/.../vm-1", "Succeeded", "2026-09-26T04:00:00Z", "2026-09-26T04:12:00Z"),
-        ("/subscriptions/s/.../vm-2", "Unknown", None, None),  # a missing status defaults to "Unknown", not blank
+        ("/subscriptions/s/.../vm-1", "Succeeded", "2026-09-26T04:00:00Z", "2026-09-26T04:12:00Z", None, None),
+        ("/subscriptions/s/.../vm-2", "Unknown", None, None, None, None),  # a missing status defaults to "Unknown", not blank
+        ("/subscriptions/s/.../vm-3", "Failed", "2026-09-26T04:00:00Z", None, "PackageManagerFailure", "repo unreachable"),
     ]
 
 
@@ -48,7 +50,7 @@ def test_rows_to_outcomes_dedupes_a_vm_touched_twice_keeping_the_latest():
     outcomes = _rows_to_outcomes(rows)
     assert len(outcomes) == 2
     vm_1 = next(o for o in outcomes if o[0] == "/subscriptions/s/.../vm-1")
-    assert vm_1 == ("/subscriptions/s/.../vm-1", "Succeeded", "2026-09-26T05:30:00Z", "2026-09-26T05:35:00Z")
+    assert vm_1 == ("/subscriptions/s/.../vm-1", "Succeeded", "2026-09-26T05:30:00Z", "2026-09-26T05:35:00Z", None, None)
 
 
 def test_identity_from_vm_id_parses_the_standard_arm_shape():
@@ -174,6 +176,61 @@ def test_build_installation_report_prefers_the_failed_bundle_over_a_duplicate_no
     assert vm_1_row.cause_family == CauseFamily.CAPACITY
     vm_2_row = next(r for r in report.rows if r.vm_name == "vm-2")
     assert vm_2_row.status.value == "succeeded"
+
+
+def test_build_installation_report_carries_raw_error_detail_for_a_failed_row_beyond_the_rca_cap():
+    """Found in review: discover_failed_machines caps at
+    _MAX_MACHINES_PER_RUN (200), but the bulk full-fleet query has no
+    such cap - a fleet with more than 200 concurrent failures in one
+    window has some genuinely Failed machines appear only in
+    non_failure_rows, never in failed_bundles (never RCA'd). Before this
+    fix those rows carried no error_code/error_message at all - a
+    "Failed" row with nothing else to show, on exactly the large-fleet
+    case this report exists for. Proves the bulk query's own raw error
+    now survives into the row even with zero RCA."""
+    from culprit.models.patch_run import PatchRun, TriggerMode
+    from culprit.models.report import FleetReport
+
+    run = PatchRun(run_id="run-1", maintenance_configuration_id="mc-1", subscription_id="s", scope_name="scope-a",
+                   started_at=datetime(2026, 1, 1, tzinfo=timezone.utc), total_machines=500, trigger_mode=TriggerMode.AD_HOC)
+    fleet_report = FleetReport(run=run, total_machines=500, total_failed=0, total_clusters=0, entries=[])
+
+    non_failure_rows = [{
+        "vm_id": "/subscriptions/s/resourceGroups/rg/providers/Microsoft.Compute/virtualMachines/vm-201",
+        "vm_name": "vm-201", "resource_group": "rg", "subscription_id": "s",
+        "status": "Failed", "started_at": None, "ended_at": None,
+        "error_code": "PackageManagerFailure", "error_message": "repo unreachable",
+    }]
+
+    report = build_installation_report(run, [], fleet_report, non_failure_rows, excluded_count=0)
+
+    assert len(report.rows) == 1
+    row = report.rows[0]
+    assert row.status.value == "failed"
+    assert row.error_code == "PackageManagerFailure"
+    assert row.error_message == "repo unreachable"
+    assert row.cause_family is None  # never reached RCA - no diagnosis to show, but the raw error is there
+
+
+def test_fleet_report_hides_the_installation_report_link_when_none_was_built():
+    """Found in review: the "View installation report" link on the Fleet
+    Report page was unconditional - a run that predates this feature, or
+    one where the best-effort build silently failed, still showed a
+    working-looking link that 404'd with a raw JSON error, not a styled
+    page. Proves render_fleet_report_html actually hides it."""
+    from culprit.models.patch_run import PatchRun, TriggerMode
+    from culprit.models.report import FleetReport
+    from culprit.reporting.render import render_fleet_report_html
+
+    run = PatchRun(run_id="run-1", maintenance_configuration_id="mc-1", subscription_id="s", scope_name="scope-a",
+                   started_at=datetime(2026, 1, 1, tzinfo=timezone.utc), total_machines=10, trigger_mode=TriggerMode.AD_HOC)
+    report = FleetReport(run=run, total_machines=10, total_failed=0, total_clusters=0, entries=[])
+
+    html_without = render_fleet_report_html(report, installation_report_available=False)
+    assert "installation-report.html" not in html_without
+
+    html_with = render_fleet_report_html(report, installation_report_available=True)
+    assert "installation-report.html" in html_with
 
 
 def test_load_installation_report_returns_none_when_never_built(session_factory):

@@ -149,12 +149,19 @@ _MAX_PREFLIGHT_PAGES = 500
 # Every patch result in the window, not just non-succeeded ones (unlike
 # _FAILED_MACHINES_QUERY above) - the Patch Installation Report's own
 # full-fleet view (models/installation_report.py). Field names
-# (status/startDateTime/lastModifiedDateTime) match the real
-# patchinstallationresources shape already proven out in
+# (status/startDateTime/lastModifiedDateTime/errorCode/errorMessage)
+# match the real patchinstallationresources shape already proven out in
 # collectors/azure_control_plane.py::_outcome_from_install_result - that
 # function's own `status=props.get("status", "Unknown")` default is what
 # "Unresponsive or Shutdown" (this report's label for a VM that never
-# posted a result) maps from.
+# posted a result) maps from, and its own `props.get("error", {}).get
+# ("details")` is what `errorMessage` below mirrors via `properties.
+# error.details`. Carrying the raw error here - found in review - is
+# what lets a machine beyond discover_failed_machines's own
+# _MAX_MACHINES_PER_RUN cap (a genuinely failed machine the deep-RCA
+# pipeline never got to) still show *something* diagnostic in this
+# report, instead of a bare "Failed" row with nothing else - exactly the
+# large-fleet case this report exists for.
 #
 # `summarize arg_max(startDateTime, *) by vmId` collapses a VM touched
 # more than once in the same window (a retried install, overlapping
@@ -172,25 +179,30 @@ patchinstallationresources
 | where properties.startDateTime <= datetime('{window_end}')
 | extend vmId = tostring(split(id, '/patchInstallationResults/')[0])
 | project vmId, status = tostring(properties.status),
-    startDateTime = tostring(properties.startDateTime), lastModifiedDateTime = tostring(properties.lastModifiedDateTime)
+    startDateTime = tostring(properties.startDateTime), lastModifiedDateTime = tostring(properties.lastModifiedDateTime),
+    errorCode = tostring(properties.errorCode), errorMessage = tostring(properties.error.details)
 | summarize arg_max(startDateTime, *) by vmId
 """
 
 
-def _rows_to_outcomes(rows: list[dict]) -> list[tuple[str, str, str | None, str | None]]:
-    """Pure parser (vm_id, status, started_at_iso, ended_at_iso) - fixture-
-    testable without a live Resource Graph call, same split as
-    `_extract_vm_ids`/`_machines_from_rows` above. Also de-dupes by
-    vm_id client-side (keeping the row with the latest startDateTime) -
-    defense in depth under the query's own `arg_max ... by vmId`
-    (found in review: a second caller, or a KQL change that loses that
-    summarize, must not silently reintroduce a double-counted machine)."""
-    seen: dict[str, tuple[str, str, str | None, str | None]] = {}
+def _rows_to_outcomes(rows: list[dict]) -> list[tuple[str, str, str | None, str | None, str | None, str | None]]:
+    """Pure parser (vm_id, status, started_at_iso, ended_at_iso, error_code,
+    error_message) - fixture-testable without a live Resource Graph call,
+    same split as `_extract_vm_ids`/`_machines_from_rows` above. Also
+    de-dupes by vm_id client-side (keeping the row with the latest
+    startDateTime) - defense in depth under the query's own
+    `arg_max ... by vmId` (found in review: a second caller, or a KQL
+    change that loses that summarize, must not silently reintroduce a
+    double-counted machine)."""
+    seen: dict[str, tuple[str, str, str | None, str | None, str | None, str | None]] = {}
     for r in rows:
         vm_id = r.get("vmId")
         if not vm_id:
             continue
-        outcome = (vm_id, r.get("status") or "Unknown", r.get("startDateTime"), r.get("lastModifiedDateTime"))
+        outcome = (
+            vm_id, r.get("status") or "Unknown", r.get("startDateTime"), r.get("lastModifiedDateTime"),
+            r.get("errorCode") or None, r.get("errorMessage") or None,
+        )
         existing = seen.get(vm_id)
         if existing is None or (outcome[2] or "") > (existing[2] or ""):
             seen[vm_id] = outcome
@@ -202,12 +214,13 @@ def discover_all_patch_outcomes(
     subscription_ids: list[str],
     window_start: datetime,
     window_end: datetime,
-) -> list[tuple[str, str, str | None, str | None]]:
+) -> list[tuple[str, str, str | None, str | None, str | None, str | None]]:
     """Live Resource Graph lookup for the Patch Installation Report's
     full-fleet view - every machine that posted *any* patch result in the
     window (Succeeded/Failed/Unknown alike), not just the non-succeeded
     ones `discover_failed_machines` returns. Returns raw
-    (vm_id, status, started_at_iso, ended_at_iso) tuples - identity
+    (vm_id, status, started_at_iso, ended_at_iso, error_code,
+    error_message) tuples - identity
     details (name/resource group/subscription) are joined separately via
     `_VM_DETAILS_QUERY`/`_machines_from_rows`, same two-step shape as
     `discover_failed_machines`, by whichever caller needs them.
@@ -280,11 +293,15 @@ def discover_all_patch_outcomes_with_identity(
     to miss. Returns one dict per machine: vm_id, vm_name, resource_group,
     subscription_id, status, started_at, ended_at (the latter two parsed
     into datetimes, `None` if missing/unparseable - a status like
-    "Unresponsive or Shutdown" legitimately has neither)."""
+    "Unresponsive or Shutdown" legitimately has neither), error_code,
+    error_message (populated for a Failed row even if it never reached
+    deep RCA - see _ALL_PATCH_RESULTS_QUERY's own comment on why this
+    matters for a fleet larger than discover_failed_machines's
+    _MAX_MACHINES_PER_RUN cap)."""
     outcomes = discover_all_patch_outcomes(credential, subscription_ids, window_start, window_end)
 
     rows = []
-    for vm_id, status, started_at_iso, ended_at_iso in outcomes:
+    for vm_id, status, started_at_iso, ended_at_iso, error_code, error_message in outcomes:
         identity = _identity_from_vm_id(vm_id)
         if identity is None:
             continue  # not a standard VM resource id - shouldn't happen, never crash on it
@@ -296,6 +313,8 @@ def discover_all_patch_outcomes_with_identity(
             "status": status,
             "started_at": _parse_iso(started_at_iso),
             "ended_at": _parse_iso(ended_at_iso),
+            "error_code": error_code,
+            "error_message": error_message,
         })
     return rows
 

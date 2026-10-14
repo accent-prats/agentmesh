@@ -116,7 +116,11 @@
   </div>
   {% else %}
   <div class="bg-white rounded-2xl shadow-sm border border-gray-100 p-8 text-center text-gray-400 text-sm">
+    {% if report.excluded_count > 0 %}
+    No machine reported a patch result for this run - see the Excluded count above.
+    {% else %}
     No machines recorded for this run.
+    {% endif %}
   </div>
   {% endif %}
 

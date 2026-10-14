@@ -61,7 +61,7 @@ def _env() -> Environment:
 
 def render_fleet_report_html(
     report: FleetReport, family_precision=None, promotion_threshold: float = 0.95, promotion_min_sample: int = 50,
-    smtp_configured: bool = False, default_recipients: list | None = None,
+    smtp_configured: bool = False, default_recipients: list | None = None, installation_report_available: bool = False,
 ) -> str:
     """`family_precision` (dict[CauseFamily, FamilyPrecision]) is a
     render-only input, deliberately kept off `FleetReport` itself (that
@@ -85,6 +85,7 @@ def render_fleet_report_html(
         report=report, active="console", nav_prefix="../../", family_precision=family_precision or {},
         promotion_threshold=promotion_threshold, promotion_min_sample=promotion_min_sample,
         smtp_configured=smtp_configured, default_recipients=default_recipients or [],
+        installation_report_available=installation_report_available,
     )
 
 

@@ -161,9 +161,16 @@ def get_report_html(run_id: str):
         family_precision = compute_family_precision(repository.all_verdicts(session))
         threshold, min_sample = repository.get_current_promotion_gate(session)
         smtp = repository.smtp_settings_view(session)
+        # Found in review: the "View installation report" link was
+        # unconditional, so a run from before this feature existed (or
+        # one where the best-effort build in live_run.py/trigger_demo_run
+        # silently failed) showed a working-looking link that 404'd with
+        # a raw JSON error instead of the app's own styled pages.
+        installation_report_available = repository.installation_report_exists(session, run_id)
     return HTMLResponse(render_fleet_report_html(
         report, family_precision=family_precision, promotion_threshold=threshold, promotion_min_sample=min_sample,
         smtp_configured=smtp.configured, default_recipients=smtp.default_recipients,
+        installation_report_available=installation_report_available,
     ))
 
 

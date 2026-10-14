@@ -1212,6 +1212,17 @@ def save_installation_report(session: Session, run_id: str, rows: list, excluded
     return record
 
 
+def installation_report_exists(session: Session, run_id: str) -> bool:
+    """Cheap existence check - whether `load_installation_report` would
+    return something, without building the full report. Used by the
+    Fleet Report page to decide whether to show its "View installation
+    report" link at all (found in review: the link was unconditional,
+    so a run from before this feature existed - or one where the
+    best-effort build in live_run.py/trigger_demo_run silently failed -
+    led to a raw JSON 404, not a styled page)."""
+    return session.get(InstallationReportRecord, run_id) is not None
+
+
 def load_installation_report(session: Session, run_id: str):
     from culprit.models.installation_report import InstallationOutcomeRow, InstallationReport
 
