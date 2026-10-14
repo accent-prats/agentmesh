@@ -51,6 +51,21 @@ class Settings:
     # just means that lookup is skipped - same graceful-degradation shape
     # as every other optional integration here.
     portal_internal_url: str = os.environ.get("CULPRIT_PORTAL_INTERNAL_URL", "http://portal-api:8000").rstrip("/")
+    # Where "Return to the AgentMesh Portal" / "Portal Home" links
+    # (login.html.j2, base.html.j2) actually send a browser - the
+    # *public*, browser-reachable Portal URL, unlike portal_internal_url
+    # above (an in-cluster address nothing outside Docker can resolve).
+    # Blank (the default) means "Portal lives at this same origin's site
+    # root" - true for the intended nginx-proxied deployment shape
+    # (root_path_middleware.py's own docstring: Culprit under /culprit/,
+    # Portal's SPA as nginx's catch-all "/"), so a bare "/" is correct
+    # there and nothing needs to change. Found broken 2026-10-14 on a
+    # deployment reached directly on Culprit's own exposed port (bypassing
+    # nginx entirely) - "/" there is Culprit's own site root, not Portal's,
+    # and since that root also requires auth, clicking the button just
+    # drew a silent 401 with no visible feedback. Set this explicitly on
+    # any deployment where Culprit's own origin isn't also Portal's.
+    portal_public_url: str = os.environ.get("CULPRIT_PORTAL_PUBLIC_URL", "")
     # Agent memory (see memory/store.py) - off by default, and a no-op even
     # when on unless the optional `culprit[memory]` extra (mem0ai +
     # sentence-transformers) is installed. Every write still goes only

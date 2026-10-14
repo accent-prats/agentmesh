@@ -36,6 +36,10 @@ def _env() -> Environment:
 
     env = Environment(loader=FileSystemLoader(str(_TEMPLATE_DIR)), autoescape=select_autoescape(["html"]))
     env.globals["remediation_enabled"] = settings.remediation_enabled
+    # "/" (site root) unless this deployment set CULPRIT_PORTAL_PUBLIC_URL
+    # because Culprit's own origin isn't also Portal's - see
+    # config.py::portal_public_url's own comment.
+    env.globals["portal_url"] = settings.portal_public_url or "/"
     env.globals["supported_action_families"] = SUPPORTED_ACTIONS
     # The gate's editable floor (see models/settings.py) - genuinely
     # static, unlike promotion_threshold/promotion_min_sample above, so

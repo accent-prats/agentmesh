@@ -303,3 +303,36 @@ def test_login_page_shows_the_token_form_when_no_portal_sso_is_configured(client
     resp = client.get("/login")
     assert resp.status_code == 200
     assert "Direct/script access" in resp.text
+
+
+def test_portal_links_default_to_site_root_when_no_public_url_is_configured(client):
+    """Found broken 2026-10-14: "Return to the AgentMesh Portal" (login
+    page) and "Portal Home" (base.html.j2's sidebar, every authenticated
+    page) both hardcoded href="/" - correct only for the intended
+    nginx-proxied deployment (Culprit under /culprit/, Portal as nginx's
+    catch-all site root), silently broken (a bare 401, no redirect, no
+    visible feedback) on a deployment reached directly on Culprit's own
+    exposed port, where "/" is Culprit's own root, not Portal's. Default
+    behavior (no CULPRIT_PORTAL_PUBLIC_URL set) must stay exactly "/" -
+    this is the common, correct case for most deployments and must not
+    regress."""
+    login_resp = client.get("/login")
+    assert 'href="/"' in login_resp.text
+
+    authed_resp = client.get("/settings", headers={"Authorization": f"Bearer {CULPRIT_TOKEN}"})
+    assert 'href="/"' in authed_resp.text
+
+
+def test_portal_links_use_the_configured_public_url_when_culprit_is_reached_directly(client, monkeypatch):
+    """The actual fix - a deployment where Culprit's own origin isn't
+    also Portal's (e.g. reached directly on its exposed port, bypassing
+    nginx) sets CULPRIT_PORTAL_PUBLIC_URL to the real, browser-reachable
+    Portal address, and both links pick it up."""
+    monkeypatch.setattr(config, "settings", config.Settings(
+        api_token=CULPRIT_TOKEN, portal_jwt_secret=PORTAL_SECRET, portal_public_url="https://10.60.76.195/",
+    ))
+    login_resp = client.get("/login")
+    assert 'href="https://10.60.76.195/"' in login_resp.text
+
+    authed_resp = client.get("/settings", headers={"Authorization": f"Bearer {CULPRIT_TOKEN}"})
+    assert 'href="https://10.60.76.195/"' in authed_resp.text
