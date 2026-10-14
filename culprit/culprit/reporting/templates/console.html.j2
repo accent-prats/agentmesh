@@ -220,8 +220,12 @@ async function runLive(statusElId) {
   status.textContent = 'Discovering failed machines and diagnosing…';
   try {
     const hours = parseInt(document.getElementById('live-hours').value, 10) || 24;
-    const scopeName = 'Full fleet scan (' + hours + 'h window)';
-    const res = await fetch('runs/live', { method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify({ window_hours: hours, scope_name: scopeName }) });
+    // scope_name deliberately omitted - it's the join key _previous_completed_run/
+    // compliance_trend use to match an ad-hoc run against its own prior cycle
+    // (repository.py), so it must stay a stable constant across runs rather than
+    // vary with whatever window_hours the user happens to pick. Let the server's
+    // own default (routes_runs.py::LiveRunRequest.scope_name) supply it.
+    const res = await fetch('runs/live', { method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify({ window_hours: hours }) });
     if (!res.ok) { const err = await res.json(); throw new Error(err.detail || ('HTTP ' + res.status)); }
     const report = await res.json();
     status.textContent = report.total_failed + '/' + report.total_machines +

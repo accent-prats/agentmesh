@@ -131,6 +131,48 @@ def test_live_run_defaults_to_a_meaningful_scope_name_when_none_is_given(client,
     assert "not tied to a maintenance schedule" in body["run"]["maintenance_configuration_id"].lower()
 
 
+def test_live_run_scope_name_stays_constant_across_different_window_hours(client, monkeypatch):
+    """Review caught a real regression: console.html.j2 originally folded
+    window_hours into scope_name ("Full fleet scan (24h window)"), but
+    scope_name is the join key repository.py's _previous_completed_run/
+    compliance_trend use to match an ad-hoc run against its own prior
+    cycle - a user changing the Hours-back field between runs would have
+    silently broken trending. Omitting scope_name (as the Console now
+    does) must keep producing the same value regardless of window_hours."""
+    import culprit.api.deps as deps_module
+
+    client.put("/settings/azure", json={"subscription_ids": ["sub-1"], "client_secret": "x"})
+
+    fake_machine = MachineIdentity(
+        vm_id="/subscriptions/sub-1/resourceGroups/rg/providers/Microsoft.Compute/virtualMachines/vm-1",
+        vm_name="vm-1", resource_group="rg", subscription_id="sub-1", os_family=OSFamily.LINUX,
+    )
+
+    class FakeControlPlaneCollector:
+        def collect(self, request):
+            from culprit.collectors.base import CollectionResult
+
+            return CollectionResult(events=[], outcome=PatchOutcome(status="Failed", error_code="UnknownError"))
+
+    def fake_build_live_collectors(session):
+        return {Source.AZURE_CONTROL_PLANE: FakeControlPlaneCollector()}, _FakeAzureCfg(), object()
+
+    monkeypatch.setattr(deps_module, "build_live_collectors", fake_build_live_collectors)
+
+    import culprit.pipeline.discovery as discovery_module
+
+    monkeypatch.setattr(discovery_module, "discover_failed_machines", lambda *a, **k: [fake_machine])
+    monkeypatch.setattr(discovery_module, "count_total_machines", lambda *a, **k: 1)
+
+    scope_names = set()
+    for hours in (12, 24, 72):
+        resp = client.post("/runs/live", json={"window_hours": hours})
+        assert resp.status_code == 200
+        scope_names.add(resp.json()["run"]["scope_name"])
+
+    assert scope_names == {"Full fleet scan"}
+
+
 class _FakeAzureCfg:
     subscription_ids = ["sub-1"]
     log_analytics_workspace_id = ""
