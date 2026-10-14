@@ -224,6 +224,28 @@ class EmailLogRecord(Base):
     message: Mapped[str] = mapped_column(Text, default="")
 
 
+class InstallationReportRecord(Base):
+    """One row per run - the Azure Update Manager-style full-fleet view
+    (models/installation_report.py::InstallationReport), distinct from
+    ClusterRecord/RCAResultRecord (cause clustering, failures only).
+    `rows_json` holds the whole machine list as one JSON blob (same
+    "blob of structured rows" shape as ClusterRecord.members_json) rather
+    than one row per machine like MachineOutcomeRecord - nothing needs to
+    query/filter this at the SQL level, the template does all
+    filtering/sorting client-side (reporting/templates/runs.html.j2's own
+    established convention)."""
+
+    __tablename__ = "installation_reports"
+
+    run_id: Mapped[str] = mapped_column(ForeignKey("runs.run_id"), primary_key=True)
+    rows_json: Mapped[list] = mapped_column(JSON)
+    succeeded_count: Mapped[int] = mapped_column(Integer)
+    failed_count: Mapped[int] = mapped_column(Integer)
+    unresponsive_count: Mapped[int] = mapped_column(Integer)
+    excluded_count: Mapped[int] = mapped_column(Integer)
+    total_count: Mapped[int] = mapped_column(Integer)
+
+
 class SettingsRecord(Base):
     """One row per provider ("azure" | "datadog"). `data_json` holds
     plain-text fields as-is and secret fields (client_secret, api_key,

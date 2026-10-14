@@ -5,6 +5,7 @@ from pathlib import Path
 
 from jinja2 import Environment, FileSystemLoader
 
+from culprit.models.installation_report import InstallationReport
 from culprit.models.report import FleetReport
 
 _TEMPLATE_DIR = Path(__file__).parent / "templates"
@@ -85,6 +86,14 @@ def render_fleet_report_html(
         promotion_threshold=promotion_threshold, promotion_min_sample=promotion_min_sample,
         smtp_configured=smtp_configured, default_recipients=default_recipients or [],
     )
+
+
+def render_installation_report_html(report: InstallationReport) -> str:
+    """The Azure Update Manager-style full-fleet view
+    (models/installation_report.py) - lives at the same depth as
+    report.html (runs/{id}/installation-report.html), same nav_prefix."""
+    template = _env().get_template("installation_report.html.j2")
+    return template.render(report=report, active="console", nav_prefix="../../")
 
 
 def render_runs_html(runs, demo_enabled: bool = True) -> str:

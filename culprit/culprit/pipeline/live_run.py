@@ -33,7 +33,12 @@ def execute_live_run(
     from culprit.api import deps
     from culprit.db import repository
     from culprit.pipeline.collection import collect_all, recollect_targeted
-    from culprit.pipeline.discovery import count_total_machines, discover_failed_machines
+    from culprit.pipeline.discovery import (
+        count_total_machines,
+        discover_all_patch_outcomes_with_identity,
+        discover_failed_machines,
+    )
+    from culprit.pipeline.installation_report import build_installation_report
     from culprit.pipeline.orchestrator import Pipeline
 
     session_factory = deps.get_session_factory()
@@ -82,4 +87,26 @@ def execute_live_run(
     output = pipeline.run(run, bundles)
 
     with session_factory() as session:
-        return repository.load_fleet_report(session, output.run.run_id)
+        fleet_report = repository.load_fleet_report(session, output.run.run_id)
+
+    # The Patch Installation Report's own full-fleet pull - a sibling to
+    # the RCA pipeline above, not a stage inside it (this is a read-only
+    # status pull that can't itself fail partway through anything
+    # stateful, unlike Pipeline.run's own checkpointed stages). Best-
+    # effort: a failure here must not fail a live run that already
+    # completed its real job (the RCA/FleetReport above) - logged and
+    # swallowed, same discipline as routes_runs.py::_notify_if_configured.
+    try:
+        all_outcomes = discover_all_patch_outcomes_with_identity(credential, azure_cfg.subscription_ids, window_start, window_end)
+        excluded_count = max(0, total_machines - len(all_outcomes))
+        installation_report = build_installation_report(run, bundles, fleet_report, all_outcomes, excluded_count)
+        with session_factory() as session:
+            repository.save_installation_report(
+                session, run.run_id, installation_report.rows, installation_report.excluded_count,
+            )
+    except Exception:  # noqa: BLE001 - must not fail the run that already completed successfully
+        import logging
+
+        logging.getLogger(__name__).exception("Failed to build the Patch Installation Report for run %s", run.run_id)
+
+    return fleet_report

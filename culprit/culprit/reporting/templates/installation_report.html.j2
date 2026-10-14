@@ -1,0 +1,250 @@
+{% extends "base.html.j2" %}
+{% block title %}{{ report.run.scope_name }} installation report{% endblock %}
+
+{% block content %}
+<div class="max-w-6xl mx-auto px-8 py-10">
+
+  <a href="../../" class="inline-flex items-center gap-1.5 text-xs text-gray-400 hover:text-brand mb-4">
+    <i data-lucide="arrow-left" class="w-3 h-3"></i> Console
+  </a>
+
+  <div class="flex items-start justify-between gap-4 mb-1">
+    <div>
+      <h1 class="text-2xl font-bold text-gray-900 tracking-tight">Patch installation report</h1>
+      <p class="text-sm text-gray-500 mt-1">
+        {{ report.run.scope_name }} &middot; run {{ report.run.run_id }} &middot;
+        {{ report.run.started_at.strftime('%Y-%m-%d %H:%M UTC') }}
+      </p>
+    </div>
+    <a href="report.html" class="shrink-0 inline-flex items-center gap-1.5 text-xs font-medium text-brand hover:text-brand-dark mt-1">
+      View root-cause analysis <i data-lucide="arrow-right" class="w-3 h-3"></i>
+    </a>
+  </div>
+
+  <div class="grid grid-cols-2 sm:grid-cols-5 gap-px bg-gray-100 border border-gray-100 rounded-xl overflow-hidden mt-5 mb-5">
+    <div class="bg-white px-4 py-3.5"><b id="stat-total" class="block text-2xl font-bold text-gray-900 tabular-nums">{{ report.total_count }}</b><span class="block text-[11px] text-gray-400 mt-1">Total</span></div>
+    <div class="bg-white px-4 py-3.5"><b id="stat-succeeded" class="block text-2xl font-bold text-emerald-600 tabular-nums">{{ report.succeeded_count }}</b><span class="block text-[11px] text-gray-400 mt-1">Successful</span></div>
+    <div class="bg-white px-4 py-3.5"><b id="stat-failed" class="block text-2xl font-bold text-red-600 tabular-nums">{{ report.failed_count }}</b><span class="block text-[11px] text-gray-400 mt-1">Failed</span></div>
+    <div class="bg-white px-4 py-3.5"><b id="stat-unresponsive" class="block text-2xl font-bold text-amber-600 tabular-nums">{{ report.unresponsive_count }}</b><span class="block text-[11px] text-gray-400 mt-1">Unresponsive or Shutdown</span></div>
+    <div class="bg-white px-4 py-3.5"><b id="stat-excluded" class="block text-2xl font-bold text-gray-500 tabular-nums">{{ report.excluded_count }}</b><span class="block text-[11px] text-gray-400 mt-1" title="A derived count (subscription total minus everyone who reported) - Culprit doesn't resolve which specific machines this is, so there's no row list for it.">Excluded <i data-lucide="info" class="w-2.5 h-2.5 inline -mt-0.5"></i></span></div>
+  </div>
+
+  <div class="flex flex-wrap items-center gap-3 mb-4">
+    <div class="relative flex-1 min-w-[220px] max-w-sm">
+      <i data-lucide="search" class="w-4 h-4 text-gray-400 absolute left-3 top-1/2 -translate-y-1/2 pointer-events-none"></i>
+      <input id="ir-search" type="text" placeholder="Search machine, subscription, or resource group&hellip;"
+        class="w-full border border-gray-300 rounded-lg pl-9 pr-3 py-2 text-sm focus:ring-2 focus:ring-brand focus:border-brand focus:outline-none">
+    </div>
+    <div id="ir-status-filters" class="flex flex-wrap items-center gap-1.5">
+      <button type="button" data-status="all" class="ir-filter-chip text-[11px] font-medium px-2.5 py-1 rounded-full border transition-colors bg-gray-900 text-white border-gray-900">All &middot; {{ report.total_count }}</button>
+      <button type="button" data-status="succeeded" class="ir-filter-chip text-[11px] font-medium px-2.5 py-1 rounded-full border transition-colors bg-white text-gray-500 border-gray-200 hover:bg-gray-50">Successful &middot; {{ report.succeeded_count }}</button>
+      <button type="button" data-status="failed" class="ir-filter-chip text-[11px] font-medium px-2.5 py-1 rounded-full border transition-colors bg-white text-gray-500 border-gray-200 hover:bg-gray-50">Failed &middot; {{ report.failed_count }}</button>
+      <button type="button" data-status="unresponsive_or_shutdown" class="ir-filter-chip text-[11px] font-medium px-2.5 py-1 rounded-full border transition-colors bg-white text-gray-500 border-gray-200 hover:bg-gray-50">Unresponsive or Shutdown &middot; {{ report.unresponsive_count }}</button>
+      <button type="button" data-status="excluded" title="A derived count, not a list of specific machines - see the tile above or click this filter."
+        class="ir-filter-chip text-[11px] font-medium px-2.5 py-1 rounded-full border transition-colors bg-white text-gray-500 border-gray-200 hover:bg-gray-50">Excluded &middot; {{ report.excluded_count }}</button>
+    </div>
+  </div>
+
+  {% if report.rows %}
+  <div class="bg-white rounded-2xl shadow-sm border border-gray-100 overflow-hidden">
+    <table class="w-full text-sm table-fixed">
+      <thead class="bg-gray-50 text-[11px] text-gray-500 uppercase tracking-wide">
+        <tr>
+          <th class="px-5 py-3 text-left w-[22%] cursor-pointer select-none hover:text-gray-700" onclick="sortIR('name')">
+            <span id="sort-label-name" class="inline-flex items-center gap-1">Name <span id="sort-arrow-name" class="text-brand text-[9px]"></span></span>
+          </th>
+          <th class="px-5 py-3 text-left w-[14%]">Status</th>
+          <th class="px-5 py-3 text-left w-[14%] cursor-pointer select-none hover:text-gray-700" onclick="sortIR('date')">
+            <span id="sort-label-date" class="inline-flex items-center gap-1">Date and time <span id="sort-arrow-date" class="text-brand text-[9px]"></span></span>
+          </th>
+          <th class="px-5 py-3 text-left w-[18%]">Subscription</th>
+          <th class="px-5 py-3 text-left w-[18%]">Resource group</th>
+          <th class="px-5 py-3 text-left w-[14%]">Root cause (Culprit)</th>
+        </tr>
+      </thead>
+      <tbody id="ir-tbody">
+        {% for row in report.rows %}
+        <tr class="ir-row hover:bg-gray-50/60 border-b border-gray-100"
+          data-status="{{ row.status.value }}" data-name="{{ row.vm_name|lower }}"
+          data-subscription="{{ row.subscription_id|lower }}" data-resource-group="{{ row.resource_group|lower }}"
+          data-date="{{ row.started_at.isoformat() if row.started_at else '' }}">
+          <td class="px-5 py-3.5 font-medium text-gray-900 truncate">{{ row.vm_name }}</td>
+          <td class="px-5 py-3.5">
+            {% if row.status.value == 'succeeded' %}
+            <span class="text-[10px] font-semibold uppercase tracking-wide px-2 py-0.5 rounded-full bg-emerald-50 text-emerald-700 border border-emerald-200">Succeeded</span>
+            {% elif row.status.value == 'failed' %}
+            <span class="text-[10px] font-semibold uppercase tracking-wide px-2 py-0.5 rounded-full bg-red-50 text-red-600 border border-red-200">Failed</span>
+            {% elif row.status.value == 'unresponsive_or_shutdown' %}
+            <span class="text-[10px] font-semibold uppercase tracking-wide px-2 py-0.5 rounded-full bg-amber-50 text-amber-700 border border-amber-200">Unresponsive</span>
+            {% else %}
+            <span class="text-[10px] font-semibold uppercase tracking-wide px-2 py-0.5 rounded-full bg-gray-50 text-gray-600 border border-gray-200">Excluded</span>
+            {% endif %}
+          </td>
+          <td class="px-5 py-3.5 text-gray-600 whitespace-nowrap">{{ row.started_at.strftime('%Y-%m-%d %H:%M UTC') if row.started_at else '—' }}</td>
+          <td class="px-5 py-3.5 text-gray-500 truncate" title="{{ row.subscription_id }}">{{ row.subscription_id }}</td>
+          <td class="px-5 py-3.5 text-gray-600 truncate">{{ row.resource_group }}</td>
+          <td class="px-5 py-3.5">
+            {% if row.status.value == 'failed' and row.cause_family %}
+            <a href="report.html" class="text-brand hover:text-brand-dark font-medium text-xs">{{ row.cause_family.value.replace('_', ' ')|capitalize }}</a>
+            <span class="block text-[11px] text-gray-400">{{ "%.0f"|format(row.rca_confidence * 100) }}% confidence</span>
+            {% elif row.status.value == 'failed' %}
+            <span class="text-xs text-gray-400">Not yet diagnosed</span>
+            {% else %}
+            <span class="text-xs text-gray-300">&mdash;</span>
+            {% endif %}
+          </td>
+        </tr>
+        {% if row.status.value == 'failed' and (row.error_code or row.error_message or row.log_path) %}
+        <tr class="ir-row ir-detail-trigger-row border-b border-gray-100" data-status="{{ row.status.value }}"
+          data-name="{{ row.vm_name|lower }}" data-subscription="{{ row.subscription_id|lower }}" data-resource-group="{{ row.resource_group|lower }}">
+          <td colspan="6" class="px-5 py-0">
+            <button type="button" class="ir-detail-toggle text-[11px] text-gray-400 hover:text-gray-600 py-1.5 inline-flex items-center gap-1">
+              <i data-lucide="chevron-right" class="ir-detail-chevron w-3 h-3 transition-transform"></i> Raw error detail
+            </button>
+            <div class="ir-detail-panel hidden pb-3">
+              <pre class="text-[11px] bg-gray-50 border border-gray-200 rounded-lg p-3 overflow-x-auto text-gray-700 whitespace-pre-wrap">{%- if row.error_code -%}error_code: {{ row.error_code }}
+{% endif -%}{%- if row.error_message -%}error_message: {{ row.error_message }}
+{% endif -%}{%- if row.log_path -%}guest log (typical location): {{ row.log_path }}{%- endif -%}</pre>
+            </div>
+          </td>
+        </tr>
+        {% endif %}
+        {% endfor %}
+      </tbody>
+    </table>
+    <div id="ir-empty-filtered" class="hidden p-8 text-center text-gray-400 text-sm"></div>
+  </div>
+  {% else %}
+  <div class="bg-white rounded-2xl shadow-sm border border-gray-100 p-8 text-center text-gray-400 text-sm">
+    No machines recorded for this run.
+  </div>
+  {% endif %}
+
+  <p class="text-xs text-gray-400 mt-4 max-w-2xl">
+    "Unresponsive or Shutdown" is Culprit's label for a machine that never posted a patch result in the
+    window. "Excluded" is a derived count (subscription total minus everyone who reported) &mdash; Culprit
+    doesn't currently resolve which specific machines that is, so no rows are shown for it.
+  </p>
+
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+const irRows = Array.from(document.querySelectorAll('#ir-tbody .ir-row'));
+let irFilter = 'all';
+let irSortState = { key: 'date', dir: 'desc' };
+
+function applyIRFilters() {
+  if (irRows.length === 0) return;
+  const q = document.getElementById('ir-search').value.trim().toLowerCase();
+
+  let visible = 0;
+  irRows.forEach(function (row) {
+    const matchesStatus = irFilter === 'all' || row.dataset.status === irFilter;
+    const matchesQuery = !q || row.dataset.name.includes(q) || row.dataset.subscription.includes(q) || row.dataset.resourceGroup.includes(q);
+    const isDetailRow = row.classList.contains('ir-detail-trigger-row');
+    // A detail row stays visible only if its own data-carrying row above
+    // it would be - it shares the same dataset attributes, so the same
+    // two checks apply; it just never counts toward `visible` itself.
+    const isVisible = matchesStatus && matchesQuery;
+    row.classList.toggle('hidden', !isVisible);
+    if (isVisible && !isDetailRow) visible++;
+  });
+
+  const emptyEl = document.getElementById('ir-empty-filtered');
+  if (visible === 0 && irFilter === 'excluded') {
+    emptyEl.textContent = 'Excluded is a derived count, not a list of specific machines - see the note below.';
+    emptyEl.classList.remove('hidden');
+  } else if (visible === 0) {
+    emptyEl.textContent = 'No machines match your search or filter.';
+    emptyEl.classList.remove('hidden');
+  } else {
+    emptyEl.classList.add('hidden');
+  }
+}
+
+// Whole-className swap, not piecemeal classList.toggle - found in review:
+// toggle() alone never removes a button's static `hover:bg-gray-50` (every
+// chip but "All" starts with it), and :hover's higher specificity then
+// beats the active state's bg-gray-900 while the cursor is actually
+// resting on the button (exactly where a click leaves it) - white text
+// on a near-white hover background, unreadable. Same two-full-string
+// pattern fleet_report.html.j2's own fr-filter-chip JS already uses.
+const IR_CHIP_ACTIVE = 'ir-filter-chip text-[11px] font-medium px-2.5 py-1 rounded-full border transition-colors bg-gray-900 text-white border-gray-900';
+const IR_CHIP_INACTIVE = 'ir-filter-chip text-[11px] font-medium px-2.5 py-1 rounded-full border transition-colors bg-white text-gray-500 border-gray-200 hover:bg-gray-50';
+
+function setIRFilter(status) {
+  irFilter = status;
+  document.querySelectorAll('.ir-filter-chip').forEach(function (chip) {
+    chip.className = chip.dataset.status === status ? IR_CHIP_ACTIVE : IR_CHIP_INACTIVE;
+  });
+  applyIRFilters();
+}
+
+function sortIR(key) {
+  if (irSortState.key === key) {
+    irSortState.dir = irSortState.dir === 'asc' ? 'desc' : 'asc';
+  } else {
+    irSortState = { key: key, dir: key === 'name' ? 'asc' : 'desc' };
+  }
+  const dir = irSortState.dir === 'asc' ? 1 : -1;
+  const field = key === 'name' ? 'name' : 'date';
+
+  // Sort by pairing each data-carrying row with its own detail row (if
+  // any) so the two never get separated when re-appended in sorted order.
+  const pairs = [];
+  for (let i = 0; i < irRows.length; i++) {
+    if (irRows[i].classList.contains('ir-detail-trigger-row')) continue;
+    const next = irRows[i + 1] && irRows[i + 1].classList.contains('ir-detail-trigger-row') ? irRows[i + 1] : null;
+    pairs.push([irRows[i], next]);
+  }
+  pairs.sort(function (a, b) {
+    const av = a[0].dataset[field], bv = b[0].dataset[field];
+    if (av < bv) return -1 * dir;
+    if (av > bv) return 1 * dir;
+    return 0;
+  });
+
+  const tbody = document.getElementById('ir-tbody');
+  pairs.forEach(function (pair) {
+    tbody.appendChild(pair[0]);
+    if (pair[1]) tbody.appendChild(pair[1]);
+  });
+  updateIRSortIndicators();
+}
+
+function updateIRSortIndicators() {
+  ['name', 'date'].forEach(function (key) {
+    const arrow = document.getElementById('sort-arrow-' + key);
+    const label = document.getElementById('sort-label-' + key);
+    if (key === irSortState.key) {
+      arrow.textContent = irSortState.dir === 'asc' ? '▲' : '▼';
+      label.classList.add('text-gray-900');
+    } else {
+      arrow.textContent = '';
+      label.classList.remove('text-gray-900');
+    }
+  });
+}
+
+document.querySelectorAll('.ir-filter-chip').forEach(function (chip) {
+  chip.addEventListener('click', function () { setIRFilter(chip.dataset.status); });
+});
+
+document.querySelectorAll('.ir-detail-toggle').forEach(function (btn) {
+  btn.addEventListener('click', function () {
+    const panel = btn.nextElementSibling;
+    const chevron = btn.querySelector('.ir-detail-chevron');
+    const nowHidden = panel.classList.toggle('hidden');
+    chevron.style.transform = nowHidden ? '' : 'rotate(90deg)';
+  });
+});
+
+if (irRows.length > 0) {
+  document.getElementById('ir-search').addEventListener('input', applyIRFilters);
+  applyIRFilters();
+  updateIRSortIndicators();
+}
+</script>
+{% endblock %}

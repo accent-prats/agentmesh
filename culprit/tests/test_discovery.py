@@ -12,6 +12,7 @@ from culprit.pipeline.discovery import (
     _os_family_from_type,
     _quote_ids,
     discover_all_machines,
+    discover_all_patch_outcomes,
 )
 
 
@@ -148,3 +149,37 @@ def test_discover_all_machines_stops_at_the_page_guard_rather_than_looping_forev
     discover_all_machines(credential=object(), subscription_ids=["sub-1"])
 
     assert len(AlwaysMoreClient.instances[0].calls) == _MAX_PREFLIGHT_PAGES
+
+
+# ── discover_all_patch_outcomes pagination ─────────────────────────────────
+# Found in review (the Patch Installation Report feature): this query used
+# to cap at one page (1000 rows) with no skip_token follow-up, unlike
+# discover_all_machines above - any subscription with more than 1000
+# machines posting a result in the window had the overflow silently
+# vanish, then get misattributed to "Excluded" by the report's own count
+# formula. Same fakes-not-real-SDK-calls rule, same pagination test shape.
+
+def _outcome_row(vm_id: str, status: str = "Succeeded") -> dict:
+    return {"vmId": vm_id, "status": status, "startDateTime": "2026-09-26T04:00:00Z", "lastModifiedDateTime": "2026-09-26T04:10:00Z"}
+
+
+def test_discover_all_patch_outcomes_follows_skip_token_across_pages(monkeypatch):
+    pytest.importorskip("azure.mgmt.resourcegraph")
+    fake_cls = _fake_resource_graph_client([
+        {"data": [_outcome_row("vm-1"), _outcome_row("vm-2")], "skip_token": "page-2-token"},
+        {"data": [_outcome_row("vm-3")], "skip_token": None},
+    ])
+    monkeypatch.setattr("azure.mgmt.resourcegraph.ResourceGraphClient", fake_cls)
+
+    from datetime import datetime, timezone
+
+    outcomes = discover_all_patch_outcomes(
+        credential=object(), subscription_ids=["sub-1"],
+        window_start=datetime(2026, 9, 26, tzinfo=timezone.utc), window_end=datetime(2026, 9, 27, tzinfo=timezone.utc),
+    )
+
+    assert {o[0] for o in outcomes} == {"vm-1", "vm-2", "vm-3"}
+    calls = fake_cls.instances[0].calls
+    assert len(calls) == 2
+    assert calls[0].options.skip_token is None
+    assert calls[1].options.skip_token == "page-2-token"

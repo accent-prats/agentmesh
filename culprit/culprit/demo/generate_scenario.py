@@ -19,10 +19,21 @@ from culprit.models.patch_run import PatchRun, TriggerMode
 SUBSCRIPTION_ID = "11111111-2222-3333-4444-555555555555"
 RESOURCE_GROUP = "rg-culprit-demo"
 RUN_ID = "mc-run-2026-09-26-prod-linux-weekly-0400"
-TOTAL_MACHINES = 312
 FAILED_COUNT = 47
 CLUSTER_SIZES = [19, 11, 8, 5, 3, 1]
 assert sum(CLUSTER_SIZES) == FAILED_COUNT
+
+# The Patch Installation Report's (models/installation_report.py) other
+# three buckets - these machines never go through RCA (no EvidenceBundle
+# needed, see fabricate_non_failure_outcomes below), so they're only
+# ever used to build InstallationOutcomeRow rows directly, not bundles.
+# TOTAL_MACHINES is the sum of all four, not a disconnected constant -
+# same discipline as CLUSTER_SIZES/FAILED_COUNT's own assert above.
+SUCCEEDED_COUNT = 245
+UNRESPONSIVE_COUNT = 12
+EXCLUDED_COUNT = 8
+TOTAL_MACHINES = FAILED_COUNT + SUCCEEDED_COUNT + UNRESPONSIVE_COUNT + EXCLUDED_COUNT
+assert TOTAL_MACHINES == 312
 
 WINDOW_START = datetime(2026, 9, 26, 4, 0, tzinfo=timezone.utc)
 WINDOW_END = WINDOW_START + timedelta(hours=3)
@@ -224,3 +235,43 @@ def build_scenario() -> tuple[PatchRun, list[EvidenceBundle]]:
 
     assert len(bundles) == FAILED_COUNT
     return run, bundles
+
+
+def fabricate_non_failure_outcomes(
+    succeeded_count: int = SUCCEEDED_COUNT, unresponsive_count: int = UNRESPONSIVE_COUNT,
+) -> list[dict]:
+    """Synthetic Succeeded / Unresponsive-or-Shutdown rows for the demo's
+    Patch Installation Report - these machines never go through RCA (no
+    EvidenceBundle, no timeline, no collectors), so they're built directly
+    as plain dicts rather than via the bundle-builder pattern every
+    failure above uses. Same raw shape
+    (vm_id/vm_name/subscription_id/resource_group/status/started_at/
+    ended_at) as `pipeline/discovery.py::discover_all_patch_outcomes_with_identity`'s
+    own return value, so `pipeline/installation_report.py::
+    build_installation_report` can treat the demo and live paths
+    identically - one conversion site, not two. Excluded is deliberately
+    NOT represented here - it's a count-only derivation (see
+    models/installation_report.py's own docstring), so the demo path
+    (api/routes_runs.py::trigger_demo_run) passes EXCLUDED_COUNT straight
+    through without needing any rows for it either."""
+    rows = []
+    for i in range(succeeded_count):
+        name = f"vm-prd-svc-{600 + i:04d}"
+        rows.append({
+            "vm_id": f"/subscriptions/{SUBSCRIPTION_ID}/resourceGroups/{RESOURCE_GROUP}/providers/Microsoft.Compute/virtualMachines/{name}",
+            "vm_name": name, "status": "Succeeded",
+            "subscription_id": SUBSCRIPTION_ID, "resource_group": RESOURCE_GROUP,
+            "started_at": WINDOW_START, "ended_at": WINDOW_START + timedelta(minutes=12 + i % 20),
+        })
+    for i in range(unresponsive_count):
+        name = f"vm-prd-idle-{700 + i:04d}"
+        rows.append({
+            "vm_id": f"/subscriptions/{SUBSCRIPTION_ID}/resourceGroups/{RESOURCE_GROUP}/providers/Microsoft.Compute/virtualMachines/{name}",
+            "vm_name": name, "status": "Unknown",
+            "subscription_id": SUBSCRIPTION_ID, "resource_group": RESOURCE_GROUP,
+            # No started_at/ended_at - a VM that never posted a result
+            # has no timestamps to show, same "absence isn't an error"
+            # shape used throughout this model.
+            "started_at": None, "ended_at": None,
+        })
+    return rows

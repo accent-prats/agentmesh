@@ -12,6 +12,7 @@ from sqlalchemy.orm import Session
 from culprit.db.models import (
     ClusterRecord,
     EmailLogRecord,
+    InstallationReportRecord,
     MachineOutcomeRecord,
     PreflightFindingRecord,
     PromotionGateChangeRecord,
@@ -163,6 +164,22 @@ def save_verdict(session: Session, verdict: Verdict) -> VerdictRecord:
     return record
 
 
+def _patch_run_from_record(run_record: RunRecord) -> PatchRun:
+    """The one place a `RunRecord` row becomes a `PatchRun` model - shared
+    by `_load_fleet_report_core` and `load_installation_report`, promoted
+    2026-10-15 once the installation-report feature needed the identical
+    conversion rather than a second copy of it."""
+    return PatchRun(
+        run_id=run_record.run_id,
+        maintenance_configuration_id=run_record.maintenance_configuration_id,
+        subscription_id=run_record.subscription_id,
+        scope_name=run_record.scope_name,
+        started_at=run_record.started_at,
+        ended_at=run_record.ended_at,
+        total_machines=run_record.total_machines,
+    )
+
+
 def _load_fleet_report_core(session: Session, run_id: str):
     """The actual reconstruction, with no trend attached - split out from
     `load_fleet_report` purely so trend computation (which needs to load
@@ -177,15 +194,7 @@ def _load_fleet_report_core(session: Session, run_id: str):
     if run_record is None:
         return None
 
-    run = PatchRun(
-        run_id=run_record.run_id,
-        maintenance_configuration_id=run_record.maintenance_configuration_id,
-        subscription_id=run_record.subscription_id,
-        scope_name=run_record.scope_name,
-        started_at=run_record.started_at,
-        ended_at=run_record.ended_at,
-        total_machines=run_record.total_machines,
-    )
+    run = _patch_run_from_record(run_record)
 
     history = historical_cluster_keys(session, run_id)
     entries = []
@@ -1163,3 +1172,58 @@ def list_email_log(session: Session, limit: int = 50) -> list:
         )
         for r in records
     ]
+
+
+# ── Patch Installation Report ─────────────────────────────────────────────────
+# Azure Update Manager-style full-fleet view (models/installation_report.py) -
+# one row per run (InstallationReportRecord), not one row per machine, same
+# "blob of structured rows" shape as ClusterRecord.members_json.
+
+def save_installation_report(session: Session, run_id: str, rows: list, excluded_count: int) -> InstallationReportRecord:
+    """`rows` is a list of `models.installation_report.InstallationOutcomeRow`.
+    A run is only ever built once (live and demo both call this exactly
+    once, right after their own pipeline completes) - a plain upsert-by-
+    run_id, not an append-only log like RemediationActionRecord (there's
+    nothing here that's meaningfully "re-sent" the way a remediation
+    attempt or an email is)."""
+    from culprit.models.installation_report import InstallationStatus
+
+    succeeded = sum(1 for r in rows if r.status == InstallationStatus.SUCCEEDED)
+    failed = sum(1 for r in rows if r.status == InstallationStatus.FAILED)
+    unresponsive = sum(1 for r in rows if r.status == InstallationStatus.UNRESPONSIVE_OR_SHUTDOWN)
+
+    data = [r.model_dump(mode="json") for r in rows]
+    record = session.get(InstallationReportRecord, run_id)
+    if record is None:
+        record = InstallationReportRecord(
+            run_id=run_id, rows_json=data, succeeded_count=succeeded, failed_count=failed,
+            unresponsive_count=unresponsive, excluded_count=excluded_count,
+            total_count=len(rows) + excluded_count,
+        )
+        session.add(record)
+    else:
+        record.rows_json = data
+        record.succeeded_count = succeeded
+        record.failed_count = failed
+        record.unresponsive_count = unresponsive
+        record.excluded_count = excluded_count
+        record.total_count = len(rows) + excluded_count
+    session.commit()
+    return record
+
+
+def load_installation_report(session: Session, run_id: str):
+    from culprit.models.installation_report import InstallationOutcomeRow, InstallationReport
+
+    run_record = session.get(RunRecord, run_id)
+    if run_record is None:
+        return None
+    record = session.get(InstallationReportRecord, run_id)
+    if record is None:
+        return None
+
+    return InstallationReport(
+        run=_patch_run_from_record(run_record),
+        rows=[InstallationOutcomeRow.model_validate(r) for r in record.rows_json],
+        excluded_count=record.excluded_count,
+    )

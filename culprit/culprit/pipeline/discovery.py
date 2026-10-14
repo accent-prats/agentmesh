@@ -20,6 +20,7 @@ different architecture.
 """
 from __future__ import annotations
 
+import re
 from datetime import datetime
 
 from culprit.models.evidence import MachineIdentity, OSFamily
@@ -143,6 +144,169 @@ _RESOURCE_GRAPH_MAX_PAGE_SIZE = 1000
 # machines at the page size above, far past any real fleet this estate-wide
 # scan is meant to cover.
 _MAX_PREFLIGHT_PAGES = 500
+
+
+# Every patch result in the window, not just non-succeeded ones (unlike
+# _FAILED_MACHINES_QUERY above) - the Patch Installation Report's own
+# full-fleet view (models/installation_report.py). Field names
+# (status/startDateTime/lastModifiedDateTime) match the real
+# patchinstallationresources shape already proven out in
+# collectors/azure_control_plane.py::_outcome_from_install_result - that
+# function's own `status=props.get("status", "Unknown")` default is what
+# "Unresponsive or Shutdown" (this report's label for a VM that never
+# posted a result) maps from.
+#
+# `summarize arg_max(startDateTime, *) by vmId` collapses a VM touched
+# more than once in the same window (a retried install, overlapping
+# maintenance configs) down to its single latest result - found in
+# review: without this, _rows_to_outcomes/build_installation_report
+# would see two rows for one vmId and double-count that machine in the
+# report's totals. startDateTime stays a plain ISO-8601 *string* (not
+# todatetime()) deliberately - ISO-8601's own lexical order already
+# matches chronological order, so arg_max's string comparison picks the
+# right row without a type conversion.
+_ALL_PATCH_RESULTS_QUERY = """
+patchinstallationresources
+| where type =~ 'microsoft.compute/virtualmachines/patchinstallationresults'
+| where properties.startDateTime >= datetime('{window_start}')
+| where properties.startDateTime <= datetime('{window_end}')
+| extend vmId = tostring(split(id, '/patchInstallationResults/')[0])
+| project vmId, status = tostring(properties.status),
+    startDateTime = tostring(properties.startDateTime), lastModifiedDateTime = tostring(properties.lastModifiedDateTime)
+| summarize arg_max(startDateTime, *) by vmId
+"""
+
+
+def _rows_to_outcomes(rows: list[dict]) -> list[tuple[str, str, str | None, str | None]]:
+    """Pure parser (vm_id, status, started_at_iso, ended_at_iso) - fixture-
+    testable without a live Resource Graph call, same split as
+    `_extract_vm_ids`/`_machines_from_rows` above. Also de-dupes by
+    vm_id client-side (keeping the row with the latest startDateTime) -
+    defense in depth under the query's own `arg_max ... by vmId`
+    (found in review: a second caller, or a KQL change that loses that
+    summarize, must not silently reintroduce a double-counted machine)."""
+    seen: dict[str, tuple[str, str, str | None, str | None]] = {}
+    for r in rows:
+        vm_id = r.get("vmId")
+        if not vm_id:
+            continue
+        outcome = (vm_id, r.get("status") or "Unknown", r.get("startDateTime"), r.get("lastModifiedDateTime"))
+        existing = seen.get(vm_id)
+        if existing is None or (outcome[2] or "") > (existing[2] or ""):
+            seen[vm_id] = outcome
+    return list(seen.values())
+
+
+def discover_all_patch_outcomes(
+    credential,
+    subscription_ids: list[str],
+    window_start: datetime,
+    window_end: datetime,
+) -> list[tuple[str, str, str | None, str | None]]:
+    """Live Resource Graph lookup for the Patch Installation Report's
+    full-fleet view - every machine that posted *any* patch result in the
+    window (Succeeded/Failed/Unknown alike), not just the non-succeeded
+    ones `discover_failed_machines` returns. Returns raw
+    (vm_id, status, started_at_iso, ended_at_iso) tuples - identity
+    details (name/resource group/subscription) are joined separately via
+    `_VM_DETAILS_QUERY`/`_machines_from_rows`, same two-step shape as
+    `discover_failed_machines`, by whichever caller needs them.
+
+    Paginates via `skip_token`, same as `discover_all_machines` - found in
+    review: this used to cap at one page (1000 rows) with no skip_token
+    follow-up, unlike `discover_all_machines`'s own explicit "instead of
+    silently truncating" docstring promise. Any subscription with more
+    than 1000 machines posting a result in the window would have had
+    everything past the first page vanish from `all_outcomes` entirely,
+    and the Excluded-count formula (`total_machines - len(all_outcomes)`)
+    then silently folded every one of those real, reported machines into
+    "Excluded" - exactly the large-fleet case this report exists for."""
+    from azure.mgmt.resourcegraph import ResourceGraphClient
+    from azure.mgmt.resourcegraph.models import QueryRequest, QueryRequestOptions
+
+    client = ResourceGraphClient(credential)
+    query = _ALL_PATCH_RESULTS_QUERY.format(window_start=window_start.isoformat(), window_end=window_end.isoformat())
+
+    rows: list[dict] = []
+    skip_token: str | None = None
+    for _ in range(_MAX_PREFLIGHT_PAGES):
+        options = QueryRequestOptions(top=_RESOURCE_GRAPH_MAX_PAGE_SIZE, skip_token=skip_token)
+        result = client.resources(QueryRequest(subscriptions=subscription_ids, query=query, options=options))
+        rows.extend(result.data or [])
+        skip_token = getattr(result, "skip_token", None)
+        if not skip_token:
+            break
+    return _rows_to_outcomes(rows)
+
+
+_VM_ID_RE = re.compile(
+    r"^/subscriptions/(?P<subscription_id>[^/]+)/resourceGroups/(?P<resource_group>[^/]+)"
+    r"/providers/Microsoft\.Compute/virtualMachines/(?P<vm_name>[^/]+)$",
+    re.IGNORECASE,
+)
+
+
+def _identity_from_vm_id(vm_id: str) -> dict | None:
+    """Parses subscription_id/resource_group/vm_name straight out of the
+    VM's own ARM resource id - the standard, fixed
+    .../subscriptions/{s}/resourceGroups/{g}/.../virtualMachines/{n}
+    shape every Azure VM resource id has. `None` for a vm_id that doesn't
+    match it (never seen in practice for a real `patchinstallationresults`
+    row, but never crash on one rather than assume)."""
+    m = _VM_ID_RE.match(vm_id)
+    if not m:
+        return None
+    return m.groupdict()
+
+
+def discover_all_patch_outcomes_with_identity(
+    credential,
+    subscription_ids: list[str],
+    window_start: datetime,
+    window_end: datetime,
+) -> list[dict]:
+    """`discover_all_patch_outcomes` plus identity (name/resource_group/
+    subscription_id), parsed directly from each outcome's own vm_id via
+    `_identity_from_vm_id` - what the Patch Installation Report actually
+    needs to build a row. Deliberately NOT a second Resource Graph query
+    (a `_VM_DETAILS_QUERY` join, the way `discover_failed_machines` joins
+    for osType/tags) - found in review: that join could silently drop a
+    machine that posted a real status but whose VM resource no longer
+    exists/moved, which the Excluded-count formula
+    (`total_machines - len(all_outcomes)`) would then misattribute to
+    "Excluded" even though it definitely reported. Parsing the id string
+    Culprit already has can't fail that way - a VM patch result's own id
+    always carries this shape, no second network round-trip, no lookup
+    to miss. Returns one dict per machine: vm_id, vm_name, resource_group,
+    subscription_id, status, started_at, ended_at (the latter two parsed
+    into datetimes, `None` if missing/unparseable - a status like
+    "Unresponsive or Shutdown" legitimately has neither)."""
+    outcomes = discover_all_patch_outcomes(credential, subscription_ids, window_start, window_end)
+
+    rows = []
+    for vm_id, status, started_at_iso, ended_at_iso in outcomes:
+        identity = _identity_from_vm_id(vm_id)
+        if identity is None:
+            continue  # not a standard VM resource id - shouldn't happen, never crash on it
+        rows.append({
+            "vm_id": vm_id,
+            "vm_name": identity["vm_name"],
+            "resource_group": identity["resource_group"],
+            "subscription_id": identity["subscription_id"],
+            "status": status,
+            "started_at": _parse_iso(started_at_iso),
+            "ended_at": _parse_iso(ended_at_iso),
+        })
+    return rows
+
+
+def _parse_iso(value: str | None) -> datetime | None:
+    if not value:
+        return None
+    try:
+        return datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except ValueError:
+        return None
 
 
 def discover_all_machines(credential, subscription_ids: list[str]) -> list[MachineIdentity]:

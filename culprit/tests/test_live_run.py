@@ -101,6 +101,74 @@ class _FakeAzureCfg:
     client_secret = ""
 
 
+def test_live_run_builds_and_persists_an_installation_report(client, monkeypatch):
+    """Found in review: the happy-path test above never mocked
+    `discover_all_patch_outcomes_with_identity`, so the live path's own
+    installation-report wiring (pipeline/live_run.py's new block, right
+    after pipeline.run()) silently hit the real, uninstalled azure SDK,
+    got caught by that block's own best-effort try/except, and logged-
+    and-swallowed every single run - zero real verification that any of
+    it works. This mocks all three discovery calls and actually checks
+    the installation report that comes out the other end."""
+    import culprit.api.deps as deps_module
+
+    client.put("/settings/azure", json={"subscription_ids": ["sub-1"], "client_secret": "x"})
+
+    fake_machine = MachineIdentity(
+        vm_id="/subscriptions/sub-1/resourceGroups/rg/providers/Microsoft.Compute/virtualMachines/vm-1",
+        vm_name="vm-1", resource_group="rg", subscription_id="sub-1", os_family=OSFamily.LINUX,
+    )
+
+    class FakeControlPlaneCollector:
+        def collect(self, request):
+            from culprit.collectors.base import CollectionResult
+
+            return CollectionResult(events=[], outcome=PatchOutcome(status="Failed", error_code="UnknownError"))
+
+    def fake_build_live_collectors(session):
+        return {Source.AZURE_CONTROL_PLANE: FakeControlPlaneCollector()}, _FakeAzureCfg(), object()
+
+    monkeypatch.setattr(deps_module, "build_live_collectors", fake_build_live_collectors)
+
+    import culprit.pipeline.discovery as discovery_module
+
+    monkeypatch.setattr(discovery_module, "discover_failed_machines", lambda *a, **k: [fake_machine])
+    monkeypatch.setattr(discovery_module, "count_total_machines", lambda *a, **k: 5)
+    # The real discover_all_patch_outcomes_with_identity has no status
+    # filter - vm-1 (Failed) would genuinely appear here too alongside
+    # vm-2, not just the latter; build_installation_report's own de-dup
+    # (tested separately) is what resolves the overlap with
+    # failed_bundles, so the mock has to include it to be realistic.
+    monkeypatch.setattr(
+        discovery_module, "discover_all_patch_outcomes_with_identity",
+        lambda *a, **k: [
+            {
+                "vm_id": "/subscriptions/sub-1/resourceGroups/rg/providers/Microsoft.Compute/virtualMachines/vm-1",
+                "vm_name": "vm-1", "resource_group": "rg", "subscription_id": "sub-1",
+                "status": "Failed", "started_at": None, "ended_at": None,
+            },
+            {
+                "vm_id": "/subscriptions/sub-1/resourceGroups/rg/providers/Microsoft.Compute/virtualMachines/vm-2",
+                "vm_name": "vm-2", "resource_group": "rg", "subscription_id": "sub-1",
+                "status": "Succeeded", "started_at": None, "ended_at": None,
+            },
+        ],
+    )
+
+    resp = client.post("/runs/live", json={"window_hours": 12, "scope_name": "live-test"})
+    assert resp.status_code == 200
+    run_id = resp.json()["run"]["run_id"]
+
+    ir = client.get(f"/runs/{run_id}/installation-report").json()
+    # 1 failed (the real machine the fleet pipeline diagnosed) + 1 succeeded
+    # (from the mocked bulk query) + 3 excluded (total_machines=5 - 2 reported).
+    assert ir["failed_count"] == 1
+    assert ir["succeeded_count"] == 1
+    assert ir["excluded_count"] == 3
+    failed_row = next(r for r in ir["rows"] if r["status"] == "failed")
+    assert failed_row["error_code"] == "UnknownError"
+
+
 def test_live_run_gives_a_clean_error_when_the_encryption_key_has_rotated(client, monkeypatch):
     """Found in review 2026-09-27: decrypt() raising InvalidToken (e.g.
     CULPRIT_ENCRYPTION_KEY changed since settings were saved) was outside

@@ -18,6 +18,7 @@ from pydantic import BaseModel, Field
 
 from culprit.api import deps
 from culprit.config import settings
+from culprit.models.installation_report import InstallationReport
 from culprit.models.report import FleetReport
 
 log = logging.getLogger(__name__)
@@ -57,7 +58,8 @@ def _notify_if_configured(report: FleetReport, request: Request) -> None:
 def trigger_demo_run(request: Request) -> FleetReport:
     from culprit import config as config_module
     from culprit.db import repository
-    from culprit.demo.generate_scenario import TOTAL_MACHINES, build_scenario
+    from culprit.demo.generate_scenario import EXCLUDED_COUNT, build_scenario, fabricate_non_failure_outcomes
+    from culprit.pipeline.installation_report import build_installation_report
     from culprit.pipeline.orchestrator import Pipeline
 
     # Via the module, not the `settings` name already imported above (that
@@ -78,6 +80,21 @@ def trigger_demo_run(request: Request) -> FleetReport:
     output = pipeline.run(run, bundles)
     with deps.get_session_factory()() as session:
         report = repository.load_fleet_report(session, output.run.run_id)
+
+    # Same build as the live path (pipeline/live_run.py::execute_live_run)
+    # - see pipeline/installation_report.py::build_installation_report's
+    # own docstring. Best-effort, same reasoning as the live path's own
+    # try/except: must not fail a demo run that already completed.
+    try:
+        non_failure_rows = fabricate_non_failure_outcomes()
+        installation_report = build_installation_report(run, bundles, report, non_failure_rows, EXCLUDED_COUNT)
+        with deps.get_session_factory()() as session:
+            repository.save_installation_report(
+                session, run.run_id, installation_report.rows, installation_report.excluded_count,
+            )
+    except Exception:
+        log.exception("Failed to build the Patch Installation Report for demo run %s", run.run_id)
+
     _notify_if_configured(report, request)
     return report
 
@@ -148,6 +165,39 @@ def get_report_html(run_id: str):
         report, family_precision=family_precision, promotion_threshold=threshold, promotion_min_sample=min_sample,
         smtp_configured=smtp.configured, default_recipients=smtp.default_recipients,
     ))
+
+
+@router.get("/{run_id}/installation-report", response_model=InstallationReport)
+def get_installation_report(run_id: str) -> InstallationReport:
+    from culprit.db import repository
+
+    with deps.get_session_factory()() as session:
+        report = repository.load_installation_report(session, run_id)
+    if report is None:
+        raise HTTPException(status_code=404, detail=f"Run {run_id} not found")
+    return report
+
+
+@router.get("/{run_id}/installation-report.html")
+def get_installation_report_html(run_id: str):
+    """The Azure Update Manager-style full-fleet view (models/
+    installation_report.py) - a sibling to report.html, not a replacement:
+    that page stays the cause-clustering/RCA view, this one mirrors the
+    legacy per-machine report the team is used to. 404s if the run's
+    installation report was never built (e.g. a run from before this
+    feature existed, or the best-effort build failed - see
+    pipeline/live_run.py's own try/except around it) rather than
+    rendering a confusing empty page."""
+    from fastapi.responses import HTMLResponse
+
+    from culprit.db import repository
+    from culprit.reporting.render import render_installation_report_html
+
+    with deps.get_session_factory()() as session:
+        report = repository.load_installation_report(session, run_id)
+    if report is None:
+        raise HTTPException(status_code=404, detail=f"No installation report for run {run_id}")
+    return HTMLResponse(render_installation_report_html(report))
 
 
 @router.get("/{run_id}/machines/{vm_name}.html")
