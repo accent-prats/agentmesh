@@ -675,6 +675,21 @@ def get_current_promotion_gate(session: Session) -> tuple[float, int]:
 
 
 def save_promotion_gate_change(session: Session, *, threshold: float, min_sample: int, changed_by: str) -> PromotionGateChangeRecord:
+    """The only function in this codebase that writes a
+    PromotionGateChangeRecord. GateSettingsInput's own Field(ge=...)
+    constraints already reject an out-of-floor value before its one
+    current caller (routes_settings.py::put_gate_settings) ever reaches
+    here - this check is defense in depth, not the primary gate, so a
+    future second caller (an admin script, a bulk-import path) can't
+    silently write a value weak enough to defeat the whole point of this
+    table just by skipping the Pydantic boundary."""
+    from culprit.models.settings import GATE_MIN_SAMPLE_FLOOR, GATE_THRESHOLD_FLOOR
+
+    if not (GATE_THRESHOLD_FLOOR <= threshold <= 1.0):
+        raise ValueError(f"threshold must be between {GATE_THRESHOLD_FLOOR} and 1.0, got {threshold}")
+    if min_sample < GATE_MIN_SAMPLE_FLOOR:
+        raise ValueError(f"min_sample must be >= {GATE_MIN_SAMPLE_FLOOR}, got {min_sample}")
+
     record = PromotionGateChangeRecord(
         changed_at=datetime.now(timezone.utc), changed_by=changed_by, threshold=threshold, min_sample=min_sample,
     )

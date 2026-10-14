@@ -283,9 +283,20 @@ check:
 - `CULPRIT_REMEDIATION_ENABLED=true` is explicitly set - **off by
   default**.
 - The specific diagnosis is marked `phase2_candidate=True`.
-- The diagnosed cause family currently clears the precision gate
-  (`>=95%` precision over `>=50` reviewed instances, same bar `/precision`
-  shows).
+- The diagnosed cause family currently clears the precision gate - by
+  default `>=95%` precision over `>=50` reviewed instances, same bar
+  `/precision` shows, but **this threshold/min_sample pair is itself
+  admin-editable** from Settings &rarr; Automation gate (`GET`/`PUT
+  /settings/gate`), persisted as an append-only audit history
+  (`PromotionGateChangeRecord` - who changed it, when, to what) rather
+  than a single mutable row. It is bounded by a hard, server-enforced
+  floor - `>=80%` precision, `>=10` reviewed instances
+  (`GATE_THRESHOLD_FLOOR`/`GATE_MIN_SAMPLE_FLOOR` in
+  `culprit/models/settings.py`) - so this control can be tightened or
+  loosened within that range, but never relaxed enough to make the gate
+  meaningless. Treat a deployment where this has been loosened toward
+  that floor as a deliberate, logged decision by whoever has Settings
+  access, not evidence of a bug.
 - A human supplies their own identity (`requested_by`) and explicitly
   confirms the action for that specific cluster.
 

@@ -40,6 +40,7 @@ def _make_rca_agent():
 
 
 def main() -> int:
+    from culprit.db import repository
     from culprit.db.engine import make_session_factory
     from culprit.demo.generate_scenario import TOTAL_MACHINES, build_scenario
     from culprit.pipeline.orchestrator import Pipeline
@@ -73,7 +74,14 @@ def main() -> int:
         )
     log.info("=" * 70)
 
-    html = render_fleet_report_html(report)
+    # Read fresh, not render_fleet_report_html's own hardcoded fallback
+    # (0.95/50) - this script should reflect whatever this deployment's
+    # env vars or a saved Settings override actually say, same as the
+    # live app's own report page (routes_runs.py::get_report_html), not
+    # a value that silently ignores both.
+    with session_factory() as session:
+        threshold, min_sample = repository.get_current_promotion_gate(session)
+    html = render_fleet_report_html(report, promotion_threshold=threshold, promotion_min_sample=min_sample)
     out_path = Path(__file__).parent / "fleet_report.html"
     out_path.write_text(html, encoding="utf-8")
     log.info("Fleet report written to %s", out_path)

@@ -180,10 +180,23 @@ monitoring," the report's zeroth altitude.
 ## The Phase 2 gate
 
 `models/verdict.py::compute_family_precision` tracks precision **per
-`CauseFamily`**, not as one aggregate number. `FamilyPrecision.meets_promotion_bar()`
-is the entire gate: `sample_size >= 50 and precision >= 0.95` (both
-configurable via `CULPRIT_PROMOTION_MIN_SAMPLE` / `CULPRIT_PROMOTION_THRESHOLD`).
-`GET /precision` is the one view that decision gets made from. Nothing in
+`CauseFamily`**, not as one aggregate number. `FamilyPrecision.meets_promotion_bar(threshold, min_sample)`
+is the entire gate: `sample_size >= min_sample and precision >= threshold`.
+Those two numbers default to `CULPRIT_PROMOTION_MIN_SAMPLE` /
+`CULPRIT_PROMOTION_THRESHOLD` (50 / 0.95) but are themselves admin-editable
+at runtime from Settings &rarr; Automation gate (`GET`/`PUT /settings/gate`,
+`db/repository.py::get_current_promotion_gate`/`save_promotion_gate_change`)
+- the **current** value is simply the latest row of an append-only
+`PromotionGateChangeRecord` history (who changed it, when, to what),
+falling back to the env-var defaults whenever nothing has ever been
+saved, so "what's it set to" and "who changed it" can never drift apart.
+A hard floor (`>=0.80` precision, `>=10` reviewed instances -
+`GATE_THRESHOLD_FLOOR`/`GATE_MIN_SAMPLE_FLOOR` in `models/settings.py`)
+is enforced at both the API boundary (`GateSettingsInput`'s `Field(ge=...)`)
+and inside `save_promotion_gate_change` itself, so the gate can be tuned
+within that range but never loosened into meaninglessness by any current
+or future caller. `GET /precision` is the one view that decision gets
+made from. Nothing in
 this repository promotes a family to fully autonomous action - the gate
 produces a number and a boolean, re-read live on every single execution
 attempt, never cached or trusted from an earlier check. A human decision

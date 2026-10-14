@@ -371,3 +371,24 @@ def test_gate_settings_history_records_every_change_most_recent_first(client):
 
 def test_gate_settings_history_is_empty_before_any_change(client):
     assert client.get("/settings/gate/history").json() == []
+
+
+def test_save_promotion_gate_change_enforces_the_floor_even_called_directly(client):
+    """GateSettingsInput's Field(ge=...) is the only thing stopping
+    PUT /settings/gate from writing a below-floor value today, but
+    save_promotion_gate_change itself (culprit/db/repository.py) also
+    validates - defense in depth for any future second caller (an admin
+    script, a bulk-import path) that might skip the Pydantic boundary.
+    Calls the repository function directly, bypassing the API/Field
+    validation entirely, to prove the floor still holds."""
+    from culprit.api.deps import get_session_factory
+    from culprit.db import repository
+
+    with get_session_factory()() as session:
+        with pytest.raises(ValueError, match="threshold"):
+            repository.save_promotion_gate_change(session, threshold=0.5, min_sample=50, changed_by="a@b.com")
+        with pytest.raises(ValueError, match="min_sample"):
+            repository.save_promotion_gate_change(session, threshold=0.95, min_sample=5, changed_by="a@b.com")
+
+    # Neither rejected call should have left a row behind.
+    assert client.get("/settings/gate/history").json() == []
