@@ -22,7 +22,18 @@ credentials either of which grants access:
    signing in at `/login`, for a human in a browser (the console/settings
    pages' own `fetch()` calls carry it automatically - nothing in their
    JS had to change); or an `Authorization: Bearer <token>` header for
-   scripts/curl/CI.
+   scripts/curl/CI. The `/login` page's browser form for this is a
+   deliberate exception: it only renders when Portal SSO
+   (`CULPRIT_PORTAL_JWT_SECRET`) is **not** configured. On a deployment
+   with both set, an ordinary Portal user landing on `/login` after a
+   session timeout would otherwise see a confusing "Access token" field
+   they have no way to fill in (found 2026-10-14); "Return to the
+   AgentMesh Portal" is the one path shown instead. The token itself is
+   unaffected and still works everywhere else on a dual-configured
+   deployment - `Authorization: Bearer <token>` for scripts/curl, or a
+   direct `POST /login` for anyone who genuinely needs a browser session
+   from the token alone with no Portal account - the UI form for it is
+   just not surfaced on that page in that configuration.
 2. **The AgentMesh Portal's own JWT** (`CULPRIT_PORTAL_JWT_SECRET`, the
    same signing secret as Portal's `SECRET_KEY` - see
    `security/portal_jwt.py`). Fixed the very next report after #1

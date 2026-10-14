@@ -257,18 +257,42 @@ def test_a_bearer_header_request_gets_no_cookie_set_at_all(client):
     assert "culprit_session" not in resp.cookies
 
 
-def test_login_page_hides_the_token_form_when_portal_sso_is_configured(client):
-    """Found confusing 2026-10-14: an ordinary AgentMesh user whose
-    session timed out saw a raw "Access token" field right next to
-    "Return to the AgentMesh Portal", with nothing telling them they
-    don't have one. The /login POST route itself is unaffected - see
-    tests/test_auth_middleware.py for that - this is about what the
-    page shows a human, not what the API accepts."""
+def test_login_page_hides_the_token_form_when_both_portal_sso_and_a_token_are_configured(client):
+    """`client` here is the dual-config fixture (both api_token and
+    portal_jwt_secret set) - a deployment shape auth_middleware.py's own
+    docstring calls out as intentional ("Portal SSO for platform users,
+    the shared token still available for scripts/curl"). Found confusing
+    2026-10-14: an ordinary AgentMesh user whose session timed out saw a
+    raw "Access token" field right next to "Return to the AgentMesh
+    Portal", with nothing telling them they don't have one.
+
+    This is a deliberate decision, confirmed explicitly after review
+    flagged it as a regression risk (it removes the only *browser* path
+    to a session for someone with just the shared token and no Portal
+    account in this exact dual-config shape) - the token keeps working
+    everywhere else unaffected: Authorization: Bearer for scripts/curl
+    (test_shared_token_login_still_works_alongside_portal_sso above), and
+    a direct POST /login still accepts it (tests/test_auth_middleware.py)
+    even though the UI form for it isn't shown on this page in this
+    configuration. See SECURITY.md's "Application authentication"
+    section for the documented trade-off."""
     resp = client.get("/login")
     assert resp.status_code == 200
     assert "Direct/script access" not in resp.text
     assert "Access token" not in resp.text
     assert "Return to the AgentMesh Portal" in resp.text
+
+
+def test_login_page_hides_the_token_form_in_portal_only_mode_too(portal_only_client):
+    """The unambiguous case - no token configured at all, so there is
+    nothing the form could even authenticate with. Distinct from the
+    dual-config test above: that one is the debatable trade-off (hiding
+    removes a path that would otherwise work); this one hides a form
+    that could never have worked regardless."""
+    resp = portal_only_client.get("/login")
+    assert resp.status_code == 200
+    assert "Direct/script access" not in resp.text
+    assert "Access token" not in resp.text
 
 
 def test_login_page_shows_the_token_form_when_no_portal_sso_is_configured(client, monkeypatch):
