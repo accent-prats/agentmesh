@@ -1,9 +1,13 @@
 """CULPRIT_DEMO_ENABLED (config.py) - gates both the Console page's "Demo
-scenario" card and the POST /runs/demo route itself behind one flag, on
-by default (preserves the existing dev/test/demo experience with zero
-config), so a stakeholder-facing deployment can turn it off without any
-code difference from this same codebase - see config.py's and
-routes_runs.py's own comments on why. Added 2026-10-14."""
+scenario" card and the POST /runs/demo route itself behind one flag. Off
+by default (flipped 2026-10-14, opt-in instead of opt-out, after a "prod"
+deployment that never set this still showed the demo button) - a
+dev/demo/test deployment turns it on explicitly instead, with no code
+difference from this same codebase. tests/conftest.py sets
+CULPRIT_DEMO_ENABLED=true for this whole suite so individual tests don't
+need their own per-test config - see test_demo_defaults_to_disabled_when_unset
+below for a test of the actual bare default, independent of that ambient
+override. Added 2026-10-14."""
 from __future__ import annotations
 
 import pytest
@@ -27,10 +31,29 @@ def client(monkeypatch):
     return TestClient(app)
 
 
-def test_demo_is_on_by_default(client):
-    """The default must preserve today's behavior exactly - every other
-    test in this whole suite relies on POST /runs/demo working with zero
-    extra configuration."""
+def test_demo_defaults_to_disabled_when_the_env_var_is_unset(monkeypatch):
+    """The real production default (independent of this test suite's own
+    conftest.py, which sets CULPRIT_DEMO_ENABLED=true so every other test
+    can rely on POST /runs/demo with zero per-test config): a deployment
+    that never set this var at all must not expose the demo.
+
+    Goes through config._env_flag directly, not config.Settings() - a
+    dataclass field's default expression evaluates exactly once, at
+    Settings() construction (which already happened at module import,
+    with the env var already set by conftest.py), so constructing
+    "another" Settings() here wouldn't actually re-read the environment
+    at all; _env_flag is what Settings.demo_enabled's own default
+    expression calls, so this proves the exact same logic without
+    needing a module reload."""
+    monkeypatch.delenv("CULPRIT_DEMO_ENABLED", raising=False)
+    assert config._env_flag("CULPRIT_DEMO_ENABLED", "false") is False
+
+
+def test_demo_works_with_the_test_suites_own_default_config(client):
+    """Confirms tests/conftest.py's CULPRIT_DEMO_ENABLED=true actually
+    does what the rest of this suite depends on - every other test here
+    relies on POST /runs/demo working with zero extra per-test
+    configuration."""
     assert config.settings.demo_enabled is True
 
     # Before any run exists, the Console page is the onboarding/empty

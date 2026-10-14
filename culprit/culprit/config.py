@@ -8,6 +8,18 @@ import os
 from dataclasses import dataclass
 
 
+def _env_flag(name: str, default: str) -> bool:
+    """`os.environ.get(name, default).lower() == "true"`, pulled out so
+    the parsing itself (what counts as "true", what an unset var falls
+    back to) is directly unit-testable - a Settings field's default
+    expression evaluates exactly once, at Settings() construction, which
+    happens once at module import for the module-level `settings`
+    singleton below, so re-deriving "what would an unset env var default
+    to" against an already-imported Settings can't be tested by just
+    constructing a fresh Settings() with the var removed."""
+    return os.environ.get(name, default).lower() == "true"
+
+
 @dataclass(frozen=True)
 class Settings:
     database_url: str = os.environ.get("CULPRIT_DATABASE_URL", "sqlite:///culprit.db")
@@ -80,22 +92,29 @@ class Settings:
     # leaves the host. Swapping this requires re-embedding everything
     # already stored (a different model means a different vector space).
     memory_embed_model: str = os.environ.get("CULPRIT_MEMORY_EMBED_MODEL", "multi-qa-MiniLM-L6-cos-v1")
-    # On by default - preserves the existing dev/demo/test experience with
-    # zero configuration. Set to false for any deployment a real stakeholder
-    # or end user reaches directly (POST /runs/demo fabricates a synthetic
-    # 312-machine fleet; a live system shouldn't expose a button that
-    # conjures fake data). Gates both the Console page's "Demo scenario"
-    # card and the route itself (api/routes_runs.py::trigger_demo_run
-    # 404s, not just hides the button, when this is off) - found 2026-10-14,
-    # same code either way, this is a deployment-config difference only.
-    demo_enabled: bool = os.environ.get("CULPRIT_DEMO_ENABLED", "true").lower() == "true"
+    # Off by default (flipped 2026-10-14, opt-in instead of opt-out) - a
+    # deployment that never sets this explicitly is, by construction, a
+    # deployment nobody deliberately configured as a demo/dev environment,
+    # so it shouldn't expose a button that fabricates a synthetic
+    # 312-machine fleet (POST /runs/demo). Found live: a "prod" deployment
+    # reached via its own URL still showed "Run demo scenario" because the
+    # old opt-out default meant simply forgetting to set
+    # CULPRIT_DEMO_ENABLED=false silently left it on - the previous
+    # default made the unsafe outcome the one requiring no action at all.
+    # Explicitly set CULPRIT_DEMO_ENABLED=true for any dev/demo/test
+    # deployment that wants this - see tests/conftest.py, which does
+    # exactly that for the whole test suite so individual tests don't
+    # need their own per-test config. Gates both the Console page's "Demo
+    # scenario" card and the route itself (api/routes_runs.py::
+    # trigger_demo_run 404s, not just hides the button, when this is off).
+    demo_enabled: bool = _env_flag("CULPRIT_DEMO_ENABLED", "false")
     # Off by default - this is the one flag in this file that gates code
     # which can mutate real infrastructure, not just read it. See
     # culprit/remediation/ and SECURITY.md's "Remediation execution" section.
     # Gates both the Fleet Report page's "Run remediation" button and the
     # POST /remediation/.../execute route itself (404s, not just hides the
     # button, when this is off - same demo_enabled precedent above).
-    remediation_enabled: bool = os.environ.get("CULPRIT_REMEDIATION_ENABLED", "false").lower() == "true"
+    remediation_enabled: bool = _env_flag("CULPRIT_REMEDIATION_ENABLED", "false")
 
 
 settings = Settings()

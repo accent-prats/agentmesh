@@ -1,5 +1,21 @@
 from __future__ import annotations
 
+import os
+
+# Must run before anything below (even the sys.path tweak) can transitively
+# import culprit.config - Settings.demo_enabled reads this env var once, at
+# Settings() construction time, the same moment culprit.config is first
+# imported anywhere in the process. demo_enabled defaults to False in
+# actual deployments now (flipped 2026-10-14, opt-in instead of opt-out,
+# so a deployment nobody configured as a demo environment doesn't silently
+# expose one) - but the overwhelming majority of this suite calls
+# POST /runs/demo and relies on it working with zero per-test
+# configuration (see tests/test_demo_gating.py's own tests for the real,
+# opt-out-free default). setdefault, not a hard set, so an individual
+# test can still override it via monkeypatch.setattr(config, "settings", ...)
+# exactly as several already do.
+os.environ.setdefault("CULPRIT_DEMO_ENABLED", "true")
+
 import sys
 from pathlib import Path
 

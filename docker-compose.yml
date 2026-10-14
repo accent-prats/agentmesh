@@ -147,11 +147,14 @@ services:
       # Default already matches the portal-api service name below; only
       # override for a non-standard topology.
       CULPRIT_PORTAL_INTERNAL_URL: ${CULPRIT_PORTAL_INTERNAL_URL:-http://portal-api:8000}
-      # On by default - the Console page's "Demo scenario" card and its
-      # POST /runs/demo route (a synthetic fleet, no real credentials
-      # needed). Set to false in any deployment a real stakeholder or end
-      # user reaches directly - see docs/SETUP.md.
-      CULPRIT_DEMO_ENABLED: ${CULPRIT_DEMO_ENABLED:-true}
+      # Off by default (flipped 2026-10-14, opt-in instead of opt-out) -
+      # the Console page's "Demo scenario" card and its POST /runs/demo
+      # route (a synthetic fleet, no real credentials needed). A
+      # deployment nobody deliberately configured as a demo/dev
+      # environment shouldn't expose a button that fabricates fake data -
+      # set CULPRIT_DEMO_ENABLED=true explicitly in .env for one that
+      # wants it. See docs/SETUP.md and culprit/config.py's own comment.
+      CULPRIT_DEMO_ENABLED: ${CULPRIT_DEMO_ENABLED:-false}
     volumes:
       - culprit_data:/app/data
     networks: [platform]
