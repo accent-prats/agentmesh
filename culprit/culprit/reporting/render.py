@@ -189,12 +189,24 @@ def render_remediation_log_html(records) -> str:
     return template.render(active="remediation", records=records, nav_prefix="../")
 
 
-def render_login_html(next_path: str = "/", error: str = "") -> str:
+def render_login_html(next_path: str = "/", error: str = "", show_token_login: bool = True) -> str:
     """The shared-token sign-in page (culprit/api/auth_middleware.py) -
     doesn't extend base.html.j2, since there's nothing to put in the
     sidebar for someone who isn't authenticated yet. `next_path` and
     `error` are plain Jinja variables, autoescaped like every other
     template here - the XSS finding from review was in settings.html.j2's
-    client-side JS, not in any server-rendered Jinja output."""
+    client-side JS, not in any server-rendered Jinja output.
+
+    `show_token_login` hides the "Direct/script access instead" token
+    form for a deployment that has Portal SSO configured - found
+    confusing 2026-10-14: an ordinary AgentMesh user whose session timed
+    out saw a raw "Access token" field with nothing telling them they
+    don't have one, right next to the actual fix ("Return to the
+    AgentMesh Portal"). Still shown (default True) for a genuinely
+    standalone deployment with no Portal at all - see main.py's two call
+    sites - since the token form is the *only* way to authenticate a
+    browser there, not an alternative to a Portal login that doesn't
+    exist. The `/login` POST route itself is unchanged either way -
+    this only controls whether the HTML form is rendered."""
     template = _env().get_template("login.html.j2")
-    return template.render(next_path=next_path, error=error)
+    return template.render(next_path=next_path, error=error, show_token_login=show_token_login)

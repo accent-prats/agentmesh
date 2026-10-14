@@ -204,7 +204,13 @@ def login_page(request: Request, next: str = "/") -> HTMLResponse | RedirectResp
         # ?auth_token=<jwt> handoff - that's the middleware's job
         # (auth_middleware.py), since it also needs to set a cookie.
         return RedirectResponse(url=f"{root_path(request)}{next}", status_code=303)
-    return HTMLResponse(render_login_html(next_path=next))
+    # Hide the token form when Portal SSO is configured - an ordinary
+    # AgentMesh user whose session timed out has no token and shouldn't
+    # see a field implying they need one; "Return to the AgentMesh
+    # Portal" above is the actual fix for that case. Still shown for a
+    # standalone deployment with no Portal, where it's the only way to
+    # authenticate a browser at all - see render_login_html's docstring.
+    return HTMLResponse(render_login_html(next_path=next, show_token_login=not bool(config.settings.portal_jwt_secret)))
 
 
 @app.post("/login", response_model=None)
@@ -218,7 +224,11 @@ async def login_submit(request: Request) -> HTMLResponse | RedirectResponse:
     submitted = str(form.get("token") or "")
     if submitted != config.settings.api_token:
         return HTMLResponse(
-            render_login_html(next_path=next_path, error="Incorrect token."), status_code=401
+            render_login_html(
+                next_path=next_path, error="Incorrect token.",
+                show_token_login=not bool(config.settings.portal_jwt_secret),
+            ),
+            status_code=401,
         )
 
     response = RedirectResponse(url=f"{prefix}{next_path}", status_code=303)

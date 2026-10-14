@@ -255,3 +255,27 @@ def test_a_bearer_header_request_gets_no_cookie_set_at_all(client):
     resp = client.get("/settings/azure", headers={"Authorization": f"Bearer {token}"})
     assert resp.status_code == 200
     assert "culprit_session" not in resp.cookies
+
+
+def test_login_page_hides_the_token_form_when_portal_sso_is_configured(client):
+    """Found confusing 2026-10-14: an ordinary AgentMesh user whose
+    session timed out saw a raw "Access token" field right next to
+    "Return to the AgentMesh Portal", with nothing telling them they
+    don't have one. The /login POST route itself is unaffected - see
+    tests/test_auth_middleware.py for that - this is about what the
+    page shows a human, not what the API accepts."""
+    resp = client.get("/login")
+    assert resp.status_code == 200
+    assert "Direct/script access" not in resp.text
+    assert "Access token" not in resp.text
+    assert "Return to the AgentMesh Portal" in resp.text
+
+
+def test_login_page_shows_the_token_form_when_no_portal_sso_is_configured(client, monkeypatch):
+    """The inverse - a genuinely standalone deployment (no Portal at
+    all) has no other way to authenticate a browser, so the token form
+    must still render there."""
+    monkeypatch.setattr(config, "settings", config.Settings(api_token=CULPRIT_TOKEN, portal_jwt_secret=""))
+    resp = client.get("/login")
+    assert resp.status_code == 200
+    assert "Direct/script access" in resp.text
