@@ -126,7 +126,7 @@
             data-vm-name="{{ row.vm_name|lower }}" data-title="{{ row.title|lower }}"
             data-status="{{ st_bucket }}" data-confidence="{{ row.confidence }}">
             <td class="px-5 py-2.5 font-mono text-[12.5px] whitespace-nowrap">
-              <a href="{{ report.run.run_id }}/machines/{{ row.vm_name }}.html" class="text-brand hover:underline">{{ row.vm_name }}</a>
+              <a href="machines/{{ row.vm_name }}.html" class="text-brand hover:underline">{{ row.vm_name }}</a>
             </td>
             <td class="px-3 py-2.5 whitespace-nowrap">
               {% if row.outcome %}
@@ -306,7 +306,7 @@
 
       <p class="text-xs text-gray-400 pt-3 mt-1 border-t border-gray-100">
         Affected:
-        {% for m in entry.cluster.members[:8] %}<a href="{{ report.run.run_id }}/machines/{{ m.vm_name }}.html" class="text-brand hover:underline">{{ m.vm_name }}</a>{% if not loop.last %}, {% endif %}{% endfor %}{% if entry.cluster.size > 8 %} &hellip; +{{ entry.cluster.size - 8 }} more{% endif %}
+        {% for m in entry.cluster.members[:8] %}<a href="machines/{{ m.vm_name }}.html" class="text-brand hover:underline">{{ m.vm_name }}</a>{% if not loop.last %}, {% endif %}{% endfor %}{% if entry.cluster.size > 8 %} &hellip; +{{ entry.cluster.size - 8 }} more{% endif %}
       </p>
 
       <div class="verdict-widget mt-4 pt-4 border-t border-gray-100" data-cluster-id="{{ entry.cluster.cluster_id }}" data-cause-family="{{ entry.result.cause_family.value }}">

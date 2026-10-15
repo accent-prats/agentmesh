@@ -268,6 +268,27 @@ def test_machine_drill_down_page_renders_for_a_cluster_member(client):
     assert vm_name in machine_resp.text
 
 
+def test_fleet_report_machine_links_resolve_without_a_doubled_run_id(client):
+    """Real bug found live: fleet_report.html.j2's machine-row and
+    cluster-member links used `href="{run_id}/machines/{vm}.html"`, but
+    report.html is itself already served at /runs/{run_id}/report.html -
+    a browser resolves that relative href against the *current* page's
+    own directory, so it doubled the run_id segment
+    (/runs/{run_id}/{run_id}/machines/{vm}.html, a 404) instead of
+    reaching the real machine page one directory down. The correct
+    relative href (this test's own assertion) is just
+    "machines/{vm}.html", with no run_id prefix - same convention the
+    "View installation report" link right above it already used."""
+    test_client, _ = client
+    resp = test_client.post("/runs/demo")
+    run_id = resp.json()["run"]["run_id"]
+    vm_name = resp.json()["entries"][0]["cluster"]["members"][0]["vm_name"]
+
+    html = test_client.get(f"/runs/{run_id}/report.html").text
+    assert f'href="{run_id}/machines/' not in html
+    assert f'href="machines/{vm_name}.html"' in html
+
+
 def test_running_the_demo_twice_does_not_break_the_machine_page(client):
     """Real bug found in review: the demo scenario reuses a fixed RUN_ID
     on every call (culprit/demo/generate_scenario.py), so a second demo
