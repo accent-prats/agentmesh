@@ -117,7 +117,7 @@ Culprit validates the JWT (same signing secret, `CULPRIT_PORTAL_JWT_SECRET`) on 
 
 ### 5. Renewal round-trip
 
-If a sub-app's own token/cookie expires, it can redirect the user back to the Portal with `?return=<path>` (`portal/ui/src/App.tsx`). Once the user is authenticated at the Portal (immediately, if their Portal session is still valid), the Portal bounces them straight back to that path with a freshly-minted `auth_token`, re-running step 3 — no app needs its own re-login page, only a redirect back to `/`.
+If a sub-app's own token/cookie expires, it can redirect the user back to the Portal with `?return=<path>` (`portal/ui/src/App.tsx`). The Portal then bounces them straight back to that path with an `auth_token` (`buildAppUrl()`, `portal/ui/src/lib/auth.ts`), re-running step 3 — no app needs its own re-login page, only a redirect back to `/`. If the Portal's own session is still valid, this reuses that same still-stored access token verbatim (no refresh call, nothing re-signed); only if the Portal session itself had also expired does the user see `/login` first, in which case the token handed back genuinely is a newly-issued one from that real `/login` response.
 
 ---
 

@@ -188,7 +188,23 @@ and a machine's patch-extension findings - renders as structured, per-
 source cards (icon, friendly label, a bounded one-line summary with a
 "show full detail"/"copy correlation ID" expand for the rest), not a raw
 vendor-API text dump - see `reporting/evidence_gaps.py` and
-`reporting/extension_status_view.py`.
+`reporting/extension_status_view.py`. The Fleet Report's own cluster card
+additionally rolls up how many of its members also carry a patch-
+extension finding, same per-cluster join.
+
+Clustering is purely structural (fingerprint, never time, never the
+title text - see step 4), so two cards can legitimately share an
+identical RCA title while covering wholly unrelated machines - commonly
+because a live/scheduled run's discovery window (a time-window
+heuristic standing in for "one maintenance run," not a resolved Azure
+maintenance-run boundary) swept in machines from more than one real
+maintenance execution. `reporting/render.py::_cluster_date_ranges()`
+computes each cluster's own earliest/latest patch date from data already
+collected (`PatchOutcome.started_at`, no new Azure query) and renders it
+on the card's subtitle line - both on the Fleet Report page and the
+emailed digest - so a reviewer can tell at a glance whether "same title,
+different card" means "different maintenance cycle" or "look closer,
+these are actually different causes."
 
 The third altitude's own data - each machine's `PatchOutcome` (status,
 error code/message, the specific failed KB(s)/package(s)) and collection

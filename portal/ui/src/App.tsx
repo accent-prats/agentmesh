@@ -28,7 +28,9 @@ export default function App() {
   }, [view])
 
   // When a sub-app's token expires it redirects here with
-  // ?return=<path>. Once authenticated, bounce back with a fresh token.
+  // ?return=<path>. If the Portal's own session is still valid, bounce
+  // back immediately reusing that same access token (no refresh call);
+  // otherwise the user sees /login first and gets a genuinely new one.
   useEffect(() => {
     if (view === 'launcher') {
       const params = new URLSearchParams(window.location.search)
