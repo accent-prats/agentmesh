@@ -22,6 +22,7 @@ from datetime import datetime
 
 from pydantic import BaseModel, Field, computed_field
 
+from culprit.models.evidence import AzureApiErrorDetail
 from culprit.models.patch_run import PatchRun
 from culprit.models.taxonomy import CauseFamily
 
@@ -42,9 +43,10 @@ class InstallationOutcomeRow(BaseModel):
     started_at: datetime | None = None
     ended_at: datetime | None = None
 
-    # Failure-only fields - all None for Succeeded/Unresponsive rows.
+    # Failure-only fields - all None/empty for Succeeded/Unresponsive rows.
     error_code: str | None = None
     error_message: str | None = None
+    error_details: list[AzureApiErrorDetail] = Field(default_factory=list)
     # The well-known Azure Update Manager guest-log convention for this
     # machine's OS family (e.g. .../Microsoft.CPlat.Core.LinuxPatchExtension/
     # .../core.log for Linux) - stated as a plain convention, not a path

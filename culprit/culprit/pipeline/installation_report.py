@@ -28,17 +28,24 @@ def _status_from_raw(raw: str) -> InstallationStatus:
     return InstallationStatus.FAILED
 
 
-def _guest_log_path(os_family: OSFamily) -> str | None:
-    """The well-known Azure Update Manager guest-log location for this
-    machine's OS family - stated as a plain convention (the
-    extension-version path segment is genuinely unknown to Culprit, never
-    independently collected), not a path Culprit has verified exists on
-    this specific guest. See models/installation_report.py's own
-    docstring on why this is phrased this way."""
+def _guest_log_path(os_family: OSFamily, extension_version: str | None = None) -> str | None:
+    """The Azure Update Manager guest-log location for this machine's OS
+    family. When `extension_version` was actually resolved by a real
+    guest collection (guest_windows.py/guest_linux.py's EXT_VERSION,
+    threaded through each patch_extension_status finding), this is a real,
+    verified path on that specific guest - substituted in below. Otherwise
+    it falls back to the generic per-OS-family convention, worded as a
+    hint rather than a resolved fact - found confusing 2026-10-15: the
+    previous version always showed the literal, unsubstituted
+    `<extension-version>` placeholder even when nothing was collected,
+    which reads as a broken path rather than a convention a human could
+    still go look up manually."""
     if os_family == OSFamily.LINUX:
-        return "/var/log/azure/Microsoft.CPlat.Core.LinuxPatchExtension/<extension-version>/core.log"
+        version = extension_version or "<extension-version> (version not collected for this machine)"
+        return f"/var/log/azure/Microsoft.CPlat.Core.LinuxPatchExtension/{version}/core.log"
     if os_family == OSFamily.WINDOWS:
-        return r"C:\WindowsAzure\Logs\Plugins\Microsoft.CPlat.Core.WindowsPatchExtension\<extension-version>\WindowsPatchExtension.log"
+        version = extension_version or "<extension-version> (version not collected for this machine)"
+        return rf"C:\WindowsAzure\Logs\Plugins\Microsoft.CPlat.Core.WindowsPatchExtension\{version}\WindowsPatchExtension.log"
     return None
 
 
@@ -68,13 +75,18 @@ def build_installation_report(
     rows: list[InstallationOutcomeRow] = []
     for bundle in failed_bundles:
         cluster_id, cause_family, title, confidence = rca_by_vm_id.get(bundle.machine.vm_id, (None, None, None, None))
+        resolved_version = next(
+            (f.get("extension_version") for f in bundle.patch_extension_status if f.get("extension_version")),
+            None,
+        )
         rows.append(InstallationOutcomeRow(
             vm_id=bundle.machine.vm_id, vm_name=bundle.machine.vm_name,
             status=_status_from_raw(bundle.outcome.status),
             subscription_id=bundle.machine.subscription_id, resource_group=bundle.machine.resource_group,
             started_at=bundle.outcome.started_at, ended_at=bundle.outcome.ended_at,
             error_code=bundle.outcome.error_code, error_message=bundle.outcome.error_message,
-            log_path=_guest_log_path(bundle.machine.os_family),
+            error_details=bundle.outcome.error_details,
+            log_path=_guest_log_path(bundle.machine.os_family, resolved_version),
             cause_family=cause_family, rca_title=title, rca_confidence=confidence, cluster_id=cluster_id,
         ))
 

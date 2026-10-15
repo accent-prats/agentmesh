@@ -64,6 +64,21 @@ class MachineIdentity(BaseModel):
     tags: dict[str, str] = Field(default_factory=dict)
 
 
+class AzureApiErrorDetail(BaseModel):
+    """One entry of Azure's own `ApiError.details` array (Compute RP's
+    `VirtualMachineInstanceView.patchStatus.lastPatchInstallationSummary.error`,
+    mirrored by Resource Graph's `patchinstallationresources.properties.error`) -
+    the same structured per-error `{code, message, target}` shape Azure
+    Update Manager itself reports, independent of anything a guest-side
+    collector could ever see (this comes from the control plane, not the
+    VM). See `collectors/azure_control_plane.py`'s own docstring on why
+    this is modeled as a list rather than folded into `error_message`."""
+
+    code: str | None = None
+    message: str | None = None
+    target: str | None = None
+
+
 class PatchOutcome(BaseModel):
     """The Azure Update Manager verdict for one machine in one run - the
     thing everyone currently starts and stops their investigation at."""
@@ -71,6 +86,12 @@ class PatchOutcome(BaseModel):
     status: str = Field(..., description="Succeeded | Failed | CompletedWithWarnings | ...")
     error_code: str | None = None
     error_message: str | None = None
+    error_details: list[AzureApiErrorDetail] = Field(
+        default_factory=list,
+        description="Azure's own structured per-error breakdown (ApiError.details[]) - "
+        "richer than error_message alone, e.g. 'There is no enough time left to continue "
+        "applying the next update'.",
+    )
     packages_installed: list[str] = Field(default_factory=list)
     packages_failed: list[str] = Field(default_factory=list)
     kbs_installed: list[str] = Field(default_factory=list)

@@ -12,7 +12,12 @@ from __future__ import annotations
 import re
 from datetime import datetime, timezone
 
-from culprit.collectors.azure_control_plane import _INSTALL_RESULT_QUERY, _outcome_from_install_result, _parse_ts
+from culprit.collectors.azure_control_plane import (
+    _INSTALL_RESULT_QUERY,
+    _outcome_from_install_result,
+    _parse_error_details,
+    _parse_ts,
+)
 
 # Matches an `order by` clause whose sort key is a bare `properties.foo`
 # reference with no cast function wrapped around it - the exact shape
@@ -37,7 +42,7 @@ def test_outcome_from_install_result_builds_a_correct_patch_outcome():
     props = {
         "status": "Failed",
         "errorCode": "PackageManagerFailure",
-        "error": {"details": "repo unreachable: connection timed out"},
+        "error": {"message": "repo unreachable: connection timed out"},
         "startDateTime": "2026-10-10T04:00:00Z",
         "lastModifiedDateTime": "2026-10-10T04:18:00Z",
         "maximumDuration": 180,
@@ -52,6 +57,7 @@ def test_outcome_from_install_result_builds_a_correct_patch_outcome():
     assert outcome.status == "Failed"
     assert outcome.error_code == "PackageManagerFailure"
     assert outcome.error_message == "repo unreachable: connection timed out"
+    assert outcome.error_details == []
     assert outcome.packages_failed == ["linux-image-5.15.0-91-generic", "KB5044284"]
     assert outcome.packages_installed == ["curl"]
     assert outcome.kbs_failed == ["KB5044284"]
@@ -63,9 +69,53 @@ def test_outcome_from_install_result_builds_a_correct_patch_outcome():
 
 def test_outcome_from_install_result_handles_a_non_dict_error_field():
     """`error` isn't always a dict - a plain string or missing field must
-    degrade to no error_message, not raise."""
-    assert _outcome_from_install_result({"error": "a plain string, not a dict"}).error_message is None
+    degrade to no error_message/error_details, not raise."""
+    outcome = _outcome_from_install_result({"error": "a plain string, not a dict"})
+    assert outcome.error_message is None
+    assert outcome.error_details == []
     assert _outcome_from_install_result({}).error_message is None
+
+
+def test_outcome_from_install_result_parses_a_real_error_details_array():
+    """Regression guard for the exact bug found live 2026-10-15: Azure's
+    real `ApiError.details` is always an array of `{code, message, target}`
+    objects (confirmed against Microsoft's own REST API reference for
+    VirtualMachineInstanceView.patchStatus.lastPatchInstallationSummary.error),
+    never a string. The previous code assigned this array straight to a
+    `str | None` Pydantic field, raising a ValidationError that
+    collect()'s blanket except silently swallowed - discarding the whole
+    PatchOutcome (and its TimelineEvent) for any machine where Azure
+    actually populated this field. This must not raise, and must come
+    back as real, queryable AzureApiErrorDetail objects."""
+    props = {
+        "status": "Failed",
+        "error": {
+            "code": "PatchOperationFailed",
+            "message": "2 errors reported during patch installation.",
+            "details": [
+                {"code": "Error", "message": "There is no enough time left to continue applying the next update"},
+                {"code": "Error", "message": "There is no enough time left to continue applying the next update"},
+            ],
+        },
+    }
+    outcome = _outcome_from_install_result(props)  # must not raise
+    assert outcome.error_message == "2 errors reported during patch installation."
+    assert len(outcome.error_details) == 2
+    assert outcome.error_details[0].code == "Error"
+    assert "no enough time left" in outcome.error_details[0].message
+
+
+def test_parse_error_details_is_defensive_and_never_raises():
+    """Every malformed shape degrades to an empty list rather than
+    propagating an exception back up into collect()'s try block - the
+    whole point of fixing this the way it was fixed."""
+    assert _parse_error_details(None) == []
+    assert _parse_error_details("not a list") == []
+    assert _parse_error_details([]) == []
+    assert _parse_error_details(["a plain string, not a dict"]) == []
+    mixed = _parse_error_details([{"code": "Error", "message": "ok"}, "garbage"])
+    assert len(mixed) == 1
+    assert mixed[0].code == "Error" and mixed[0].message == "ok"
 
 
 def test_outcome_from_install_result_defaults_status_to_unknown_only_when_the_field_is_truly_absent():

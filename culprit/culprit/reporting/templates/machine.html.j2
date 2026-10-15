@@ -66,6 +66,18 @@
     {% endif %}
   </div>
 
+  {% if azure_error_details %}
+  <div class="bg-white rounded-2xl shadow-sm border border-gray-100 p-6 mb-4">
+    <h6 class="text-[10px] font-semibold uppercase tracking-wide text-gray-400 mb-2">
+      Azure-reported install errors
+      <span class="normal-case font-normal text-gray-400">&middot; from Azure Update Manager's own patch installation result, independent of guest collection</span>
+    </h6>
+    <div class="space-y-2">
+      {% for detail in azure_error_details %}{{ eg.azure_error_card(detail) }}{% endfor %}
+    </div>
+  </div>
+  {% endif %}
+
   {% if extension_findings %}
   <div class="bg-white rounded-2xl shadow-sm border border-gray-100 p-6 mb-4">
     <h6 class="text-[10px] font-semibold uppercase tracking-wide text-gray-400 mb-2">

@@ -245,6 +245,14 @@
       </p>
       {% endif %}
 
+      {% set azure_error_count = report.machine_rows | selectattr('cluster_id', 'equalto', entry.cluster.cluster_id) | selectattr('has_azure_error_detail') | list | length %}
+      {% if azure_error_count %}
+      <p class="flex items-center gap-1.5 text-xs text-gray-500 mb-4">
+        <i data-lucide="x-circle" class="w-3.5 h-3.5 text-red-500 shrink-0"></i>
+        {{ azure_error_count }} machine{{ 's' if azure_error_count != 1 else '' }} in this cluster also show{{ '' if azure_error_count != 1 else 's' }} an Azure-reported install error - see each machine's own page for detail.
+      </p>
+      {% endif %}
+
       {% if entry.result.remediation and entry.result.remediation.immediate_fix %}
       <h6 class="text-[10px] font-semibold uppercase tracking-wide text-gray-400 mb-2 flex items-center gap-1.5">
         Immediate fix

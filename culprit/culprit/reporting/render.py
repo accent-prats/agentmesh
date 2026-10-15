@@ -234,7 +234,13 @@ def render_machine_html(cluster, member, result, outcome=None, collection_gaps=N
     that WAS collected - the guest patch extension's own account of what
     happened - unlike `collection_gaps`, which is evidence that could NOT
     be collected. Kept as a separate card for exactly that reason; see
-    extension_status_view.py for the display mapping."""
+    extension_status_view.py for the display mapping.
+
+    `outcome.error_details` (Azure's own `ApiError.details[]`, see
+    azure_error_view.py) is the control-plane equivalent - evidence Azure
+    itself reported, independent of guest reachability - so it gets its
+    own card too rather than being folded into either of the above."""
+    from culprit.reporting.azure_error_view import build_azure_error_views
     from culprit.reporting.evidence_gaps import parse_evidence_gaps
     from culprit.reporting.extension_status_view import build_extension_finding_views
 
@@ -243,6 +249,7 @@ def render_machine_html(cluster, member, result, outcome=None, collection_gaps=N
         cluster=cluster, member=member, result=result, outcome=outcome,
         evidence_gaps=parse_evidence_gaps(collection_gaps or []),
         extension_findings=build_extension_finding_views(patch_extension_status or []),
+        azure_error_details=build_azure_error_views(outcome.error_details if outcome else []),
         active="console", nav_prefix="../../../",
     )
 

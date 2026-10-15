@@ -46,6 +46,13 @@ class MachineRow(BaseModel):
         "status of its own (collectors/patch_extension_status.py) - surfaced as a per-cluster "
         "count on the Fleet Report, same altitude the Missing Evidence rollup already lives at.",
     )
+    has_azure_error_detail: bool = Field(
+        default=False,
+        description="True when Azure's own patch installation result carried a structured "
+        "error.details[] entry (PatchOutcome.error_details, collectors/azure_control_plane.py) - "
+        "same per-cluster rollup treatment as has_extension_finding, for the control-plane "
+        "equivalent evidence.",
+    )
 
 
 class FleetTrend(BaseModel):

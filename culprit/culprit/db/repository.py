@@ -128,6 +128,7 @@ def save_machine_outcomes(session: Session, run_id: str, cluster_key: str, bundl
         record.window_minutes = bundle.outcome.window_minutes
         record.collection_gaps_json = bundle.collection_gaps
         record.patch_extension_status_json = bundle.patch_extension_status
+        record.error_details_json = [d.model_dump() for d in bundle.outcome.error_details]
     session.commit()
 
 
@@ -248,6 +249,7 @@ def _load_fleet_report_core(session: Session, run_id: str):
                     status=rec.status,
                     error_code=rec.error_code,
                     error_message=rec.error_message,
+                    error_details=rec.error_details_json or [],
                     packages_failed=rec.packages_failed_json,
                     kbs_failed=rec.kbs_failed_json,
                     reboot_status=rec.reboot_status,
@@ -262,6 +264,7 @@ def _load_fleet_report_core(session: Session, run_id: str):
                 rec is not None
                 and any(f.get("status") in ("error", "warning") for f in (rec.patch_extension_status_json or []))
             )
+            has_azure_error_detail = bool(rec is not None and (rec.error_details_json or []))
             machine_rows.append(
                 MachineRow(
                     vm_id=m.vm_id,
@@ -274,6 +277,7 @@ def _load_fleet_report_core(session: Session, run_id: str):
                     has_immediate_fix=has_immediate_fix,
                     outcome=outcome,
                     has_extension_finding=has_extension_finding,
+                    has_azure_error_detail=has_azure_error_detail,
                 )
             )
 
@@ -515,6 +519,7 @@ def get_machine_detail(session: Session, run_id: str, vm_name: str):
                 status=outcome_record.status,
                 error_code=outcome_record.error_code,
                 error_message=outcome_record.error_message,
+                error_details=outcome_record.error_details_json or [],
                 packages_failed=outcome_record.packages_failed_json,
                 kbs_failed=outcome_record.kbs_failed_json,
                 reboot_status=outcome_record.reboot_status,

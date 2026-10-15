@@ -14,7 +14,15 @@ import json
 import uuid
 from datetime import datetime, timedelta, timezone
 
-from culprit.models.evidence import EvidenceBundle, MachineIdentity, OSFamily, PatchOutcome, Source, TimelineEvent
+from culprit.models.evidence import (
+    AzureApiErrorDetail,
+    EvidenceBundle,
+    MachineIdentity,
+    OSFamily,
+    PatchOutcome,
+    Source,
+    TimelineEvent,
+)
 from culprit.models.patch_run import PatchRun, TriggerMode
 
 SUBSCRIPTION_ID = "11111111-2222-3333-4444-555555555555"
@@ -155,8 +163,16 @@ def _patch_mode_bundle(i: int) -> EvidenceBundle:
 def _window_exceeded_bundle(i: int) -> EvidenceBundle:
     name = f"vm-prd-batch-{300 + i:04d}"
     machine = _machine(name, OSFamily.LINUX, "Ubuntu 20.04")
+    # error_details is Azure's own ApiError.details[] (collectors/
+    # azure_control_plane.py::AzureApiErrorDetail) - real wording lifted
+    # from a live tenant screenshot (2026-10-15) that prompted this
+    # feature. Placed on this specific bundle (not a hand-picked one) -
+    # "no enough time left to continue applying the next update" is
+    # literally what MaintenanceWindowExceeded means, so this is the one
+    # cluster where the enrichment is the natural fit, not a retrofit.
     outcome = PatchOutcome(
         status="Failed", error_code="MaintenanceWindowExceeded",
+        error_details=[AzureApiErrorDetail(code="Error", message="There is no enough time left to continue applying the next update")],
         packages_installed=[f"pkg-{n}" for n in range(30)],
         packages_failed=[f"pkg-{n}" for n in range(30, 45)],
         started_at=WINDOW_START, ended_at=WINDOW_START + timedelta(hours=3), window_minutes=180,
@@ -170,6 +186,12 @@ def _window_exceeded_bundle(i: int) -> EvidenceBundle:
             "patchinstallationresults -> Failed / MaintenanceWindowExceeded (15 packages still queued)",
             {"normalized_error": "maintenancewindowexceeded"},
             f"resourcegraph:{machine.vm_id}:{RUN_ID}"),
+        # Mirrors what a real collection pass now does per error_details
+        # entry (collectors/azure_control_plane.py::collect()).
+        _ev(WINDOW_START + timedelta(hours=3), Source.AZURE_CONTROL_PLANE, "azure_patch_error",
+            "Azure-reported install error: There is no enough time left to continue applying the next update",
+            {"code": "Error", "target": None},
+            f"resourcegraph:{machine.vm_id}:{RUN_ID}:error:0"),
     ]
     return EvidenceBundle(
         run_id=RUN_ID, machine=machine, outcome=outcome, timeline=timeline,

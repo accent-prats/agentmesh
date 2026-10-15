@@ -114,6 +114,11 @@ class MachineOutcomeRecord(Base):
     status: Mapped[str] = mapped_column(String)
     error_code: Mapped[str | None] = mapped_column(String, nullable=True)
     error_message: Mapped[str | None] = mapped_column(Text, nullable=True)
+    # Azure's own structured ApiError.details[] (collectors/azure_control_plane.py
+    # ::AzureApiErrorDetail) - richer than error_message alone. See
+    # db/engine.py's _ensure_column for the same already-deployed-DB note
+    # as patch_extension_status_json below.
+    error_details_json: Mapped[list] = mapped_column(JSON, default=list)
     packages_failed_json: Mapped[list] = mapped_column(JSON, default=list)
     kbs_failed_json: Mapped[list] = mapped_column(JSON, default=list)
     reboot_status: Mapped[str | None] = mapped_column(String, nullable=True)

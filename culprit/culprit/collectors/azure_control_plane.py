@@ -19,7 +19,7 @@ from __future__ import annotations
 from datetime import datetime, timezone
 
 from culprit.collectors.base import CollectionRequest, CollectionResult, Collector
-from culprit.models.evidence import PatchOutcome, Source, TimelineEvent
+from culprit.models.evidence import AzureApiErrorDetail, PatchOutcome, Source, TimelineEvent
 
 try:  # pragma: no cover - exercised only when the optional Azure SDKs are installed
     from azure.identity import DefaultAzureCredential
@@ -118,6 +118,25 @@ class AzureControlPlaneCollector(Collector):
                         raw_ref=f"resourcegraph:{rows[0]['id']}",
                     )
                 )
+                # One event per Azure-reported error detail - the same
+                # `ApiError.details[]` entries a separate internal report
+                # was found pulling from this exact Resource Graph field
+                # (2026-10-15) to show messages like "There is no enough
+                # time left to continue applying the next update" that
+                # Culprit's own RCA had no visibility into. Reaches the
+                # model for free via render_timeline_text() - no prompt
+                # change needed, same as patch_extension_status.py.
+                for i, detail in enumerate(outcome.error_details):
+                    events.append(
+                        TimelineEvent(
+                            ts=_parse_ts(props.get("lastModifiedDateTime") or props.get("startDateTime")),
+                            source=Source.AZURE_CONTROL_PLANE,
+                            kind="azure_patch_error",
+                            summary=(f"Azure-reported install error: {detail.message or detail.code or '(no message)'}")[:240],
+                            detail={"code": detail.code, "target": detail.target},
+                            raw_ref=f"resourcegraph:{rows[0]['id']}:error:{i}",
+                        )
+                    )
         except Exception as exc:  # noqa: BLE001 - collection must degrade, not crash the pipeline
             error = f"Resource Graph query failed: {exc}"
 
@@ -155,11 +174,29 @@ class AzureControlPlaneCollector(Collector):
         return events
 
 
+def _parse_error_details(details: object) -> list[AzureApiErrorDetail]:
+    """Defensive by construction, never raises - found 2026-10-15: the
+    previous code assigned this array straight to a `str | None` field,
+    which raised a Pydantic ValidationError on any machine where Azure
+    actually populated it, and that exception was swallowed by collect()'s
+    blanket except - silently discarding the *entire* PatchOutcome and its
+    TimelineEvent for that machine, not just this one field. A malformed
+    entry here must degrade to being skipped, not repeat that failure."""
+    if not isinstance(details, list):
+        return []
+    return [
+        AzureApiErrorDetail(code=d.get("code"), message=d.get("message"), target=d.get("target"))
+        for d in details if isinstance(d, dict)
+    ]
+
+
 def _outcome_from_install_result(props: dict) -> PatchOutcome:
+    error = props.get("error") if isinstance(props.get("error"), dict) else {}
     return PatchOutcome(
         status=props.get("status", "Unknown"),
         error_code=props.get("errorCode"),
-        error_message=props.get("error", {}).get("details") if isinstance(props.get("error"), dict) else None,
+        error_message=error.get("message"),
+        error_details=_parse_error_details(error.get("details")),
         packages_failed=[p["patchName"] for p in props.get("patches", []) if p.get("state") == "Failed"] if props.get("patches") else [],
         packages_installed=[p["patchName"] for p in props.get("patches", []) if p.get("state") == "Installed"] if props.get("patches") else [],
         kbs_failed=[p["kbId"] for p in props.get("patches", []) if p.get("state") == "Failed" and p.get("kbId")] if props.get("patches") else [],

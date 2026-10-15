@@ -94,7 +94,7 @@
             {% endif %}
           </td>
         </tr>
-        {% if row.status.value == 'failed' and (row.error_code or row.error_message or row.log_path) %}
+        {% if row.status.value == 'failed' and (row.error_code or row.error_message or row.log_path or row.error_details) %}
         <tr class="ir-row ir-detail-trigger-row border-b border-gray-100" data-status="{{ row.status.value }}"
           data-name="{{ row.vm_name|lower }}" data-subscription="{{ row.subscription_id|lower }}" data-resource-group="{{ row.resource_group|lower }}">
           <td colspan="6" class="px-5 py-0">
@@ -104,7 +104,8 @@
             <div class="ir-detail-panel hidden pb-3">
               <pre class="text-[11px] bg-gray-50 border border-gray-200 rounded-lg p-3 overflow-x-auto text-gray-700 whitespace-pre-wrap">{%- if row.error_code -%}error_code: {{ row.error_code }}
 {% endif -%}{%- if row.error_message -%}error_message: {{ row.error_message }}
-{% endif -%}{%- if row.log_path -%}guest log (typical location): {{ row.log_path }}{%- endif -%}</pre>
+{% endif -%}{%- for d in row.error_details -%}azure_error[{{ loop.index0 }}]: {{ d.code or '(no code)' }} - {{ d.message or '(no message)' }}{% if d.target %} (target: {{ d.target }}){% endif %}
+{% endfor -%}{%- if row.log_path -%}guest log (typical location): {{ row.log_path }}{%- endif -%}</pre>
             </div>
           </td>
         </tr>

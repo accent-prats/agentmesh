@@ -154,9 +154,14 @@ _MAX_PREFLIGHT_PAGES = 500
 # collectors/azure_control_plane.py::_outcome_from_install_result - that
 # function's own `status=props.get("status", "Unknown")` default is what
 # "Unresponsive or Shutdown" (this report's label for a VM that never
-# posted a result) maps from, and its own `props.get("error", {}).get
-# ("details")` is what `errorMessage` below mirrors via `properties.
-# error.details`. Carrying the raw error here - found in review - is
+# posted a result) maps from, and its own `error.get("message")` is what
+# `errorMessage` below mirrors via `properties.error.message` - the
+# singular human-readable message, not `.error.details` (an *array* of
+# per-error `{code, message, target}` objects per Azure's own ApiError
+# schema - fixed 2026-10-15 after that array crashed Pydantic validation
+# over in azure_control_plane.py; this bulk query stays a plain string
+# column so `tostring()` on the array isn't the right fix here either).
+# Carrying the raw error here - found in review - is
 # what lets a machine beyond discover_failed_machines's own
 # _MAX_MACHINES_PER_RUN cap (a genuinely failed machine the deep-RCA
 # pipeline never got to) still show *something* diagnostic in this
@@ -180,7 +185,7 @@ patchinstallationresources
 | extend vmId = tostring(split(id, '/patchInstallationResults/')[0])
 | project vmId, status = tostring(properties.status),
     startDateTime = tostring(properties.startDateTime), lastModifiedDateTime = tostring(properties.lastModifiedDateTime),
-    errorCode = tostring(properties.errorCode), errorMessage = tostring(properties.error.details)
+    errorCode = tostring(properties.errorCode), errorMessage = tostring(properties.error.message)
 | summarize arg_max(startDateTime, *) by vmId
 """
 
