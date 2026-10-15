@@ -1,4 +1,5 @@
 {% extends "base.html.j2" %}
+{% import "_evidence_gap.html.j2" as eg %}
 {% block title %}{{ report.run.scope_name }} report{% endblock %}
 
 {% block content %}
@@ -222,9 +223,14 @@
       </ul>
       {% endif %}
 
-      {% if entry.result.missing_evidence %}
-      <h6 class="text-[10px] font-semibold uppercase tracking-wide text-gray-400 mb-2">Missing evidence</h6>
-      <ul class="list-disc pl-4 mb-4 text-gray-600 space-y-1">{% for m in entry.result.missing_evidence %}<li>{{ m }}</li>{% endfor %}</ul>
+      {% set gaps = missing_evidence_by_cluster.get(entry.cluster.cluster_id, []) %}
+      {% if gaps %}
+      <h6 class="text-[10px] font-semibold uppercase tracking-wide text-gray-400 mb-2">
+        Missing evidence <span class="normal-case font-normal text-gray-400">&middot; {{ gaps|length }} source{{ 's' if gaps|length != 1 else '' }} couldn't be collected</span>
+      </h6>
+      <div class="space-y-2 mb-4">
+        {% for gap in gaps %}{{ eg.evidence_gap_card(gap) }}{% endfor %}
+      </div>
       {% endif %}
 
       {% if entry.result.remediation and entry.result.remediation.immediate_fix %}

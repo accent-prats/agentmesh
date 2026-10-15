@@ -76,7 +76,13 @@ def render_fleet_report_html(
     `remediation_enabled` itself is a Jinja global (see _env()), not
     passed here - whether the button exists at all vs. not rendering is
     gated in the template directly."""
+    from culprit.reporting.evidence_gaps import parse_evidence_gaps
+
     template = _env().get_template("fleet_report.html.j2")
+    missing_evidence_by_cluster = {
+        entry.cluster.cluster_id: parse_evidence_gaps(entry.result.missing_evidence)
+        for entry in report.entries if entry.result.missing_evidence
+    }
     # This page lives two levels below the app root (runs/{id}/report.html),
     # unlike every other page here - nav_prefix corrects the shared sidebar's
     # otherwise-root-relative links (base.html.j2) so they still resolve
@@ -86,6 +92,7 @@ def render_fleet_report_html(
         promotion_threshold=promotion_threshold, promotion_min_sample=promotion_min_sample,
         smtp_configured=smtp_configured, default_recipients=default_recipients or [],
         installation_report_available=installation_report_available,
+        missing_evidence_by_cluster=missing_evidence_by_cluster,
     )
 
 
@@ -186,9 +193,12 @@ def render_machine_html(cluster, member, result, outcome=None, collection_gaps=N
     before that existed, not an error. Lives three levels below the app
     root (runs/{id}/machines/{vm_id}.html), hence the deeper nav_prefix -
     see render_fleet_report_html's comment."""
+    from culprit.reporting.evidence_gaps import parse_evidence_gaps
+
     template = _env().get_template("machine.html.j2")
     return template.render(
-        cluster=cluster, member=member, result=result, outcome=outcome, collection_gaps=collection_gaps or [],
+        cluster=cluster, member=member, result=result, outcome=outcome,
+        evidence_gaps=parse_evidence_gaps(collection_gaps or []),
         active="console", nav_prefix="../../../",
     )
 

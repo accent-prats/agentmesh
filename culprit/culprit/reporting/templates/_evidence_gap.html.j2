@@ -1,0 +1,23 @@
+{% macro evidence_gap_card(gap) %}
+<div class="rounded-lg border border-gray-200 overflow-hidden">
+  <div class="flex items-center gap-2 px-3 py-2 bg-gray-50 border-b border-gray-100">
+    <i data-lucide="{{ gap.icon }}" class="w-3.5 h-3.5 text-gray-400 shrink-0"></i>
+    <span class="text-[10.5px] font-semibold uppercase tracking-wide text-gray-500">{{ gap.label }}</span>
+    {% if gap.correlation_id %}
+    <button type="button" class="eg-copy-btn ml-auto inline-flex items-center gap-1 text-[10.5px] font-mono text-gray-400 hover:text-brand"
+      data-copy="{{ gap.correlation_id }}" title="Copy correlation ID for an Azure support ticket">
+      <i data-lucide="copy" class="eg-copy-icon w-3 h-3"></i> <span class="eg-copy-label">{{ gap.correlation_id[:8] }}{% if gap.correlation_id|length > 8 %}&hellip;{% endif %}</span>
+    </button>
+    {% endif %}
+  </div>
+  <div class="px-3 py-2">
+    <p class="text-xs text-gray-600">{{ gap.summary }}</p>
+    {% if gap.detail %}
+    <button type="button" class="eg-detail-toggle mt-1 text-[11px] text-brand hover:text-brand-dark inline-flex items-center gap-1">
+      <i data-lucide="chevron-right" class="eg-detail-chevron w-3 h-3 transition-transform"></i> Show full error
+    </button>
+    <pre class="eg-detail-panel hidden mt-1.5 text-[11px] font-mono text-gray-500 whitespace-pre-wrap bg-gray-50 border border-gray-100 rounded p-2 max-h-48 overflow-y-auto">{{ gap.detail }}</pre>
+    {% endif %}
+  </div>
+</div>
+{% endmacro %}

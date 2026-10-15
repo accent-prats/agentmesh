@@ -93,6 +93,33 @@
 
 <script>
   lucide.createIcons();
+
+  // Shared by every "_evidence_gap.html.j2" card (Fleet Report's Missing
+  // evidence section, the machine drill-down page's Incomplete evidence
+  // section) - lives here, not in either page's own script block, so the
+  // two templates that both import that macro don't duplicate the same
+  // handful of lines and drift apart.
+  document.querySelectorAll('.eg-detail-toggle').forEach(function (btn) {
+    btn.addEventListener('click', function () {
+      const panel = btn.nextElementSibling;
+      const chevron = btn.querySelector('.eg-detail-chevron');
+      const nowHidden = panel.classList.toggle('hidden');
+      chevron.style.transform = nowHidden ? '' : 'rotate(90deg)';
+    });
+  });
+  document.querySelectorAll('.eg-copy-btn').forEach(function (btn) {
+    btn.addEventListener('click', async function () {
+      const label = btn.querySelector('.eg-copy-label');
+      const original = label.textContent;
+      try {
+        await navigator.clipboard.writeText(btn.dataset.copy);
+        label.textContent = 'Copied!';
+      } catch (err) {
+        label.textContent = 'Copy failed';
+      }
+      setTimeout(function () { label.textContent = original; }, 1500);
+    });
+  });
 </script>
 {% block scripts %}{% endblock %}
 </body>
