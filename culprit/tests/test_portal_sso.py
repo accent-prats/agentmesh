@@ -247,6 +247,31 @@ def test_a_shared_token_cookie_is_never_renewed_with_a_portal_shaped_token(clien
     assert "culprit_session" not in resp.cookies
 
 
+def test_logout_actually_clears_a_portal_backed_session_cookie(client):
+    """Real bug found 2026-10-15, live against the lab host: GET /logout
+    is authenticated (it's not in _PUBLIC_PATHS), so it used to fall
+    through the same "authenticated request" branch as every other
+    route - the sliding-session renewal then re-signed and re-set a
+    fresh cookie on the very response the /logout handler had just
+    called delete_cookie() on, silently undoing the sign-out. A user
+    clicking "Sign out" stayed fully logged in with a renewed session.
+    The fix excludes /logout from renewal; this proves the cookie the
+    client receives actually clears it, not just that the handler
+    *tried* to."""
+    token = _portal_token(["culprit"])
+    resp = client.get("/logout", cookies={"culprit_session": token})
+    assert resp.status_code == 303
+    assert "/login" in resp.headers["location"]
+
+    set_cookie_headers = resp.headers.get_list("set-cookie")
+    session_headers = [h for h in set_cookie_headers if h.startswith("culprit_session=")]
+    assert len(session_headers) == 1
+    # A real browser clears the cookie from this header - either an
+    # empty value or an expiry in the past, never the renewed JWT.
+    assert 'culprit_session=""' in session_headers[0] or "Max-Age=0" in session_headers[0]
+    assert token not in session_headers[0]
+
+
 def test_a_bearer_header_request_gets_no_cookie_set_at_all(client):
     """A script authenticating via Authorization: Bearer has no cookie
     jar to benefit from a renewed session cookie - it re-sends its own

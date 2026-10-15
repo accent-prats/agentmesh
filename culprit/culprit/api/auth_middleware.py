@@ -117,7 +117,13 @@ class RequireApiTokenMiddleware(BaseHTTPMiddleware):
 
         if is_authenticated(request, token, portal_jwt_secret):
             response = await call_next(request)
-            _renew_session_cookie_if_portal_backed(request, response, portal_jwt_secret)
+            # /logout's own handler just deleted this cookie on `response` -
+            # renewing it here would re-add a fresh, valid one and silently
+            # undo the sign-out (found 2026-10-15: the renewed Set-Cookie
+            # outran the handler's delete_cookie(), so the browser ended up
+            # re-authenticated right after clicking "Sign out").
+            if request.url.path != "/logout":
+                _renew_session_cookie_if_portal_backed(request, response, portal_jwt_secret)
             return response
 
         # One-time SSO handoff: the AgentMesh launcher's "Launch" link
