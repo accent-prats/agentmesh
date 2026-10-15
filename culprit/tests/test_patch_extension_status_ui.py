@@ -48,3 +48,32 @@ def test_a_machine_with_no_patch_extension_status_does_not_show_the_card(client)
     # status findings (collection_gaps covers that case, a separate card).
     html = client.get(f"/runs/{run_id}/machines/vm-prd-legacy-0601.html").text
     assert "Patch extension report" not in html
+
+
+def test_fleet_report_rolls_up_a_per_cluster_extension_finding_count(client):
+    """Review flagged this as a currently-missing addition matching the
+    sibling evidence-gap feature's own precedent of shipping at both the
+    Fleet Report and machine-page altitudes, not just the latter."""
+    from culprit.demo.generate_scenario import CLUSTER_SIZES
+
+    resp = client.post("/runs/demo")
+    run_id = resp.json()["run"]["run_id"]
+
+    html = client.get(f"/runs/{run_id}/report.html").text
+    assert f"{CLUSTER_SIZES[0]} machines in this cluster also show" in html
+    assert "patch-extension-reported error" in html
+
+
+def test_fleet_report_omits_the_rollup_for_a_cluster_with_no_extension_findings(client):
+    resp = client.post("/runs/demo")
+    run_id = resp.json()["run"]["run_id"]
+    report = resp.json()
+    # The "insufficient evidence" cluster (vm-prd-legacy-0601) never has
+    # any patch_extension_status findings - its own card must not claim
+    # a count of 0 machines, it must simply omit the rollup line.
+    unresolved_cluster_id = next(
+        e["cluster"]["cluster_id"] for e in report["entries"] if e["result"]["cause_family"] == "unresolved"
+    )
+    html = client.get(f"/runs/{run_id}/report.html").text
+    cluster_html = html.split(f'id="cluster-{unresolved_cluster_id}"')[1].split('id="cluster-')[0]
+    assert "patch-extension-reported error" not in cluster_html

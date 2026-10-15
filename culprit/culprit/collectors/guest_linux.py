@@ -61,7 +61,7 @@ ALLOWED_LINUX_SCRIPT = (
     "echo ---DNF_LOG---; tail -n 200 /var/log/dnf.log 2>/dev/null; "
     "echo ---DISK_USAGE---; df -h --output=target,pcent,avail 2>/dev/null; "
     "echo ---LOCK_HOLDER---; fuser /var/lib/dpkg/lock-frontend 2>&1; "
-    "echo ---REPO_CHECK---; timeout 5 curl -o /dev/null -s -w \"%{http_code}\" http://archive.ubuntu.com 2>&1; "
+    "echo ---REPO_CHECK---; timeout 5 curl -o /dev/null -s -w \"%{http_code}\\n\" http://archive.ubuntu.com 2>&1; "
     "echo ---KERNELS---; dpkg -l 'linux-image-*' 2>/dev/null | grep ^ii; uname -r; "
     "echo ---SUBMAN---; timeout 5 subscription-manager status 2>&1; "
     "EXTDIR=$(find /var/lib/waagent -maxdepth 1 -type d "

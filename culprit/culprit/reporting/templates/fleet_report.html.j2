@@ -233,6 +233,14 @@
       </div>
       {% endif %}
 
+      {% set ext_finding_count = report.machine_rows | selectattr('cluster_id', 'equalto', entry.cluster.cluster_id) | selectattr('has_extension_finding') | list | length %}
+      {% if ext_finding_count %}
+      <p class="flex items-center gap-1.5 text-xs text-gray-500 mb-4">
+        <i data-lucide="file-warning" class="w-3.5 h-3.5 text-amber-500 shrink-0"></i>
+        {{ ext_finding_count }} machine{{ 's' if ext_finding_count != 1 else '' }} in this cluster also show{{ '' if ext_finding_count != 1 else 's' }} a patch-extension-reported error - see each machine's own page for detail.
+      </p>
+      {% endif %}
+
       {% if entry.result.remediation and entry.result.remediation.immediate_fix %}
       <h6 class="text-[10px] font-semibold uppercase tracking-wide text-gray-400 mb-2 flex items-center gap-1.5">
         Immediate fix

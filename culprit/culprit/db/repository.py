@@ -258,6 +258,10 @@ def _load_fleet_report_core(session: Session, run_id: str):
                 if rec is not None
                 else None
             )
+            has_extension_finding = bool(
+                rec is not None
+                and any(f.get("status") in ("error", "warning") for f in (rec.patch_extension_status_json or []))
+            )
             machine_rows.append(
                 MachineRow(
                     vm_id=m.vm_id,
@@ -269,6 +273,7 @@ def _load_fleet_report_core(session: Session, run_id: str):
                     is_actionable=e.result.is_actionable,
                     has_immediate_fix=has_immediate_fix,
                     outcome=outcome,
+                    has_extension_finding=has_extension_finding,
                 )
             )
 
@@ -518,7 +523,14 @@ def get_machine_detail(session: Session, run_id: str, vm_name: str):
                 window_minutes=outcome_record.window_minutes,
             )
             collection_gaps = outcome_record.collection_gaps_json
-            patch_extension_status = outcome_record.patch_extension_status_json
+            # `or []`, not a bare read - a row written before this column
+            # existed reads back as None (ALTER TABLE ADD COLUMN has no
+            # data-side default for pre-existing rows; the ORM's
+            # default=list only applies to new INSERTs), and this is the
+            # one place that raw value reaches a caller outside this
+            # module, so it's normalized here rather than trusting every
+            # future consumer to re-derive the same `or []` guard.
+            patch_extension_status = outcome_record.patch_extension_status_json or []
 
         return cluster, ClusterMember(**member), result, outcome, collection_gaps, patch_extension_status
 

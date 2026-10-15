@@ -41,6 +41,10 @@ def build_fleet_report(output: PipelineOutput, total_machines: int, bundles: lis
         has_immediate_fix = bool(e.result.remediation and e.result.remediation.immediate_fix)
         for m in e.cluster.members:
             bundle = bundle_by_vm.get(m.vm_id)
+            has_extension_finding = bool(
+                bundle is not None
+                and any(f.get("status") in ("error", "warning") for f in bundle.patch_extension_status)
+            )
             machine_rows.append(
                 MachineRow(
                     vm_id=m.vm_id,
@@ -52,6 +56,7 @@ def build_fleet_report(output: PipelineOutput, total_machines: int, bundles: lis
                     is_actionable=e.result.is_actionable,
                     has_immediate_fix=has_immediate_fix,
                     outcome=bundle.outcome if bundle is not None else None,
+                    has_extension_finding=has_extension_finding,
                 )
             )
 

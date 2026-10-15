@@ -67,6 +67,52 @@ def test_patch_extension_status_round_trips_through_save_and_load():
     assert patch_extension_status == findings
 
 
+def test_a_row_predating_the_column_reads_back_as_an_empty_list_not_none():
+    """Review caught this: ALTER TABLE ADD COLUMN has no data-side default
+    for rows that already existed when the column was added (the ORM's
+    default=list only applies to new INSERTs) - a MachineOutcomeRecord
+    written before this migration reads back patch_extension_status_json
+    as raw None, not []. get_machine_detail must normalize that, since
+    it's the one place this raw value reaches a caller outside this
+    module."""
+    from culprit.db import repository
+    from culprit.db.models import MachineOutcomeRecord
+    from culprit.models.cluster import Cluster, ClusterMember, Fingerprint
+    from culprit.models.evidence import OSFamily
+    from culprit.models.patch_run import PatchRun, TriggerMode
+
+    engine = make_engine("sqlite:///:memory:")
+    session_factory = make_session_factory(engine)
+    machine = _machine_identity()
+    cluster = Cluster(
+        cluster_id="cluster-1", run_id="run-1", cluster_key="key-1",
+        fingerprint=Fingerprint(error_code_normalized="x", os_family=OSFamily.LINUX, failing_target=""),
+        members=[ClusterMember(vm_id=machine.vm_id, vm_name=machine.vm_name)],
+        representative_vm_id=machine.vm_id,
+    )
+    with session_factory() as session:
+        repository.save_run(session, PatchRun(
+            run_id="run-1", maintenance_configuration_id="cfg", subscription_id="s",
+            scope_name="test", started_at=datetime.now(timezone.utc), total_machines=1,
+            trigger_mode=TriggerMode.AD_HOC,
+        ))
+        repository.save_cluster(session, cluster)
+        # Bypasses save_machine_outcomes (which always sets a list) to
+        # simulate a row genuinely written before this column existed.
+        session.add(MachineOutcomeRecord(
+            run_id="run-1", vm_id=machine.vm_id, vm_name=machine.vm_name, cluster_key="key-1",
+            status="Failed", patch_extension_status_json=None,
+        ))
+        session.commit()
+
+    with session_factory() as session:
+        detail = repository.get_machine_detail(session, "run-1", "vm-1")
+
+    assert detail is not None
+    _, _, _, _, _, patch_extension_status = detail
+    assert patch_extension_status == []
+
+
 def test_an_existing_sqlite_database_without_the_new_column_gets_it_added():
     """Simulates the exact real-world risk: a deployed culprit.db whose
     machine_outcomes table was created before patch_extension_status_json

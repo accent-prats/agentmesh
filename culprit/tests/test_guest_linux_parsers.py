@@ -1,6 +1,12 @@
 from __future__ import annotations
 
+import shutil
+import subprocess
+
+import pytest
+
 from culprit.collectors.guest_linux import (
+    ALLOWED_LINUX_SCRIPT,
     parse_disk_usage,
     parse_dpkg_log,
     parse_linux_output,
@@ -133,3 +139,43 @@ def test_ext_status_section_is_sliced_out_and_handed_to_the_shared_parser():
     assert findings[0]["extension_version"] == "1.6.71"  # from EXT_VERSION, not the status JSON's own "version": "1.0"
     assert "No space left on device" in findings[0]["message"]
     assert not any(e.kind == "entitlement_state" for e in events)  # Current is silent
+
+
+def test_repo_check_curl_format_ends_with_a_newline():
+    """Review caught a real bug: curl's -w "%{http_code}" (no trailing
+    newline - documented curl behavior, not an environment quirk) glued
+    REPO_CHECK's "200" directly onto the very next line's "---KERNELS---"
+    marker with no newline between them, so _split_sections's line-based
+    "^---(\\w+)---$" regex never recognized KERNELS as a section header,
+    and parse_repo_check's text != "200" check fired a spurious
+    "repo_unreachable" finding on every healthy machine - fabricated
+    evidence reaching the RCA prompt. The earlier hand-typed test fixture
+    (test_full_output_sectioning_and_parsing, just above) didn't catch
+    this precisely because it hand-typed the newline the real script
+    never produced - this test guards the actual script text instead of
+    a fixture that could silently drift from it again."""
+    assert '-w "%{http_code}\\n"' in ALLOWED_LINUX_SCRIPT
+
+
+@pytest.mark.skipif(shutil.which("bash") is None, reason="requires a real bash to execute the actual Run Command script")
+def test_allowed_linux_script_runs_cleanly_through_a_real_shell(tmp_path):
+    """The strongest possible regression guard for both bugs found in
+    review (the swallowed ---DPKG_LOG--- marker from the old shlex.split
+    + rejoin, and the REPO_CHECK/KERNELS merge from curl's missing
+    newline): actually execute the script Azure's Run Command would run,
+    not a hand-typed stand-in for its output. Every section marker must
+    appear on its own line, and feeding the real captured stdout through
+    parse_linux_output must not synthesize a spurious repo_check finding."""
+    script_path = tmp_path / "script.sh"
+    script_path.write_text(ALLOWED_LINUX_SCRIPT, encoding="utf-8")
+    result = subprocess.run(["bash", str(script_path)], capture_output=True, text=True, timeout=30)
+    stdout = result.stdout
+
+    for marker in (
+        "DPKG_LOG", "APT_HISTORY", "YUM_LOG", "DNF_LOG", "DISK_USAGE",
+        "LOCK_HOLDER", "REPO_CHECK", "KERNELS", "SUBMAN", "EXT_VERSION", "EXT_STATUS",
+    ):
+        assert f"---{marker}---" in stdout.splitlines(), f"{marker} marker missing or merged onto another line"
+
+    events, _ = parse_linux_output(stdout, vm_id="vm-1")
+    assert not any(e.kind == "repo_check" for e in events), "a healthy repo check must not synthesize a finding"

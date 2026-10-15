@@ -40,6 +40,12 @@ class MachineRow(BaseModel):
         default=None,
         description="None for a run that predates per-machine outcome tracking - not an error.",
     )
+    has_extension_finding: bool = Field(
+        default=False,
+        description="True when this machine's guest patch extension reported an error/warning "
+        "status of its own (collectors/patch_extension_status.py) - surfaced as a per-cluster "
+        "count on the Fleet Report, same altitude the Missing Evidence rollup already lives at.",
+    )
 
 
 class FleetTrend(BaseModel):
