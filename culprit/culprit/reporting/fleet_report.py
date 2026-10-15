@@ -45,6 +45,7 @@ def build_fleet_report(output: PipelineOutput, total_machines: int, bundles: lis
                 bundle is not None
                 and any(f.get("status") in ("error", "warning") for f in bundle.patch_extension_status)
             )
+            has_azure_error_detail = bool(bundle is not None and bundle.outcome.error_details)
             machine_rows.append(
                 MachineRow(
                     vm_id=m.vm_id,
@@ -57,6 +58,7 @@ def build_fleet_report(output: PipelineOutput, total_machines: int, bundles: lis
                     has_immediate_fix=has_immediate_fix,
                     outcome=bundle.outcome if bundle is not None else None,
                     has_extension_finding=has_extension_finding,
+                    has_azure_error_detail=has_azure_error_detail,
                 )
             )
 

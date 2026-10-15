@@ -118,6 +118,18 @@ def test_parse_error_details_is_defensive_and_never_raises():
     assert mixed[0].code == "Error" and mixed[0].message == "ok"
 
 
+def test_parse_error_details_skips_a_well_formed_dict_with_a_non_string_value():
+    """Review caught a narrower repeat of the exact bug this module was
+    fixed for: a dict entry is the right *container* type, but a numeric
+    sub-code (a plausible real Azure payload shape) in `code` still raised
+    inside AzureApiErrorDetail's string-typed fields, uncaught, before
+    each entry was wrapped in its own try/except. Must degrade to
+    skipping only that one entry, not the whole list."""
+    result = _parse_error_details([{"code": 404, "message": "bad"}, {"code": "Error", "message": "good"}])
+    assert len(result) == 1
+    assert result[0].code == "Error" and result[0].message == "good"
+
+
 def test_outcome_from_install_result_defaults_status_to_unknown_only_when_the_field_is_truly_absent():
     """Unknown as a last-resort default for a row that genuinely has no
     status field is reasonable - the bug was never reaching this function

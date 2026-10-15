@@ -187,6 +187,32 @@ def test_fleet_report_html_trend_arrows_point_the_right_way(
     assert f'<span class="{expected_compliance_color} font-semibold">{expected_compliance_arrow}</span>' in html
 
 
+def test_build_fleet_report_computes_has_azure_error_detail_per_machine():
+    """Review caught this: build_fleet_report (the standalone, in-memory
+    construction path demo/run_demo.py's CLI script uses - a second,
+    independent FleetReport builder from db/repository.py::
+    _load_fleet_report_core's own DB-backed one, per this module's own
+    docstring on an earlier, identical oversight 2026-10-13) was never
+    updated to compute has_azure_error_detail when that field was added -
+    so the CLI demo script's generated report silently never showed the
+    new Azure-error rollup, even though the DB-backed /runs/demo route
+    did. _window_exceeded_bundle (vm-prd-batch-030x) is the one bundle
+    seeded with a real error_details entry; every other machine must read
+    False."""
+    from culprit.reporting.fleet_report import build_fleet_report
+
+    engine = make_engine("sqlite:///:memory:")
+    factory = make_session_factory(engine)
+    run, bundles = build_scenario()
+    pipeline = Pipeline(session_factory=factory, rca_agent=ScriptedRCAAgent(), retrieval_store=default_retrieval_store())
+    output = pipeline.run(run, bundles)
+    report = build_fleet_report(output, total_machines=312, bundles=bundles)
+
+    rows_by_name = {r.vm_name: r for r in report.machine_rows}
+    assert rows_by_name["vm-prd-batch-0300"].has_azure_error_detail is True
+    assert rows_by_name["vm-prd-app-0100"].has_azure_error_detail is False
+
+
 def test_correct_verdict_adds_a_resolved_incident_to_the_retrieval_store(client):
     test_client, store = client
     resp = test_client.post("/runs/demo")

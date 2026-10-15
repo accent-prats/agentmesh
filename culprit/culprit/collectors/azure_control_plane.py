@@ -18,6 +18,8 @@ from __future__ import annotations
 
 from datetime import datetime, timezone
 
+from pydantic import ValidationError
+
 from culprit.collectors.base import CollectionRequest, CollectionResult, Collector
 from culprit.models.evidence import AzureApiErrorDetail, PatchOutcome, Source, TimelineEvent
 
@@ -181,13 +183,26 @@ def _parse_error_details(details: object) -> list[AzureApiErrorDetail]:
     actually populated it, and that exception was swallowed by collect()'s
     blanket except - silently discarding the *entire* PatchOutcome and its
     TimelineEvent for that machine, not just this one field. A malformed
-    entry here must degrade to being skipped, not repeat that failure."""
+    entry here must degrade to being skipped, not repeat that failure.
+
+    Review caught a narrower repeat of the exact same bug: checking only
+    that an entry is a dict isn't enough - a dict with a non-string value
+    (e.g. a numeric sub-code, `{"code": 404, "message": "bad"}`) still
+    raises inside AzureApiErrorDetail's own string-typed fields, which
+    pydantic doesn't coerce. Each entry is now built in its own try/except
+    so one malformed value degrades to skipping that one entry, not the
+    whole machine."""
     if not isinstance(details, list):
         return []
-    return [
-        AzureApiErrorDetail(code=d.get("code"), message=d.get("message"), target=d.get("target"))
-        for d in details if isinstance(d, dict)
-    ]
+    parsed = []
+    for d in details:
+        if not isinstance(d, dict):
+            continue
+        try:
+            parsed.append(AzureApiErrorDetail(code=d.get("code"), message=d.get("message"), target=d.get("target")))
+        except ValidationError:
+            continue
+    return parsed
 
 
 def _outcome_from_install_result(props: dict) -> PatchOutcome:
