@@ -85,13 +85,22 @@ class GuestWindowsCollector(Collector):
 
     def collect(self, request: CollectionRequest) -> CollectionResult:
         client = self._client_for(request.machine.subscription_id)
+        # A non-empty request.only means pipeline/collection.py::
+        # recollect_targeted built this request - the RCA agent already
+        # found the first pass's evidence too thin, so this is the one
+        # deliberate second attempt worth spending extra patience on,
+        # rather than repeating the identical 60s window that already
+        # wasn't enough once (found 2026-10-15: this was hardcoded to 60
+        # regardless of pass, so a VM still busy/unresponsive at the end
+        # of the first attempt's window just failed again the same way).
+        timeout = 180 if request.only else 60
         try:
             poller = client.virtual_machines.begin_run_command(
                 request.machine.resource_group,
                 request.machine.vm_name,
                 RunCommandInput(command_id="RunPowerShellScript", script=[ALLOWED_WINDOWS_SCRIPT]),
             )
-            result = poller.result(timeout=60)
+            result = poller.result(timeout=timeout)
             stdout = result.value[0].message if result.value else ""
         except Exception as exc:  # noqa: BLE001
             return CollectionResult(events=[], error=f"Run Command failed: {exc}")

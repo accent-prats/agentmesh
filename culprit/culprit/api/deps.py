@@ -165,6 +165,7 @@ def build_live_collectors(session):
     from culprit.collectors.azure_auth import build_credential
     from culprit.collectors.azure_control_plane import AzureControlPlaneCollector
     from culprit.collectors.azure_monitor import AzureMonitorCollector
+    from culprit.collectors.datadog_auth import datadog_is_configured
     from culprit.collectors.datadog_collector import DatadogCollector
     from culprit.collectors.guest_linux import GuestLinuxCollector
     from culprit.collectors.guest_windows import GuestWindowsCollector
@@ -179,8 +180,14 @@ def build_live_collectors(session):
         Source.AZURE_CONTROL_PLANE: AzureControlPlaneCollector(credential=credential),
         Source.GUEST_LINUX: GuestLinuxCollector(credential=credential),
         Source.GUEST_WINDOWS: GuestWindowsCollector(credential=credential),
-        Source.DATADOG_METRIC: DatadogCollector(settings=datadog_cfg),
     }
+    # Unlike Azure/guest collection (always attempted - there's no clean
+    # "is this configured" signal short of actually trying), Datadog has
+    # one: skip registering it at all when nothing real is reachable,
+    # rather than attempting and failing identically on every machine,
+    # every run (see datadog_is_configured's own docstring).
+    if datadog_is_configured(datadog_cfg):
+        collectors[Source.DATADOG_METRIC] = DatadogCollector(settings=datadog_cfg)
     if azure_cfg.log_analytics_workspace_id:
         collectors[Source.AZURE_MONITOR] = AzureMonitorCollector(
             azure_cfg.log_analytics_workspace_id, credential=credential

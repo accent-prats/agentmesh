@@ -37,9 +37,26 @@ this hasn't been exercised against a real Datadog org to confirm.
 """
 from __future__ import annotations
 
+import os
 from typing import Any
 
 from culprit.models.settings import DatadogSettingsInput
+
+
+def datadog_is_configured(cfg: DatadogSettingsInput | None) -> bool:
+    """Whether a real Datadog credential is actually reachable from here -
+    either saved on /culprit/settings, or via the SDK's own documented
+    env-var fallback (DD_API_KEY, see configure_datadog_client's "no
+    settings saved at all" branch above and the module's own docstring).
+    Used to decide whether to register the Datadog collector at all
+    (api/deps.py::build_live_collectors) - found 2026-10-15: a deployment
+    that never configures Datadog had every machine, every run, pick up
+    2-3 Datadog-shaped collection_gaps entries that look exactly like an
+    intermittent real failure rather than the simple, permanent "not
+    configured" fact they actually are."""
+    if cfg and (cfg.personal_access_token or cfg.api_key):
+        return True
+    return bool(os.environ.get("DD_API_KEY"))
 
 
 def configure_datadog_client(cfg: DatadogSettingsInput | None) -> Any:

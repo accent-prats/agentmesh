@@ -13,7 +13,7 @@ import pytest
 
 pytest.importorskip("datadog_api_client")  # optional `culprit[datadog]` extra - see pyproject.toml
 
-from culprit.collectors.datadog_auth import configure_datadog_client
+from culprit.collectors.datadog_auth import configure_datadog_client, datadog_is_configured
 from culprit.models.settings import DatadogSettingsInput
 
 
@@ -71,3 +71,35 @@ def test_blank_settings_object_configures_nothing():
     configuration = configure_datadog_client(DatadogSettingsInput())
     assert configuration.api_key.get("apiKeyAuth") is None
     assert configuration.api_key.get("appKeyAuth") is None
+
+
+# ── datadog_is_configured ───────────────────────────────────────────────────
+# Used by api/deps.py::build_live_collectors to decide whether to register
+# the Datadog collector at all - found 2026-10-15: registering it
+# unconditionally meant every machine, every run got 2-3 Datadog-shaped
+# collection_gaps entries in any deployment that never configured it,
+# indistinguishable from an intermittent real failure.
+
+def test_no_config_and_no_env_var_is_not_configured(monkeypatch):
+    monkeypatch.delenv("DD_API_KEY", raising=False)
+    assert datadog_is_configured(None) is False
+    assert datadog_is_configured(DatadogSettingsInput()) is False
+
+
+def test_a_saved_pat_counts_as_configured(monkeypatch):
+    monkeypatch.delenv("DD_API_KEY", raising=False)
+    assert datadog_is_configured(DatadogSettingsInput(personal_access_token="a-real-pat")) is True
+
+
+def test_a_saved_api_key_counts_as_configured(monkeypatch):
+    monkeypatch.delenv("DD_API_KEY", raising=False)
+    assert datadog_is_configured(DatadogSettingsInput(api_key="an-api-key")) is True
+
+
+def test_the_env_var_fallback_alone_still_counts_as_configured(monkeypatch):
+    """A deployment that only ever used DD_API_KEY/DD_APP_KEY (never
+    touched the settings screen) must not get wrongly skipped - this is
+    configure_datadog_client's own documented fallback path, still real."""
+    monkeypatch.setenv("DD_API_KEY", "env-key")
+    assert datadog_is_configured(None) is True
+    assert datadog_is_configured(DatadogSettingsInput()) is True

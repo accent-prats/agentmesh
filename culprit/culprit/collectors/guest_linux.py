@@ -109,13 +109,18 @@ class GuestLinuxCollector(Collector):
 
     def collect(self, request: CollectionRequest) -> CollectionResult:
         client = self._client_for(request.machine.subscription_id)
+        # See guest_windows.py::collect()'s identical comment - a
+        # non-empty request.only is the deliberate recollect_targeted
+        # second pass, worth a longer timeout than the first attempt's
+        # identical 60s window that already wasn't enough once.
+        timeout = 180 if request.only else 60
         try:
             poller = client.virtual_machines.begin_run_command(
                 request.machine.resource_group,
                 request.machine.vm_name,
                 RunCommandInput(command_id="RunShellScript", script=[ALLOWED_LINUX_SCRIPT]),
             )
-            result = poller.result(timeout=60)
+            result = poller.result(timeout=timeout)
             stdout = result.value[0].message if result.value else ""
         except Exception as exc:  # noqa: BLE001
             return CollectionResult(events=[], error=f"Run Command failed: {exc}")

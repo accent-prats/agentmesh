@@ -162,3 +162,28 @@ def test_request_includes_model_and_tool_schema():
     assert kwargs["tools"][0]["name"] == _TOOL_NAME
     assert "disk rule abstained" in kwargs["messages"][0]["content"]
     assert "some vendor doc" in kwargs["messages"][0]["content"]
+
+
+def test_prompt_surfaces_which_evidence_sources_were_attempted_and_succeeded():
+    """sources_attempted/sources_succeeded (pipeline/normalize.py::
+    merge_bundle) were already populated faithfully but never read
+    anywhere downstream before this - found 2026-10-15 auditing why RCA
+    confidence is so often low. Gives the model structured knowledge of
+    what evidence universe this deployment even has (e.g. no Datadog
+    configured at all) instead of leaving it to infer that from
+    collection_gaps prose alone."""
+    response = FakeResponse(content=[FakeBlock(type="tool_use", name=_TOOL_NAME, input=dict(_VALID_INPUT))])
+    client = FakeAnthropicClient(response)
+    agent = DeepRCAAgent(client=client)
+    bundle = _bundle().model_copy(update={
+        "sources_attempted": [Source.AZURE_CONTROL_PLANE, Source.GUEST_LINUX, Source.AZURE_MONITOR],
+        "sources_succeeded": [Source.AZURE_CONTROL_PLANE, Source.AZURE_MONITOR],
+    })
+    agent.diagnose(_cluster(bundle), bundle, near_misses=[], retrieval_context="")
+    prompt = client.messages.last_kwargs["messages"][0]["content"]
+
+    assert "Evidence sources attempted: azure_control_plane, guest_linux, azure_monitor" in prompt
+    assert "succeeded: azure_control_plane, azure_monitor" in prompt
+    # guest_linux was attempted but is absent from succeeded - the model
+    # should be able to see that asymmetry directly in this one line.
+    assert "guest_linux" not in prompt.split("succeeded:")[1].split("\n")[0]

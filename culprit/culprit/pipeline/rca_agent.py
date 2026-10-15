@@ -163,6 +163,14 @@ def _build_user_prompt(
         f"CLUSTER: {cluster.cluster_id} ({cluster.size} machine(s), fingerprint key {cluster.cluster_key})",
         f"Representative machine: {representative.machine.vm_name} ({representative.machine.os_family.value})",
         f"Patch outcome: status={representative.outcome.status} error_code={representative.outcome.error_code}",
+        # sources_attempted/succeeded were already populated by
+        # pipeline/normalize.py::merge_bundle but never read anywhere
+        # downstream - surfacing them here tells the model what evidence
+        # universe this deployment even has (e.g. no Datadog configured
+        # at all) rather than leaving it to infer that from collection_gaps
+        # prose alone.
+        f"Evidence sources attempted: {', '.join(s.value for s in representative.sources_attempted) or '(none)'} "
+        f"| succeeded: {', '.join(s.value for s in representative.sources_succeeded) or '(none)'}",
         "",
         "EVIDENCE TIMELINE (each line ends with its raw_ref - cite these exactly):",
         representative.timeline_sorted() and representative.render_timeline_text() or "(no timeline events collected)",

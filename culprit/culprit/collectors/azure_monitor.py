@@ -104,7 +104,16 @@ class AzureMonitorCollector(Collector):
             window_end=request.window_end.isoformat(),
         )
         response = self._client.query_workspace(self.workspace_id, query, timespan=None)
-        if response.status != LogsQueryStatus.SUCCESS or not response.tables or not response.tables[0].rows:
+        if response.status != LogsQueryStatus.SUCCESS:
+            # Found 2026-10-15: this used to be folded into the same
+            # branch as "query succeeded, genuinely zero rows" below -
+            # a failed/partial KQL call (auth hiccup, throttling) was
+            # reported to the RCA agent as *positive evidence* of an
+            # unresponsive guest agent, a false signal, not just a
+            # missing one. Raising here routes it through collect()'s own
+            # try/except into a normal collection_gaps entry instead.
+            raise RuntimeError(f"Heartbeat query did not succeed (status={response.status})")
+        if not response.tables or not response.tables[0].rows:
             # No heartbeat row at all in the lookback window is itself the signal.
             return [
                 TimelineEvent(
@@ -140,9 +149,12 @@ class AzureMonitorCollector(Collector):
             window_end=request.window_end.isoformat(),
         )
         response = self._client.query_workspace(self.workspace_id, query, timespan=None)
-        out: list[TimelineEvent] = []
         if response.status != LogsQueryStatus.SUCCESS:
-            return out
+            # Same fix as _heartbeat_events above - this used to silently
+            # return [] with no trace at all, indistinguishable from "ran
+            # fine, found nothing to report."
+            raise RuntimeError(f"{source.value} query did not succeed (status={response.status})")
+        out: list[TimelineEvent] = []
         for table in response.tables:
             for row in table.rows:
                 ts, *rest = row
