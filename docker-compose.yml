@@ -155,6 +155,17 @@ services:
       # set CULPRIT_DEMO_ENABLED=true explicitly in .env for one that
       # wants it. See docs/SETUP.md and culprit/config.py's own comment.
       CULPRIT_DEMO_ENABLED: ${CULPRIT_DEMO_ENABLED:-false}
+      # Off by default - the one flag that gates code which can mutate real
+      # infrastructure, not just read it (culprit/remediation/, SECURITY.md's
+      # "Remediation execution" section). Gates both the Fleet Report page's
+      # "Run remediation" button and the execute route itself.
+      CULPRIT_REMEDIATION_ENABLED: ${CULPRIT_REMEDIATION_ENABLED:-false}
+      # Browser-reachable Portal URL for the "Return to Portal"/"Portal Home"
+      # links. Blank (the default) assumes Culprit and Portal share an origin
+      # behind the same nginx (root "/" is Portal's SPA) - only needed on a
+      # deployment reached directly on Culprit's own exposed port, bypassing
+      # nginx (see render.py's own comment on this).
+      CULPRIT_PORTAL_PUBLIC_URL: ${CULPRIT_PORTAL_PUBLIC_URL:-}
     volumes:
       - culprit_data:/app/data
     networks: [platform]

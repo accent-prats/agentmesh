@@ -109,6 +109,24 @@ expose a button that fabricates fake data. Set `CULPRIT_DEMO_ENABLED=true` for a
 or dev/test deployment that wants it — this shows the card *and* enables the underlying
 `POST /runs/demo` route itself (404s when this is off, not just the button).
 
+### Automated remediation (off by default)
+
+A single, hardcoded, reviewed automated action (disk cleanup) is gated behind
+`CULPRIT_REMEDIATION_ENABLED` — off by default, since it's the one Culprit flow that can
+mutate real infrastructure rather than just read it. Set it to `true` only once you've read
+[`SECURITY.md`](../culprit/SECURITY.md)'s "Remediation execution" section — it also requires
+measured per-cause-family precision to clear the promotion gate and a human confirmation per
+action. Gates both the Fleet Report page's "Run remediation" button and the execute route
+itself (404s when this is off, not just the button, same as `CULPRIT_DEMO_ENABLED` above).
+
+### Portal return links (only on a non-standard topology)
+
+The "Return to Portal"/"Portal Home" links assume Culprit and Portal share an origin behind
+the same nginx (so a bare `/` already resolves to Portal's SPA) — true for the deployment
+shape this repo ships. Set `CULPRIT_PORTAL_PUBLIC_URL` to Portal's real, browser-reachable
+URL only if Culprit is reached some other way (e.g. directly on its own exposed port,
+bypassing nginx) — otherwise those links silently 401 against Culprit's own site root.
+
 ### Autonomous scheduling (optional)
 
 By default Culprit only runs when someone clicks a button or calls `/runs/live`. Set
