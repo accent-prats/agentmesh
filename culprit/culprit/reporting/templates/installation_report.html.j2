@@ -68,7 +68,7 @@
           data-status="{{ row.status.value }}" data-name="{{ row.vm_name|lower }}"
           data-subscription="{{ row.subscription_id|lower }}" data-resource-group="{{ row.resource_group|lower }}"
           data-date="{{ row.started_at.isoformat() if row.started_at else '' }}">
-          <td class="px-5 py-3.5 font-medium text-gray-900 truncate">{{ row.vm_name }}</td>
+          <td class="px-5 py-3.5 font-medium text-gray-900 truncate ir-name-cell" data-full-name="{{ row.vm_name }}">{{ row.vm_name }}</td>
           <td class="px-5 py-3.5">
             {% if row.status.value == 'succeeded' %}
             <span class="text-[10px] font-semibold uppercase tracking-wide px-2 py-0.5 rounded-full bg-emerald-50 text-emerald-700 border border-emerald-200">Succeeded</span>
@@ -129,6 +129,19 @@
     window. "Excluded" is a derived count (subscription total minus everyone who reported) &mdash; Culprit
     doesn't currently resolve which specific machines that is, so no rows are shown for it.
   </p>
+
+  <!-- Shared floating tooltip for the (often-truncated) Name column - one
+       node, JS-positioned per hover rather than one per row. position:fixed
+       so the table card's own overflow-hidden (there only to clip the
+       table's square corners to its rounded-2xl border) never cuts it off
+       near the table's edges. -->
+  <div id="ir-name-tooltip" class="hidden fixed z-50 items-center gap-2 max-w-xs bg-gray-900 text-white text-xs rounded-lg px-3 py-2 shadow-lg shadow-black/20">
+    <span id="ir-name-tooltip-text" class="font-mono break-all"></span>
+    <button type="button" id="ir-name-tooltip-copy" class="eg-copy-btn shrink-0 inline-flex items-center gap-1 text-gray-300 hover:text-white transition-colors"
+      data-copy="" title="Copy machine name">
+      <i data-lucide="copy" class="eg-copy-icon w-3 h-3"></i><span class="eg-copy-label text-[10px]">Copy</span>
+    </button>
+  </div>
 
 </div>
 {% endblock %}
@@ -250,5 +263,52 @@ if (irRows.length > 0) {
   applyIRFilters();
   updateIRSortIndicators();
 }
+
+// Name column hover tooltip + copy - found needed 2026-10-15: a long VM
+// name (e.g. "tcx-tenant-azsec05-prd-CorpSomething") was simply
+// unreadable once CSS `truncate` clipped it, with no way to see or copy
+// the full name at all. Only fires when the cell is actually truncated
+// (scrollWidth > clientWidth) - a name that already fits needs neither.
+(function () {
+  const tooltip = document.getElementById('ir-name-tooltip');
+  if (!tooltip) return;
+  const textEl = document.getElementById('ir-name-tooltip-text');
+  const copyBtn = document.getElementById('ir-name-tooltip-copy');
+  let hideTimer = null;
+
+  function show(cell) {
+    if (cell.scrollWidth <= cell.clientWidth + 1) return;
+    clearTimeout(hideTimer);
+    const name = cell.dataset.fullName;
+    textEl.textContent = name;
+    copyBtn.dataset.copy = name;
+    tooltip.classList.remove('hidden');
+    tooltip.classList.add('flex');
+
+    const rect = cell.getBoundingClientRect();
+    const tipRect = tooltip.getBoundingClientRect();
+    let left = rect.left;
+    if (left + tipRect.width > window.innerWidth - 8) left = window.innerWidth - tipRect.width - 8;
+    if (left < 8) left = 8;
+    let top = rect.bottom + 6;
+    if (top + tipRect.height > window.innerHeight - 8) top = rect.top - tipRect.height - 6;
+    tooltip.style.left = left + 'px';
+    tooltip.style.top = top + 'px';
+  }
+
+  function scheduleHide() {
+    hideTimer = setTimeout(function () {
+      tooltip.classList.add('hidden');
+      tooltip.classList.remove('flex');
+    }, 150);
+  }
+
+  document.querySelectorAll('.ir-name-cell').forEach(function (cell) {
+    cell.addEventListener('mouseenter', function () { show(cell); });
+    cell.addEventListener('mouseleave', scheduleHide);
+  });
+  tooltip.addEventListener('mouseenter', function () { clearTimeout(hideTimer); });
+  tooltip.addEventListener('mouseleave', scheduleHide);
+})();
 </script>
 {% endblock %}
