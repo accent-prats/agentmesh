@@ -121,6 +121,11 @@ class MachineOutcomeRecord(Base):
     ended_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
     window_minutes: Mapped[int | None] = mapped_column(Integer, nullable=True)
     collection_gaps_json: Mapped[list] = mapped_column(JSON, default=list)
+    # Structured findings from the guest patch extension's own status file
+    # (collectors/patch_extension_status.py) - see db/engine.py's
+    # _ensure_column for how an already-deployed DB predating this column
+    # picks it up without a real migration tool.
+    patch_extension_status_json: Mapped[list] = mapped_column(JSON, default=list)
 
     run: Mapped[RunRecord] = relationship(back_populates="machine_outcomes")
 

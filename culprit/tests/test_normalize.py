@@ -52,6 +52,18 @@ def test_missing_control_plane_outcome_synthesizes_placeholder_and_gap():
     assert any("no patch outcome" in g for g in bundle.collection_gaps)
 
 
+def test_patch_extension_status_is_accumulated_across_collectors():
+    results = {
+        Source.AZURE_CONTROL_PLANE: CollectionResult(events=[], outcome=PatchOutcome(status="Failed")),
+        Source.GUEST_LINUX: CollectionResult(
+            events=[],
+            patch_extension_status=[{"source": "guest_linux", "status": "error", "message": "disk full"}],
+        ),
+    }
+    bundle = merge_bundle("run-1", _machine(), results)
+    assert bundle.patch_extension_status == [{"source": "guest_linux", "status": "error", "message": "disk full"}]
+
+
 def test_duplicate_events_are_deduped():
     now = datetime.now(timezone.utc)
     ev = _ev(now, "same-ref")

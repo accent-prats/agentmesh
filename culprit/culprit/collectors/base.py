@@ -36,6 +36,14 @@ class CollectionResult:
     events: list[TimelineEvent]
     outcome: PatchOutcome | None = None
     error: str | None = None  # non-fatal: "guest Run Command timed out after 30s"
+    # Structured findings from the guest patch extension's own status file
+    # (collectors/patch_extension_status.py) - only guest_linux.py/
+    # guest_windows.py ever populate this; every other collector leaves it
+    # empty. Kept alongside `events` (which already carry the same facts as
+    # TimelineEvents for the RCA prompt) because the UI wants the full
+    # structured finding - including the raw status JSON - not just the
+    # one-line summary a TimelineEvent carries.
+    patch_extension_status: list[dict] = field(default_factory=list)
 
 
 class Collector(abc.ABC):

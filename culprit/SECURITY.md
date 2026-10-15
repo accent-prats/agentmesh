@@ -110,7 +110,11 @@ Azure role Culprit needs. Notable points:
   repository that accepts an arbitrary script or interpolates
   caller-supplied text into a Run Command invocation. Extending what the
   guest collectors can read requires a code change and a review, not a
-  config change.
+  config change. The patch extension status file both collectors read
+  (`collectors/patch_extension_status.py`) is the Azure patch extension's
+  own JSON report - never a credential, token, or protected setting - and
+  is capped at 8192 bytes at collection time regardless of the real file's
+  size.
 - Assign this role, and only this role, to the identity Culprit runs as
   (a managed identity in production - `DefaultAzureCredential` picks it up
   with no code change). Do not additionally grant Contributor "just in

@@ -13,11 +13,11 @@ formats of dpkg, apt and yum/dnf, not an invented shape.
 from __future__ import annotations
 
 import re
-import shlex
 import threading
 from datetime import datetime, timezone
 
 from culprit.collectors.base import CollectionRequest, CollectionResult, Collector
+from culprit.collectors.patch_extension_status import parse_patch_extension_status
 from culprit.models.evidence import Source, TimelineEvent
 
 try:  # pragma: no cover
@@ -30,21 +30,48 @@ except ImportError:  # pragma: no cover
     _COMPUTE_SDK_AVAILABLE = False
 
 
-# Fixed, read-only, allow-listed script. No write, no delete, no arbitrary
-# argument interpolation - it always runs verbatim.
-ALLOWED_LINUX_SCRIPT = shlex.split(
-    "bash -c "
-    "'"
+# Fixed, read-only, allow-listed script - a single string RunCommandInput
+# executes directly via a shell (the same contract guest_windows.py's own
+# plain PowerShell script relies on, "RunShellScript" needs no "bash -c"
+# wrapper of its own). Found while adding the EXT_STATUS section below and
+# verifying it by actually running the reconstructed script: the previous
+# "bash -c '...'" wrapper was built via shlex.split() and then rejoined
+# with plain spaces in collect() (`" ".join(ALLOWED_LINUX_SCRIPT)`) -
+# shlex.split() discards the quote characters it used to tokenize, so the
+# rejoined string lost its quoting entirely. That left "bash -c" consuming
+# only the next bare word ("echo") as its command, with "---DPKG_LOG---"
+# silently swallowed as bash -c's $0 and never printed - the very first
+# section's own marker has never actually appeared in a real run. Every
+# later section still printed correctly, since after that inner "bash -c
+# echo" returned, the rest of the semicolon-separated commands ran directly
+# in the outer shell Azure provides - this was a narrow miss, not a total
+# break, which is exactly why it went unnoticed. Also fixes a second,
+# independently-confirmed bug in the same line: the REPO_CHECK curl
+# command's `-w` format was `%{{http_code}}` (doubled braces - curl's
+# format syntax is `%{http_code}` single-braced; found by literally running
+# it: curl rejected it as an unknown write-out variable).
+#
+# No write, no delete, no arbitrary argument interpolation - the allow-
+# listed commands below are the entire guest-side attack surface; extending
+# them requires an explicit code review, not a config change.
+ALLOWED_LINUX_SCRIPT = (
     "echo ---DPKG_LOG---; tail -n 200 /var/log/dpkg.log 2>/dev/null; "
     "echo ---APT_HISTORY---; tail -n 200 /var/log/apt/history.log 2>/dev/null; "
     "echo ---YUM_LOG---; tail -n 200 /var/log/yum.log 2>/dev/null; "
     "echo ---DNF_LOG---; tail -n 200 /var/log/dnf.log 2>/dev/null; "
     "echo ---DISK_USAGE---; df -h --output=target,pcent,avail 2>/dev/null; "
     "echo ---LOCK_HOLDER---; fuser /var/lib/dpkg/lock-frontend 2>&1; "
-    "echo ---REPO_CHECK---; timeout 5 curl -o /dev/null -s -w \"%{{http_code}}\" http://archive.ubuntu.com 2>&1; "
+    "echo ---REPO_CHECK---; timeout 5 curl -o /dev/null -s -w \"%{http_code}\" http://archive.ubuntu.com 2>&1; "
     "echo ---KERNELS---; dpkg -l 'linux-image-*' 2>/dev/null | grep ^ii; uname -r; "
-    "echo ---SUBMAN---; timeout 5 subscription-manager status 2>&1"
-    "'"
+    "echo ---SUBMAN---; timeout 5 subscription-manager status 2>&1; "
+    "EXTDIR=$(find /var/lib/waagent -maxdepth 1 -type d "
+    "-name 'Microsoft.CPlat.Core.LinuxPatchExtension-*' 2>/dev/null | sort -V | tail -1); "
+    "echo ---EXT_VERSION---; "
+    "if [ -n \"$EXTDIR\" ]; then basename \"$EXTDIR\" | sed 's/^Microsoft\\.CPlat\\.Core\\.LinuxPatchExtension-//'; fi; "
+    "echo ---EXT_STATUS---; "
+    "LATEST=; "
+    "if [ -n \"$EXTDIR\" ]; then LATEST=$(ls -t \"$EXTDIR\"/status/*.status 2>/dev/null | head -1); fi; "
+    "if [ -n \"$LATEST\" ]; then head -c 8192 \"$LATEST\"; else echo 'No status file found'; fi"
 )
 
 
@@ -86,15 +113,15 @@ class GuestLinuxCollector(Collector):
             poller = client.virtual_machines.begin_run_command(
                 request.machine.resource_group,
                 request.machine.vm_name,
-                RunCommandInput(command_id="RunShellScript", script=[" ".join(ALLOWED_LINUX_SCRIPT)]),
+                RunCommandInput(command_id="RunShellScript", script=[ALLOWED_LINUX_SCRIPT]),
             )
             result = poller.result(timeout=60)
             stdout = result.value[0].message if result.value else ""
         except Exception as exc:  # noqa: BLE001
             return CollectionResult(events=[], error=f"Run Command failed: {exc}")
 
-        events = parse_linux_output(stdout, vm_id=request.machine.vm_id)
-        return CollectionResult(events=events)
+        events, patch_extension_status = parse_linux_output(stdout, vm_id=request.machine.vm_id)
+        return CollectionResult(events=events, patch_extension_status=patch_extension_status)
 
 
 _SECTION_RE = re.compile(r"^---(\w+)---$")
@@ -243,7 +270,7 @@ def parse_subscription_manager(text: str, vm_id: str) -> list[TimelineEvent]:
     return []
 
 
-def parse_linux_output(stdout: str, vm_id: str) -> list[TimelineEvent]:
+def parse_linux_output(stdout: str, vm_id: str) -> tuple[list[TimelineEvent], list[dict]]:
     sections = _split_sections(stdout)
     events: list[TimelineEvent] = []
     events += parse_dpkg_log(sections.get("DPKG_LOG", ""), vm_id)
@@ -252,4 +279,9 @@ def parse_linux_output(stdout: str, vm_id: str) -> list[TimelineEvent]:
     events += parse_lock_holder(sections.get("LOCK_HOLDER", ""), vm_id)
     events += parse_repo_check(sections.get("REPO_CHECK", ""), vm_id)
     events += parse_subscription_manager(sections.get("SUBMAN", ""), vm_id)
-    return events
+    ext_events, ext_findings = parse_patch_extension_status(
+        sections.get("EXT_STATUS", ""), vm_id, Source.GUEST_LINUX,
+        extension_version=sections.get("EXT_VERSION", "").strip() or None,
+    )
+    events += ext_events
+    return events, ext_findings

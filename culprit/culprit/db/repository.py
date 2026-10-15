@@ -127,6 +127,7 @@ def save_machine_outcomes(session: Session, run_id: str, cluster_key: str, bundl
         record.ended_at = bundle.outcome.ended_at
         record.window_minutes = bundle.outcome.window_minutes
         record.collection_gaps_json = bundle.collection_gaps
+        record.patch_extension_status_json = bundle.patch_extension_status
     session.commit()
 
 
@@ -470,10 +471,12 @@ def get_machine_detail(session: Session, run_id: str, vm_name: str):
     from that cluster's representative member (proposal Section 8: the
     third, "Machine" altitude, "for the awkward machine that didn't fit
     its cluster"), the RCAResult diagnosed for its cluster, and its own
-    `PatchOutcome`/collection gaps if this run saved one (see
-    MachineOutcomeRecord - runs diagnosed before that table existed won't
-    have one; `outcome` is None in that case, not an error). Returns None
-    if the run, or a member with this vm_name inside it, doesn't exist.
+    `PatchOutcome`/collection gaps/patch extension status if this run saved
+    one (see MachineOutcomeRecord - runs diagnosed before that table
+    existed won't have one; `outcome` is None in that case, not an error).
+    Returns a 6-tuple (cluster, member, result, outcome, collection_gaps,
+    patch_extension_status), or None if the run, or a member with this
+    vm_name inside it, doesn't exist.
 
     Keyed by vm_name rather than vm_id (a full Azure resource ID, which
     contains slashes and can't be a clean URL path segment) - the same
@@ -501,7 +504,7 @@ def get_machine_detail(session: Session, run_id: str, vm_name: str):
         result = RCAResult.model_validate(cr.rca_result.result_json) if cr.rca_result else None
 
         outcome_record = session.get(MachineOutcomeRecord, (run_id, member["vm_id"]))
-        outcome, collection_gaps = None, []
+        outcome, collection_gaps, patch_extension_status = None, [], []
         if outcome_record is not None:
             outcome = PatchOutcome(
                 status=outcome_record.status,
@@ -515,8 +518,9 @@ def get_machine_detail(session: Session, run_id: str, vm_name: str):
                 window_minutes=outcome_record.window_minutes,
             )
             collection_gaps = outcome_record.collection_gaps_json
+            patch_extension_status = outcome_record.patch_extension_status_json
 
-        return cluster, ClusterMember(**member), result, outcome, collection_gaps
+        return cluster, ClusterMember(**member), result, outcome, collection_gaps, patch_extension_status
 
     return None
 

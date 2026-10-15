@@ -97,6 +97,13 @@ class EvidenceBundle(BaseModel):
         description="Human-readable notes on evidence that could not be collected, e.g. "
         "'guest Run Command timed out' or 'Datadog agent not reporting'.",
     )
+    patch_extension_status: list[dict] = Field(
+        default_factory=list,
+        description="Structured findings read directly from the guest OS's Azure patch "
+        "extension status file (collectors/patch_extension_status.py) - the extension's own "
+        "account of success/error/substatus, not inferred from OS package-manager logs. "
+        "Evidence that WAS collected, unlike collection_gaps (evidence that could not be).",
+    )
 
     def timeline_sorted(self) -> list[TimelineEvent]:
         return sorted(self.timeline, key=lambda e: e.ts)

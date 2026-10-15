@@ -10,6 +10,7 @@ live collection pass.
 """
 from __future__ import annotations
 
+import json
 import uuid
 from datetime import datetime, timedelta, timezone
 
@@ -92,11 +93,41 @@ def _boot_full_bundle(i: int) -> EvidenceBundle:
             {"normalized_error": "packagemanagerfailure"},
             f"resourcegraph:{machine.vm_id}:{RUN_ID}"),
     ]
+    # The Linux Patch Extension's own status file (collectors/
+    # patch_extension_status.py) - the same /boot-full story the dpkg/df
+    # guest events above already tell, but from the exact component Azure
+    # Update Manager invokes, with a real error code attached. Showcases
+    # the new "Patch extension report" card in the demo path.
+    ext_status_json = json.dumps([{
+        "version": "1.0", "timestampUTC": (WINDOW_START + timedelta(minutes=16)).isoformat(),
+        "status": {
+            "name": "Microsoft.CPlat.Core.LinuxPatchExtension", "operation": "Installation",
+            "status": "error", "code": 3,
+            "formattedMessage": {"lang": "en-US", "message": "Installation failed - see substatus for per-package detail"},
+            "substatus": [
+                {"name": "PatchInstallationSummary", "status": "error", "code": 3,
+                 "formattedMessage": {"lang": "en-US", "message": f"linux-image-5.15.0-{91 + i % 3}-generic failed: no space left on device at /boot"}},
+            ],
+        },
+    }])
+    # Built via the real parser, not hand-typed dicts - a hand-typed demo
+    # fixture is exactly what let a real bug (extension_version read from
+    # the status file's own "version" field, which is always "1.0", not
+    # the installed package version) go unnoticed in review: the demo's
+    # hand-built dict had the right value even though the real code path
+    # never could have produced it.
+    from culprit.collectors.patch_extension_status import parse_patch_extension_status
+
+    ext_events, patch_extension_status = parse_patch_extension_status(
+        ext_status_json, vm_id=machine.vm_id, source=Source.GUEST_LINUX, extension_version="1.6.71",
+    )
+    timeline += ext_events  # same merge a real collection pass does (pipeline/normalize.py::merge_bundle)
     return EvidenceBundle(
         run_id=RUN_ID, machine=machine, outcome=outcome, timeline=timeline,
         collection_started_at=WINDOW_END, collection_completed_at=WINDOW_END,
         sources_attempted=[Source.AZURE_CONTROL_PLANE, Source.GUEST_LINUX, Source.DATADOG_METRIC, Source.DATADOG_MONITOR],
         sources_succeeded=[Source.AZURE_CONTROL_PLANE, Source.GUEST_LINUX, Source.DATADOG_METRIC, Source.DATADOG_MONITOR],
+        patch_extension_status=patch_extension_status,
     )
 
 

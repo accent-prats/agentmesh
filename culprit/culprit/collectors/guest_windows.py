@@ -12,6 +12,7 @@ import threading
 from datetime import datetime, timezone
 
 from culprit.collectors.base import CollectionRequest, CollectionResult, Collector
+from culprit.collectors.patch_extension_status import parse_patch_extension_status
 from culprit.models.evidence import Source, TimelineEvent
 
 try:  # pragma: no cover
@@ -37,6 +38,24 @@ Write-Output "---DISK_USAGE---"
 Get-PSDrive -PSProvider FileSystem | ForEach-Object { "$($_.Name) $($_.Free) $($_.Used)" }
 Write-Output "---WSUS_TARGET---"
 (Get-ItemProperty "HKLM:\SOFTWARE\Policies\Microsoft\Windows\WindowsUpdate" -ErrorAction SilentlyContinue).WUServer
+$extRoot = "C:\Packages\Plugins\Microsoft.CPlat.Core.WindowsPatchExtension"
+$latestVersionDir = Get-ChildItem -Path $extRoot -Directory -ErrorAction SilentlyContinue |
+    Sort-Object { [version]$_.Name } -Descending -ErrorAction SilentlyContinue | Select-Object -First 1
+Write-Output "---EXT_VERSION---"
+if ($latestVersionDir) { Write-Output $latestVersionDir.Name }
+Write-Output "---EXT_STATUS---"
+$latestStatusFile = $null
+if ($latestVersionDir) {
+    $latestStatusFile = Get-ChildItem -Path (Join-Path $latestVersionDir.FullName "Status") -Filter "*.status" -ErrorAction SilentlyContinue |
+        Sort-Object LastWriteTime -Descending | Select-Object -First 1
+}
+if ($latestStatusFile) {
+    $extStatusContent = Get-Content $latestStatusFile.FullName -Raw -ErrorAction SilentlyContinue
+    if ($extStatusContent.Length -gt 8192) { $extStatusContent = $extStatusContent.Substring(0, 8192) }
+    Write-Output $extStatusContent
+} else {
+    Write-Output "No status file found"
+}
 """
 
 
@@ -77,8 +96,8 @@ class GuestWindowsCollector(Collector):
         except Exception as exc:  # noqa: BLE001
             return CollectionResult(events=[], error=f"Run Command failed: {exc}")
 
-        events = parse_windows_output(stdout, vm_id=request.machine.vm_id)
-        return CollectionResult(events=events)
+        events, patch_extension_status = parse_windows_output(stdout, vm_id=request.machine.vm_id)
+        return CollectionResult(events=events, patch_extension_status=patch_extension_status)
 
 
 _SECTION_RE = re.compile(r"^---(\w+)---$")
@@ -202,7 +221,7 @@ def parse_disk_usage(text: str, vm_id: str, min_free_bytes: int = 250 * 1024 * 1
     return events
 
 
-def parse_windows_output(stdout: str, vm_id: str) -> list[TimelineEvent]:
+def parse_windows_output(stdout: str, vm_id: str) -> tuple[list[TimelineEvent], list[dict]]:
     sections = _split_sections(stdout)
     events: list[TimelineEvent] = []
     events += parse_wu_log(sections.get("WU_LOG", ""), vm_id)
@@ -210,4 +229,9 @@ def parse_windows_output(stdout: str, vm_id: str) -> list[TimelineEvent]:
     events += parse_pending_reboot(sections.get("PENDING_REBOOT", ""), vm_id)
     events += parse_wuauserv_state(sections.get("WUAUSERV", ""), vm_id)
     events += parse_disk_usage(sections.get("DISK_USAGE", ""), vm_id)
-    return events
+    ext_events, ext_findings = parse_patch_extension_status(
+        sections.get("EXT_STATUS", ""), vm_id, Source.GUEST_WINDOWS,
+        extension_version=sections.get("EXT_VERSION", "").strip() or None,
+    )
+    events += ext_events
+    return events, ext_findings

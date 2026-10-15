@@ -39,7 +39,7 @@ external credentials to *run against a live environment*:
 | Layer | Status |
 |---|---|
 | Fingerprinting, clustering, rule engine, advisor, precision gate | Fully self-contained. No credentials of any kind. Exercised end-to-end by the test suite. |
-| Guest log parsers (`collectors/guest_linux.py`, `guest_windows.py`) | Pure functions over real dpkg/apt/yum/CBS/WindowsUpdate log text - unit-tested directly, no VM needed. |
+| Guest log parsers (`collectors/guest_linux.py`, `guest_windows.py`) | Pure functions over real dpkg/apt/yum/CBS/WindowsUpdate log text, plus the Azure patch extension's own status file (`collectors/patch_extension_status.py`, shared by both OSes) - unit-tested directly, no VM needed. |
 | Azure / Datadog collectors | Real SDK calls (`azure-mgmt-resourcegraph`, `azure-monitor-query`, `azure-mgmt-compute`, `datadog-api-client`), correctly shaped against each service's actual API - but they need a real subscription / workspace / Datadog org to call against. |
 | Deep RCA agent (`pipeline/rca_agent.py`) | Real multi-provider LLM integration (Anthropic by default, or any provider in `shared/src/llm/catalog.py` - OpenAI, Azure OpenAI, Gemini, Grok, Qwen, DeepSeek, Ollama, LM Studio) via strict tool-use / schema-enforced output. Which one is active is a platform-wide admin setting on the AgentMesh Portal's Admin → AI Providers screen (`portal/api/routers/ai_providers.py`) - unset there, this falls back to `ANTHROPIC_API_KEY` (or an `ant auth login` profile), then to a clearly-labeled scripted stand-in (see below). |
 | API, DB, reporting, scheduler | Fully self-contained. SQLite by default; point at Postgres for production. |

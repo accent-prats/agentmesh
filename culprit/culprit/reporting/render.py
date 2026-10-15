@@ -185,20 +185,29 @@ def render_settings_html() -> str:
     return template.render(active="settings")
 
 
-def render_machine_html(cluster, member, result, outcome=None, collection_gaps=None) -> str:
+def render_machine_html(cluster, member, result, outcome=None, collection_gaps=None, patch_extension_status=None) -> str:
     """The third report altitude (proposal Section 8): one machine's own
     timeline deviation from its cluster's representative, plus its own
     `PatchOutcome` (status, error, failed KB/package) when this run saved
     one - see MachineOutcomeRecord; `outcome` is None for runs diagnosed
     before that existed, not an error. Lives three levels below the app
     root (runs/{id}/machines/{vm_id}.html), hence the deeper nav_prefix -
-    see render_fleet_report_html's comment."""
+    see render_fleet_report_html's comment.
+
+    `patch_extension_status` (collectors/patch_extension_status.py's own
+    structured findings, persisted on MachineOutcomeRecord) is evidence
+    that WAS collected - the guest patch extension's own account of what
+    happened - unlike `collection_gaps`, which is evidence that could NOT
+    be collected. Kept as a separate card for exactly that reason; see
+    extension_status_view.py for the display mapping."""
     from culprit.reporting.evidence_gaps import parse_evidence_gaps
+    from culprit.reporting.extension_status_view import build_extension_finding_views
 
     template = _env().get_template("machine.html.j2")
     return template.render(
         cluster=cluster, member=member, result=result, outcome=outcome,
         evidence_gaps=parse_evidence_gaps(collection_gaps or []),
+        extension_findings=build_extension_finding_views(patch_extension_status or []),
         active="console", nav_prefix="../../../",
     )
 

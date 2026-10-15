@@ -86,10 +86,50 @@ def test_full_output_sectioning_and_parsing():
         "---KERNELS---\nii  linux-image-5.15.0-91-generic\n5.15.0-91-generic\n\n"
         "---SUBMAN---\nOverall Status: Current\n"
     )
-    events = parse_linux_output(stdout, vm_id="vm-1")
+    events, findings = parse_linux_output(stdout, vm_id="vm-1")
     kinds = {e.kind for e in events}
     assert "package_manager_log" in kinds
     assert "disk_usage" in kinds
     assert "lock_state" in kinds
     assert not any(e.kind == "repo_check" for e in events)  # 200 is silent
+    assert findings == []  # no EXT_STATUS section in this fixture
+
+
+def test_ext_status_section_is_sliced_out_and_handed_to_the_shared_parser():
+    """parse_linux_output's job for EXT_STATUS is just section-slicing -
+    the actual JSON parsing is patch_extension_status.py's own, already
+    covered by tests/test_patch_extension_status.py. A real payload (not
+    just the empty/"no file" case) proves the section genuinely reaches
+    that parser and its findings/events come back out, not just that an
+    empty-in/empty-out path happens to match."""
+    import json
+
+    status_json = json.dumps([{
+        "version": "1.0",
+        "status": {
+            "name": "Microsoft.CPlat.Core.LinuxPatchExtension", "operation": "Installation",
+            "status": "error", "code": 1,
+            "formattedMessage": {"message": "No space left on device while installing kernel package"},
+            "substatus": [],
+        },
+    }])
+    stdout = (
+        "---DPKG_LOG---\n\n"
+        "---APT_HISTORY---\n\n"
+        "---YUM_LOG---\n\n"
+        "---DNF_LOG---\n\n"
+        "---DISK_USAGE---\n\n"
+        "---LOCK_HOLDER---\n\n"
+        "---REPO_CHECK---\n200\n\n"
+        "---KERNELS---\n\n"
+        "---SUBMAN---\n\n"
+        "---EXT_VERSION---\n1.6.71\n\n"
+        "---EXT_STATUS---\n" + status_json + "\n"
+    )
+    events, findings = parse_linux_output(stdout, vm_id="vm-1")
+    assert any(e.kind == "patch_extension_status" for e in events)
+    assert len(findings) == 1
+    assert findings[0]["source"] == "guest_linux"
+    assert findings[0]["extension_version"] == "1.6.71"  # from EXT_VERSION, not the status JSON's own "version": "1.0"
+    assert "No space left on device" in findings[0]["message"]
     assert not any(e.kind == "entitlement_state" for e in events)  # Current is silent

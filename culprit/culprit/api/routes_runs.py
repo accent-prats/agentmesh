@@ -225,5 +225,5 @@ def get_machine_html(run_id: str, vm_name: str):
         detail = repository.get_machine_detail(session, run_id, vm_name)
     if detail is None:
         raise HTTPException(status_code=404, detail=f"Machine {vm_name} not found in run {run_id}")
-    cluster, member, result, outcome, collection_gaps = detail
-    return HTMLResponse(render_machine_html(cluster, member, result, outcome, collection_gaps))
+    cluster, member, result, outcome, collection_gaps, patch_extension_status = detail
+    return HTMLResponse(render_machine_html(cluster, member, result, outcome, collection_gaps, patch_extension_status))
