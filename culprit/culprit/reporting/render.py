@@ -246,7 +246,18 @@ def render_machine_html(cluster, member, result, outcome=None, collection_gaps=N
     `outcome.error_details` (Azure's own `ApiError.details[]`, see
     azure_error_view.py) is the control-plane equivalent - evidence Azure
     itself reported, independent of guest reachability - so it gets its
-    own card too rather than being folded into either of the above."""
+    own card too rather than being folded into either of the above.
+
+    `rca_missing_evidence` (`result.missing_evidence`) is a third,
+    distinct thing from both of the above - the RCA agent's own "here's
+    what I'd need to be more confident" statement, not evidence that
+    failed to collect (`collection_gaps`) or evidence that WAS collected
+    (`patch_extension_status`/`outcome.error_details`). Found missing
+    entirely from this page 2026-10-16 (the user's own screenshot of a
+    15%-confidence machine showed nothing explaining what was thin about
+    it) even though `result` already carries it - reuses the same
+    parse_evidence_gaps/evidence_gap_card the fleet report's own
+    equivalent section already uses, same display, same data."""
     from culprit.reporting.azure_error_view import build_azure_error_views
     from culprit.reporting.evidence_gaps import parse_evidence_gaps
     from culprit.reporting.extension_status_view import build_extension_finding_views
@@ -257,6 +268,7 @@ def render_machine_html(cluster, member, result, outcome=None, collection_gaps=N
         evidence_gaps=parse_evidence_gaps(collection_gaps or []),
         extension_findings=build_extension_finding_views(patch_extension_status or []),
         azure_error_details=build_azure_error_views(outcome.error_details if outcome else []),
+        rca_missing_evidence=parse_evidence_gaps(result.missing_evidence if result else []),
         active="console", nav_prefix="../../../",
     )
 

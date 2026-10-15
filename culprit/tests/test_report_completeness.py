@@ -370,6 +370,52 @@ def test_machine_drill_down_shows_the_machines_own_patch_outcome(client):
     assert "predates per-machine outcome tracking" not in html
 
 
+def test_machine_drill_down_shows_the_real_rca_substance_for_a_rich_cluster(client):
+    """Found 2026-10-16: render_machine_html already received the
+    machine's full RCAResult (causal_chain, ruled_out, remediation -
+    render.py never stripped any of it), but machine.html.j2 only ever
+    rendered 3 of its ~10 fields (title, cause_family, confidence) - a
+    user drilling into a specific machine saw none of the actual
+    reasoning or recommended fix that's already shown on the Fleet
+    Report's cluster card. vm-prd-app-0100 is the boot-full/capacity
+    cluster's representative - has a real causal chain, no ruled-out
+    candidates in this fixture, and a real remediation plan."""
+    test_client, _ = client
+    test_client.post("/runs/demo")
+    run_id = "mc-run-2026-09-26-prod-linux-weekly-0400"
+
+    html = test_client.get(f"/runs/{run_id}/machines/vm-prd-app-0100.html").text
+    assert "Root cause" in html
+    assert "Causal chain" in html
+    assert "Free space on /boot was below threshold at run time" in html
+    assert "Recommended fix" in html
+    assert "Free space on /boot" in html  # the immediate fix's own first step
+    assert "Automation candidate" in html
+    assert "Open in Azure Portal" in html
+    assert 'href="https://portal.azure.com/#@/resource/subscriptions/' in html
+    # 19 machines in this cluster (CLUSTER_SIZES[0]) - this one plus 18 siblings.
+    assert "Other machines with this cause" in html
+    assert "vm-prd-app-0101" in html
+
+
+def test_machine_drill_down_shows_missing_evidence_for_a_thin_cluster(client):
+    """vm-prd-legacy-0601 is the demo's deliberately thin/unresolved
+    machine (collection_gaps for guest_windows + azure_monitor, cluster
+    size 1) - exactly the shape of machine the original bug report
+    screenshotted as "vague." Confirms result.missing_evidence (the RCA
+    agent's own "what I'd need" list) now renders, and that a
+    single-machine cluster correctly omits the sibling-machines section
+    rather than showing an empty one."""
+    test_client, _ = client
+    test_client.post("/runs/demo")
+    run_id = "mc-run-2026-09-26-prod-linux-weekly-0400"
+
+    html = test_client.get(f"/runs/{run_id}/machines/vm-prd-legacy-0601.html").text
+    assert "Low confidence" in html
+    assert "Missing evidence" in html
+    assert "Other machines with this cause" not in html
+
+
 def test_machine_drill_down_404s_for_an_unknown_vm(client):
     test_client, _ = client
     resp = test_client.post("/runs/demo")
