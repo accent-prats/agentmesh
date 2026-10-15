@@ -178,6 +178,63 @@ def test_build_installation_report_prefers_the_failed_bundle_over_a_duplicate_no
     assert vm_2_row.status.value == "succeeded"
 
 
+def test_build_installation_report_dedup_is_case_insensitive():
+    """Found 2026-10-16 (a real tenant run, 3 of 160 failed - nowhere near
+    the RCA cap): discover_failed_machines's vm_id comes from the
+    Resources table's own `id` column, while non_failure_rows's vm_id is
+    derived from the *different* patchinstallationresources table's own
+    `id` (discovery.py::_ALL_PATCH_RESULTS_QUERY). Azure resource IDs are
+    documented case-insensitive for comparison, but the previous dedup
+    check was a bare, case-sensitive set-membership test - a casing
+    difference between these two Resource Graph surfaces (a real,
+    documented Azure RP inconsistency, not something this codebase
+    controls) let the same machine appear twice: once correctly
+    diagnosed via failed_bundles, once as a duplicate "Not yet diagnosed"
+    row from non_failure_rows. Same fixture shape as the sibling test
+    above, except the non_failure_rows entry's vm_id differs only in
+    case from the failed_bundles one."""
+    from culprit.models.cluster import Cluster, ClusterMember, Fingerprint
+    from culprit.models.evidence import EvidenceBundle, MachineIdentity, OSFamily, PatchOutcome
+    from culprit.models.patch_run import PatchRun, TriggerMode
+    from culprit.models.rca import CausalStep, RCAResult, ResultOrigin
+    from culprit.models.report import ClusterReportEntry, FleetReport
+    from culprit.models.taxonomy import CauseFamily
+
+    vm_id = "/subscriptions/S/resourceGroups/RG/providers/Microsoft.Compute/virtualMachines/vm-1"
+    vm_id_different_case = "/subscriptions/s/resourcegroups/rg/providers/microsoft.compute/virtualmachines/vm-1"
+    run = PatchRun(run_id="run-1", maintenance_configuration_id="mc-1", subscription_id="s", scope_name="scope-a",
+                   started_at=datetime(2026, 1, 1, tzinfo=timezone.utc), total_machines=10, trigger_mode=TriggerMode.AD_HOC)
+
+    bundle = EvidenceBundle(
+        run_id="run-1",
+        machine=MachineIdentity(vm_id=vm_id, vm_name="vm-1", resource_group="RG", subscription_id="S", os_family=OSFamily.LINUX),
+        outcome=PatchOutcome(status="Failed", error_code="PackageManagerFailure"),
+        collection_started_at=datetime(2026, 1, 1, tzinfo=timezone.utc),
+    )
+    cluster = Cluster(
+        cluster_id="c1", run_id="run-1", cluster_key="key:c1",
+        fingerprint=Fingerprint(error_code_normalized="x", os_family=OSFamily.LINUX, failing_target=""),
+        members=[ClusterMember(vm_id=vm_id, vm_name="vm-1", resource_group="RG", subscription_id="S")],
+        representative_vm_id=vm_id,
+    )
+    result = RCAResult(
+        cluster_id="c1", origin=ResultOrigin.RULE_ENGINE, cause_family=CauseFamily.CAPACITY, title="Disk full", confidence=0.9,
+        causal_chain=[CausalStep(order=1, statement="x", evidence_refs=["r"])],
+    )
+    fleet_report = FleetReport(run=run, total_machines=10, total_failed=1, total_clusters=1,
+                                entries=[ClusterReportEntry(cluster=cluster, result=result)])
+
+    non_failure_rows = [
+        {"vm_id": vm_id_different_case, "vm_name": "vm-1", "resource_group": "rg", "subscription_id": "s",
+         "status": "Failed", "started_at": None, "ended_at": None},  # same VM, different case - must still be dropped
+    ]
+
+    report = build_installation_report(run, [bundle], fleet_report, non_failure_rows, excluded_count=0)
+
+    assert len(report.rows) == 1
+    assert report.rows[0].cause_family == CauseFamily.CAPACITY
+
+
 def test_build_installation_report_carries_raw_error_detail_for_a_failed_row_beyond_the_rca_cap():
     """Found in review: discover_failed_machines caps at
     _MAX_MACHINES_PER_RUN (200), but the bulk full-fleet query has no
@@ -303,6 +360,33 @@ def test_demo_run_builds_a_consistent_installation_report(client):
 
     unresponsive_rows = [r for r in ir["rows"] if r["status"] == "unresponsive_or_shutdown"]
     assert len(unresponsive_rows) > 0
+
+
+def test_installation_report_html_explains_a_failed_row_with_no_cause_family():
+    """A FAILED row that never went through the deep-RCA pipeline (today
+    this only ever happens via non_failure_rows - see
+    build_installation_report's own docstring and installation_report.py's
+    comment on the RCA cap / discovery-timing-gap case) used to render a
+    flat, dead-end "Not yet diagnosed" with no explanation and no next
+    step. Must now explain why and point at the actual fix (re-run live
+    analysis), reusing this page's existing info-icon-tooltip convention
+    (the "Excluded (i)" tile)."""
+    from culprit.models.installation_report import InstallationOutcomeRow, InstallationReport
+    from culprit.models.patch_run import PatchRun, TriggerMode
+    from culprit.reporting.render import render_installation_report_html
+
+    run = PatchRun(run_id="run-1", maintenance_configuration_id="mc-1", subscription_id="s", scope_name="scope-a",
+                   started_at=datetime(2026, 1, 1, tzinfo=timezone.utc), total_machines=1, trigger_mode=TriggerMode.AD_HOC)
+    row = InstallationOutcomeRow(
+        vm_id="/subscriptions/s/resourceGroups/rg/providers/Microsoft.Compute/virtualMachines/vm-1",
+        vm_name="vm-1", status=InstallationStatus.FAILED, subscription_id="s", resource_group="rg",
+    )
+    report = InstallationReport(run=run, rows=[row], excluded_count=0)
+
+    html = render_installation_report_html(report)
+    assert "Not included in this scan" in html
+    assert "Run live analysis again" in html
+    assert "Not yet diagnosed" not in html
 
 
 def test_installation_report_html_renders_all_four_categories(client):

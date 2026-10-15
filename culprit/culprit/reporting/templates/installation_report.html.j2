@@ -88,7 +88,7 @@
             <a href="report.html" class="text-brand hover:text-brand-dark font-medium text-xs">{{ row.cause_family.value.replace('_', ' ')|capitalize }}</a>
             <span class="block text-[11px] text-gray-400">{{ "%.0f"|format(row.rca_confidence * 100) }}% confidence</span>
             {% elif row.status.value == 'failed' %}
-            <span class="text-xs text-gray-400">Not yet diagnosed</span>
+            <span class="text-xs text-gray-400" title="This machine wasn't part of this run's deep root-cause scan - either its patch result posted after that scan's own discovery step had already run, or this is a very large fleet beyond the per-run analysis cap. Run live analysis again now to diagnose it.">Not included in this scan <i data-lucide="info" class="w-2.5 h-2.5 inline -mt-0.5"></i></span>
             {% else %}
             <span class="text-xs text-gray-300">&mdash;</span>
             {% endif %}

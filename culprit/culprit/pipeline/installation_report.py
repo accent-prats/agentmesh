@@ -90,9 +90,19 @@ def build_installation_report(
             cause_family=cause_family, rca_title=title, rca_confidence=confidence, cluster_id=cluster_id,
         ))
 
-    covered_vm_ids = {b.machine.vm_id for b in failed_bundles}
+    # .lower() on both sides - found 2026-10-16: discover_failed_machines's
+    # vm_id comes from the Resources table's own `id` column, while
+    # non_failure_rows's vm_id is derived from the *different*
+    # patchinstallationresources table's own `id` (discovery.py's
+    # _ALL_PATCH_RESULTS_QUERY). Both represent the same VM, but Azure
+    # resource IDs are only documented case-*insensitive* for comparison -
+    # a bare, case-sensitive set-membership check here let a casing
+    # mismatch between those two Resource Graph surfaces silently fail
+    # open, showing the same machine twice (once correctly diagnosed via
+    # failed_bundles, once as a duplicate "Not yet diagnosed" row here).
+    covered_vm_ids = {b.machine.vm_id.lower() for b in failed_bundles}
     for r in non_failure_rows:
-        if r["vm_id"] in covered_vm_ids:
+        if r["vm_id"].lower() in covered_vm_ids:
             continue
         # error_code/error_message come straight from the bulk query
         # (discovery.py::_ALL_PATCH_RESULTS_QUERY now projects them) -
