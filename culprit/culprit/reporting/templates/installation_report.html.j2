@@ -68,7 +68,7 @@
           data-status="{{ row.status.value }}" data-name="{{ row.vm_name|lower }}"
           data-subscription="{{ row.subscription_id|lower }}" data-resource-group="{{ row.resource_group|lower }}"
           data-date="{{ row.started_at.isoformat() if row.started_at else '' }}">
-          <td class="px-5 py-3.5 font-medium text-gray-900 truncate ir-name-cell" data-full-name="{{ row.vm_name }}">{{ row.vm_name }}</td>
+          <td class="px-5 py-3.5 font-medium text-gray-900 truncate ir-truncate-cell" data-full-text="{{ row.vm_name }}">{{ row.vm_name }}</td>
           <td class="px-5 py-3.5">
             {% if row.status.value == 'succeeded' %}
             <span class="text-[10px] font-semibold uppercase tracking-wide px-2 py-0.5 rounded-full bg-emerald-50 text-emerald-700 border border-emerald-200">Succeeded</span>
@@ -81,8 +81,8 @@
             {% endif %}
           </td>
           <td class="px-5 py-3.5 text-gray-600 whitespace-nowrap">{{ row.started_at.strftime('%Y-%m-%d %H:%M UTC') if row.started_at else '—' }}</td>
-          <td class="px-5 py-3.5 text-gray-500 truncate" title="{{ row.subscription_id }}">{{ row.subscription_id }}</td>
-          <td class="px-5 py-3.5 text-gray-600 truncate">{{ row.resource_group }}</td>
+          <td class="px-5 py-3.5 text-gray-500 truncate ir-truncate-cell" data-full-text="{{ row.subscription_id }}">{{ row.subscription_id }}</td>
+          <td class="px-5 py-3.5 text-gray-600 truncate ir-truncate-cell" data-full-text="{{ row.resource_group }}">{{ row.resource_group }}</td>
           <td class="px-5 py-3.5">
             {% if row.status.value == 'failed' and row.cause_family %}
             <a href="report.html" class="text-brand hover:text-brand-dark font-medium text-xs">{{ row.cause_family.value.replace('_', ' ')|capitalize }}</a>
@@ -130,15 +130,15 @@
     doesn't currently resolve which specific machines that is, so no rows are shown for it.
   </p>
 
-  <!-- Shared floating tooltip for the (often-truncated) Name column - one
-       node, JS-positioned per hover rather than one per row. position:fixed
-       so the table card's own overflow-hidden (there only to clip the
-       table's square corners to its rounded-2xl border) never cuts it off
-       near the table's edges. -->
-  <div id="ir-name-tooltip" class="hidden fixed z-50 items-center gap-2 max-w-xs bg-gray-900 text-white text-xs rounded-lg px-3 py-2 shadow-lg shadow-black/20">
-    <span id="ir-name-tooltip-text" class="font-mono break-all"></span>
-    <button type="button" id="ir-name-tooltip-copy" class="eg-copy-btn shrink-0 inline-flex items-center gap-1 text-gray-300 hover:text-white transition-colors"
-      data-copy="" title="Copy machine name">
+  <!-- Shared floating tooltip for every often-truncated column (Name,
+       Subscription, Resource group) - one node, JS-positioned per hover
+       rather than one per cell. position:fixed so the table card's own
+       overflow-hidden (there only to clip the table's square corners to
+       its rounded-2xl border) never cuts it off near the table's edges. -->
+  <div id="ir-cell-tooltip" class="hidden fixed z-50 items-center gap-2 max-w-xs bg-gray-900 text-white text-xs rounded-lg px-3 py-2 shadow-lg shadow-black/20">
+    <span id="ir-cell-tooltip-text" class="font-mono break-all"></span>
+    <button type="button" id="ir-cell-tooltip-copy" class="eg-copy-btn shrink-0 inline-flex items-center gap-1 text-gray-300 hover:text-white transition-colors"
+      data-copy="" title="Copy to clipboard">
       <i data-lucide="copy" class="eg-copy-icon w-3 h-3"></i><span class="eg-copy-label text-[10px]">Copy</span>
     </button>
   </div>
@@ -264,24 +264,28 @@ if (irRows.length > 0) {
   updateIRSortIndicators();
 }
 
-// Name column hover tooltip + copy - found needed 2026-10-15: a long VM
-// name (e.g. "tcx-tenant-azsec05-prd-CorpSomething") was simply
-// unreadable once CSS `truncate` clipped it, with no way to see or copy
-// the full name at all. Only fires when the cell is actually truncated
-// (scrollWidth > clientWidth) - a name that already fits needs neither.
+// Truncated-cell hover tooltip + copy, shared by Name, Subscription, and
+// Resource group - found needed 2026-10-15: a long value (a VM name, or
+// a subscription GUID) was simply unreadable once CSS `truncate` clipped
+// it, with no way to see or copy the full value at all (the Subscription
+// column's old plain `title=` attribute showed a native tooltip but had
+// no copy affordance - this replaces that with the same rich tooltip
+// every truncatable column now gets). Only fires when the cell is
+// actually truncated (scrollWidth > clientWidth) - a value that already
+// fits needs neither.
 (function () {
-  const tooltip = document.getElementById('ir-name-tooltip');
+  const tooltip = document.getElementById('ir-cell-tooltip');
   if (!tooltip) return;
-  const textEl = document.getElementById('ir-name-tooltip-text');
-  const copyBtn = document.getElementById('ir-name-tooltip-copy');
+  const textEl = document.getElementById('ir-cell-tooltip-text');
+  const copyBtn = document.getElementById('ir-cell-tooltip-copy');
   let hideTimer = null;
 
   function show(cell) {
     if (cell.scrollWidth <= cell.clientWidth + 1) return;
     clearTimeout(hideTimer);
-    const name = cell.dataset.fullName;
-    textEl.textContent = name;
-    copyBtn.dataset.copy = name;
+    const text = cell.dataset.fullText;
+    textEl.textContent = text;
+    copyBtn.dataset.copy = text;
     tooltip.classList.remove('hidden');
     tooltip.classList.add('flex');
 
@@ -303,7 +307,7 @@ if (irRows.length > 0) {
     }, 150);
   }
 
-  document.querySelectorAll('.ir-name-cell').forEach(function (cell) {
+  document.querySelectorAll('.ir-truncate-cell').forEach(function (cell) {
     cell.addEventListener('mouseenter', function () { show(cell); });
     cell.addEventListener('mouseleave', scheduleHide);
   });
