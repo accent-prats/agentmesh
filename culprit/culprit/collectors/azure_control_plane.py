@@ -43,9 +43,22 @@ patchinstallationresources
 | where properties.startDateTime >= datetime('{window_start}')
 | where properties.startDateTime <= datetime('{window_end}')
 | project id, properties
-| order by properties.startDateTime desc
+| order by tostring(properties.startDateTime) desc
 | limit 1
 """
+# `properties` is Resource Graph's dynamic-typed column, so a bare
+# `order by properties.startDateTime` fails every real invocation with
+# "(InvalidQuery) ... order operator: key can't be of dynamic type" -
+# `where`/comparison operators tolerate a dynamic operand, `order by`'s
+# sort key does not. That exception was being caught by collect()'s own
+# blanket except below and silently degrading every real machine's
+# PatchOutcome to normalize.py's generic "Unknown" placeholder - found
+# live, reported as "status is coming as unknown" on a real tenant run.
+# Cast to a string, not datetime() - discovery.py's own
+# _ALL_PATCH_RESULTS_QUERY already relies on the same fact (ISO-8601
+# string lexical ordering matches chronological ordering) for its
+# `arg_max`, so this matches an already-proven pattern rather than
+# introducing a second cast convention.
 
 
 class AzureControlPlaneCollector(Collector):
