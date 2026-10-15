@@ -282,7 +282,10 @@ def render_email_report_html(report: FleetReport, top_entries: list, report_url:
     duplicated so the email's "top findings" list always matches the
     Teams/Slack digest's."""
     template = _env().get_template("email_report.html.j2")
-    return template.render(report=report, top_entries=top_entries, report_url=report_url, note=note, requested_by=requested_by)
+    return template.render(
+        report=report, top_entries=top_entries, report_url=report_url, note=note, requested_by=requested_by,
+        cluster_date_ranges=_cluster_date_ranges(report),
+    )
 
 
 def render_login_html(next_path: str = "/", error: str = "", show_token_login: bool = True) -> str:

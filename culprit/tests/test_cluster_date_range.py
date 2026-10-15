@@ -25,7 +25,7 @@ from culprit.models.patch_run import PatchRun, TriggerMode
 from culprit.models.rca import CausalStep, RCAResult, ResultOrigin
 from culprit.models.report import ClusterReportEntry, FleetReport, MachineRow
 from culprit.models.taxonomy import CauseFamily
-from culprit.reporting.render import _cluster_date_ranges, render_fleet_report_html
+from culprit.reporting.render import _cluster_date_ranges, render_email_report_html, render_fleet_report_html
 
 
 def _row(vm_id: str, cluster_id: str, started_at: datetime | None) -> MachineRow:
@@ -132,3 +132,41 @@ def test_fleet_report_omits_the_date_label_when_no_machine_has_a_dated_outcome()
     report = report.model_copy(update={"entries": [_entry("cluster-a")]})
     html = render_fleet_report_html(report)
     assert "patched" not in html
+
+
+def test_a_machine_with_an_outcome_but_no_started_at_is_excluded_like_a_missing_outcome():
+    """Distinct from outcome=None entirely (test_machines_with_no_outcome_
+    are_excluded_not_crashed_on above, which never constructs a
+    PatchOutcome at all) - this one builds a real PatchOutcome whose own
+    started_at field is None (e.g. a row synced from an outcome that
+    predates per-machine timestamp tracking), proving the same `if
+    row.outcome and row.outcome.started_at` guard in _cluster_date_ranges
+    handles both sub-conditions, not just the simpler one."""
+    report = _report([
+        MachineRow(
+            vm_id="vm-1", vm_name="vm-1", cluster_id="cluster-a", cause_family=CauseFamily.SOURCE_ENTITLEMENT,
+            title="t", confidence=0.9, is_actionable=False, has_immediate_fix=False,
+            outcome=PatchOutcome(status="Failed", started_at=None),
+        ),
+        _row("vm-2", "cluster-a", datetime(2026, 10, 10, tzinfo=timezone.utc)),
+    ])
+    ranges = _cluster_date_ranges(report)
+    assert ranges["cluster-a"] == (date(2026, 10, 10), date(2026, 10, 10))
+
+
+def test_email_report_also_shows_the_per_cluster_date_range():
+    """The emailed digest has its own, separately-worded cluster subtitle
+    line (no "origin" field, different copy) - found in review that it
+    had its own version of the exact same "same title, different cluster"
+    ambiguity the Fleet Report page's label was built to resolve, and
+    hadn't gotten the same treatment. Reuses the identical
+    _cluster_date_ranges data, no new computation."""
+    report = _report([
+        _row("vm-1", "cluster-a", datetime(2026, 10, 8, tzinfo=timezone.utc)),
+        _row("vm-2", "cluster-a", datetime(2026, 10, 13, tzinfo=timezone.utc)),
+    ])
+    entry = _entry("cluster-a")
+    report = report.model_copy(update={"entries": [entry]})
+    html = render_email_report_html(report, top_entries=[entry], report_url=None, note="", requested_by="")
+    assert "patched 2026-10-08" in html
+    assert "2026-10-13" in html

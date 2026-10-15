@@ -61,8 +61,10 @@
       {{ entry.cluster.size }} machine{{ 's' if entry.cluster.size != 1 else '' }} &mdash; {{ entry.result.title }}
       {% if entry.recurrence_badge %}<span style="color:#dc2626; font-weight:400;">&nbsp;{{ entry.recurrence_badge }}</span>{% endif %}
     </p>
+    {% set date_range = cluster_date_ranges.get(entry.cluster.cluster_id) %}
     <p style="margin:2px 0 0 0; font-size:12px; color:#6b7280;">
       Confidence {{ '%.0f'|format(entry.result.confidence * 100) }}% &middot; {{ entry.result.cause_family.value }}
+      {%- if date_range %} &middot; patched {{ date_range[0].strftime('%Y-%m-%d') }}{% if date_range[1] != date_range[0] %}&ndash;{{ date_range[1].strftime('%Y-%m-%d') }}{% endif %}{% endif %}
     </p>
   </td></tr>
   {% endfor %}

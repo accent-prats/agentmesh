@@ -37,24 +37,35 @@ def test_outcome_from_install_result_builds_a_correct_patch_outcome():
     props = {
         "status": "Failed",
         "errorCode": "PackageManagerFailure",
+        "error": {"details": "repo unreachable: connection timed out"},
         "startDateTime": "2026-10-10T04:00:00Z",
         "lastModifiedDateTime": "2026-10-10T04:18:00Z",
         "maximumDuration": 180,
         "rebootStatus": "NotNeeded",
         "patches": [
             {"patchName": "linux-image-5.15.0-91-generic", "state": "Failed", "kbId": None},
+            {"patchName": "KB5044284", "state": "Failed", "kbId": "KB5044284"},
             {"patchName": "curl", "state": "Installed", "kbId": None},
         ],
     }
     outcome = _outcome_from_install_result(props)
     assert outcome.status == "Failed"
     assert outcome.error_code == "PackageManagerFailure"
-    assert outcome.packages_failed == ["linux-image-5.15.0-91-generic"]
+    assert outcome.error_message == "repo unreachable: connection timed out"
+    assert outcome.packages_failed == ["linux-image-5.15.0-91-generic", "KB5044284"]
     assert outcome.packages_installed == ["curl"]
+    assert outcome.kbs_failed == ["KB5044284"]
     assert outcome.reboot_status == "NotNeeded"
     assert outcome.window_minutes == 180
     assert outcome.started_at == datetime(2026, 10, 10, 4, 0, tzinfo=timezone.utc)
     assert outcome.ended_at == datetime(2026, 10, 10, 4, 18, tzinfo=timezone.utc)
+
+
+def test_outcome_from_install_result_handles_a_non_dict_error_field():
+    """`error` isn't always a dict - a plain string or missing field must
+    degrade to no error_message, not raise."""
+    assert _outcome_from_install_result({"error": "a plain string, not a dict"}).error_message is None
+    assert _outcome_from_install_result({}).error_message is None
 
 
 def test_outcome_from_install_result_defaults_status_to_unknown_only_when_the_field_is_truly_absent():
