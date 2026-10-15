@@ -48,7 +48,7 @@ gets it for free.
 ## Run the tests
 
 ```bash
-cd culprit && pytest -q          # 190+ tests, fully offline, no credentials needed
+cd culprit && pytest -q          # 380+ tests, fully offline, no credentials needed
 python -m pytest shared/tests -q  # shared/src/llm/'s adapter tests, also offline
 cd portal/ui && npm install && npm run build   # tsc && vite build - the type-check is the half that catches things
 ```

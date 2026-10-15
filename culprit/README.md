@@ -44,6 +44,7 @@ external credentials to *run against a live environment*:
 | Deep RCA agent (`pipeline/rca_agent.py`) | Real multi-provider LLM integration (Anthropic by default, or any provider in `shared/src/llm/catalog.py` - OpenAI, Azure OpenAI, Gemini, Grok, Qwen, DeepSeek, Ollama, LM Studio) via strict tool-use / schema-enforced output. Which one is active is a platform-wide admin setting on the AgentMesh Portal's Admin → AI Providers screen (`portal/api/routers/ai_providers.py`) - unset there, this falls back to `ANTHROPIC_API_KEY` (or an `ant auth login` profile), then to a clearly-labeled scripted stand-in (see below). |
 | API, DB, reporting, scheduler | Fully self-contained. SQLite by default; point at Postgres for production. |
 | Azure/Datadog **connection settings** (`/settings` screen) | Fully self-contained - a real settings UI (encrypted-at-rest storage, masked GET responses, a genuine "Test connection" that calls the provider) with no credentials of its own required to use it. What it configures (a real subscription, a real Datadog org) is what needs credentials, not the screen itself. |
+| **Email a report** (`/settings`'s "Email" tab, a run's own "Email report" widget) | Real SMTP send (`notifications/email_sender.py`), same encrypted-at-rest/masked-GET/real-Test-connection treatment as Azure/Datadog above - needs a real SMTP server+credentials to send against, nothing else to configure. Every send attempt, success or failure, is logged (`GET /settings/smtp/log`). |
 | Agent memory (`memory/`) | Real mem0 integration, verified end to end against a live mem0/Chroma/sentence-transformers install (remember, semantic recall, forget-on-wrong-verdict) - but off by default and a graceful no-op without `pip install 'culprit[memory]'`. Self-hosted only: on-disk Chroma, a local embedder, no data leaves the host. See `culprit/memory/__init__.py` and RUNBOOK.md §8. |
 
 **The demo and the entire test suite run with zero credentials.** Where a
@@ -89,7 +90,7 @@ on `/settings` - see "Scheduling" in [`RUNBOOK.md`](RUNBOOK.md).
 python -m venv .venv && source .venv/bin/activate   # or .venv\Scripts\activate on Windows
 pip install -e ".[dev]"
 
-pytest                          # 204 tests, all offline, ~2s (3 need pip install -e ".[azure]" to run instead of skip)
+pytest                          # 381 tests, all offline, fast (5 need pip install -e ".[azure]" to run instead of skip)
 
 python -m culprit.demo.run_demo # runs the exact 312/47/6-cluster scenario
                                  # from the proposal end to end, writes
@@ -118,11 +119,18 @@ uvicorn culprit.api.main:app --reload
 # PUT  /settings/azure, /settings/datadog     - save
 # POST /settings/azure/test, /settings/datadog/test  - real connection test
 # GET/PUT /settings/schedule   - recurring live-run config (cron, window, scope) - see Scheduling below
+# GET/PUT /settings/gate        - admin-editable precision-gate threshold/min_sample, within a hard floor
+# GET  /settings/gate/history   - every gate change ever made (who, when, to what)
+# GET/PUT /settings/smtp        - SMTP server + default recipient list for "Email report"
+# POST /settings/smtp/test      - real connection test
+# GET  /settings/smtp/log       - every report email ever sent (JSON)
 # POST /runs/demo             - trigger the demo scenario, get a FleetReport back
 # POST /runs/live             - discover + diagnose real failed machines (needs /settings configured)
 # GET  /runs/{run_id}/report - the same report, JSON
 # GET  /runs/{run_id}/report.html
-# GET  /runs/{run_id}/machines/{vm_name}.html  - one machine's own patch outcome (status, error, failed KB/package) plus its deviation from its cluster
+# POST /runs/{run_id}/email    - email a run's report to a recipient list (needs SMTP configured)
+# GET  /runs/{run_id}/installation-report, /installation-report.html  - the Azure Update Manager-style full-fleet view (every machine, not just the failures this report clusters)
+# GET  /runs/{run_id}/machines/{vm_name}.html  - one machine's own patch outcome (status, error, failed KB/package), its guest patch extension's own status, plus its deviation from its cluster
 # POST /verdicts              - submit an engineer verdict on an RCA card
 # GET  /precision, /precision.html  - per-cause-family precision + Phase 2 gate status (JSON/HTML)
 # POST /remediation/runs/{run_id}/clusters/{cluster_id}/execute  - run the one gated automated action (needs CULPRIT_REMEDIATION_ENABLED=true)
@@ -156,13 +164,14 @@ culprit/
   retrieval/      lightweight RAG over vendor docs + this org's resolved-incident history
   memory/         mem0-backed episodic memory (optional - pip install 'culprit[memory]')
   db/             SQLAlchemy persistence (SQLite by default, Postgres-ready)
-  reporting/      fleet report model, HTML rendering, Teams/Slack notification
+  reporting/      fleet report + installation report models, HTML rendering, Teams/Slack notification
+  notifications/  SMTP email sending for "Email report" (separate from reporting/'s Teams/Slack digest)
   remediation/    the one gated, hardcoded automated action (disk cleanup) and its Run Command execution
   api/            FastAPI app
   scheduler/      cron (scheduled + pre-flight) and Event Grid webhook receiver
   security/       RBAC role definition, secret/PII scrubbing
   demo/           the exact proposal scenario + scripted RCA fallback + run_demo.py
-tests/            204 tests, fully offline
+tests/            381 tests, fully offline
 ```
 
 See [`ARCHITECTURE.md`](ARCHITECTURE.md) for how each module maps to the

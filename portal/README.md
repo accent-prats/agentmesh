@@ -65,9 +65,12 @@ portal/
 │       │   ├── Login.tsx         # Sign-in page
 │       │   ├── AppLauncher.tsx   # App grid with role-based card visibility
 │       │   └── Admin.tsx         # User Management + AI Providers tabs
+│       ├── components/
+│       │   └── ChangePasswordModal.tsx
 │       ├── lib/
 │       │   ├── api.ts            # fetchApps(), fetchMe(), login(), getAIProviders()/saveAIProvider()/...
-│       │   └── auth.ts           # saveTokens(), clearTokens(), buildAppUrl()
+│       │   ├── auth.ts           # saveTokens(), clearTokens(), buildAppUrl()
+│       │   └── growthbook.ts     # GrowthBook SDK init for the UI (flags, experiment attrs)
 │       └── main.tsx
 │
 ├── Dockerfile                 # Two-stage Alpine build (python:3.12-alpine)
@@ -85,11 +88,16 @@ The Portal API validates credentials against its own `users` table and issues a 
 ```json
 {
   "sub": "<user-uuid>",
-  "role": "admin | user",
+  "email": "<user-email>",
+  "role": "admin | user | ci_service | read_only",
+  "full_name": "<user-full-name>",
   "app_access": ["culprit"],
+  "type": "access",
   "exp": "<timestamp>"
 }
 ```
+
+`type` distinguishes this from a `refresh` token (`POST /api/auth/refresh`, longer-lived, carries only `sub`/`type`/`exp`) and from the short-lived `service` tokens another app mints for itself (see [AI Providers](#ai-providers)) — `get_current_user` rejects any token whose `type` isn't `"access"`.
 
 ### 2. Token storage
 
@@ -106,6 +114,10 @@ https://portal.local/culprit/?auth_token=eyJhbGci...
 ### 4. Token acceptance in the target app
 
 Culprit validates the JWT (same signing secret, `CULPRIT_PORTAL_JWT_SECRET`) on its first request, converts it into its own session cookie, and drops the query param from the URL bar. The user never sees a second login page.
+
+### 5. Renewal round-trip
+
+If a sub-app's own token/cookie expires, it can redirect the user back to the Portal with `?return=<path>` (`portal/ui/src/App.tsx`). Once the user is authenticated at the Portal (immediately, if their Portal session is still valid), the Portal bounces them straight back to that path with a freshly-minted `auth_token`, re-running step 3 — no app needs its own re-login page, only a redirect back to `/`.
 
 ---
 
@@ -176,13 +188,19 @@ The real model call happens directly from the consuming app to the provider — 
 | Variable | Default | Description |
 |----------|---------|-------------|
 | `DATABASE_URL` | `postgresql+asyncpg://portal:portal@postgres:5432/portal` | Portal's own PostgreSQL database |
-| `SECRET_KEY` | — | JWT signing secret — **must match** `CULPRIT_PORTAL_JWT_SECRET` in Culprit's config for SSO to work |
+| `SECRET_KEY` | `change-me-in-production` | JWT signing secret — **must match** `CULPRIT_PORTAL_JWT_SECRET` in Culprit's config for SSO to work |
+| `ACCESS_TOKEN_EXPIRE_MINUTES` | `60` | Access-token lifetime (`portal/security.py`) |
+| `REFRESH_TOKEN_EXPIRE_DAYS` | `7` | Refresh-token lifetime (`portal/security.py`) |
 | `PORTAL_ENCRYPTION_KEY` | insecure dev-only default | Encrypts AI provider secrets saved on Admin → AI Providers at rest (Fernet, `portal/crypto.py`) — set a real value before saving any real provider API key |
 | `PORTAL_ADMIN_EMAIL` | `admin@example.com` | Email for the auto-seeded first admin account |
 | `PORTAL_ADMIN_PASSWORD` | `ChangeMe123!` | Password for the auto-seeded first admin account — change this before any real deployment |
+| `CULPRIT_PUBLIC_URL` | `/culprit/` | URL the Culprit app card on the launcher points to (`portal/api/routers/apps.py`) |
 | `GROWTHBOOK_API_HOST` | `http://growthbook:3100` | Internal GrowthBook SDK API URL |
 | `GROWTHBOOK_CLIENT_KEY` | `sdk-` | GrowthBook SDK connection key |
+| `GROWTHBOOK_REFRESH_INTERVAL` | `60` | Seconds between GrowthBook flag-config refreshes (`portal/api/main.py`) |
+| `ENVIRONMENT` | `production` | Environment label passed to the feature-flag middleware (`shared/src/feature_flags`) |
 | `LOG_LEVEL` | `info` | `debug` \| `info` \| `warning` \| `error` |
+| `LOG_FORMAT` | `json` | `json` \| `console` — set `console` for human-readable local dev logs (`portal/logging_config.py`) |
 
 The seeded admin credentials are a **development convenience only** — rotate the password (or set `PORTAL_ADMIN_PASSWORD` before first startup) in any deployment that isn't a throwaway demo.
 
@@ -203,6 +221,6 @@ The Portal creates its own schema and seeds its first admin user on startup (`po
 
 **Ports (internal Docker network):**
 - Portal API: `8000`
-- Culprit API: `8090`
+- Culprit API: `8000` (own container — exposed to the host separately as `8010` for direct/local access, see repo-root `docker-compose.yml`)
 
 Both are exposed to users via the nginx reverse proxy on `portal.local`.

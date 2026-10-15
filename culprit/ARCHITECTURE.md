@@ -56,10 +56,16 @@ distinguishes real from fixture:
   Linux `Syslog` around the window.
 - `guest_linux.py` / `guest_windows.py` - Run Command with a **fixed,
   reviewed, read-only script** (never arbitrary execution), plus real
-  regex parsers for dpkg/apt/yum/CBS/WindowsUpdate log formats. The
-  parsers are pure functions, unit-tested directly against real log text
-  in `tests/test_guest_linux_parsers.py` / `test_guest_windows_parsers.py`
-  without needing a live VM.
+  regex parsers for dpkg/apt/yum/CBS/WindowsUpdate log formats, and -
+  the single richest signal either script reads - the guest's own Azure
+  patch extension status file (`collectors/patch_extension_status.py`,
+  shared by both OSes since the Azure VM extension handler status schema
+  is OS-agnostic): the structured success/error/substatus account from
+  the exact component Azure Update Manager invokes, not just an inference
+  from OS package-manager log text. The parsers are pure functions,
+  unit-tested directly against real log/status text in
+  `tests/test_guest_linux_parsers.py` / `test_guest_windows_parsers.py` /
+  `test_patch_extension_status.py` without needing a live VM.
 - `datadog_collector.py` - metrics (disk/memory trend into the window),
   monitor state, logs/events (the post-reboot regression signal).
 
@@ -160,7 +166,29 @@ mid-cycle resumes rather than re-collecting from scratch. `reporting/fleet_repor
 builds the ranked, three-altitude report the proposal describes (fleet /
 cause / machine); `reporting/render.py` renders it to HTML;
 `reporting/notify.py` posts a real Teams MessageCard or Slack Block Kit
-payload to a webhook URL.
+payload to a webhook URL; `notifications/email_sender.py` sends it over
+SMTP to an editable-per-send recipient list (`POST /runs/{run_id}/email`,
+settings on `/settings`'s "Email" tab), logging every attempt to
+`EmailLogRecord` the same append-only way remediation actions are logged.
+
+A sibling, full-fleet view - every machine this run covered, not just the
+ones that clustered into a failure - lives alongside the cause-clustering
+report: `models/installation_report.py` / `pipeline/installation_report.py`
+build an Azure Update Manager-style report (`GET /runs/{run_id}/
+installation-report(.html)`) the team already recognizes from the native
+console, with each failed row showing Culprit's own RCA when one exists
+and the raw Azure error as a secondary expand when it doesn't (e.g. a
+machine beyond the per-run RCA cap). Built from a lightweight,
+non-RCA'd discovery query (`pipeline/discovery.py::
+discover_all_patch_outcomes_with_identity`) alongside, not instead of,
+the existing failure-only discovery query above.
+
+Evidence that reaches a reviewer - both a cluster's "missing evidence"
+and a machine's patch-extension findings - renders as structured, per-
+source cards (icon, friendly label, a bounded one-line summary with a
+"show full detail"/"copy correlation ID" expand for the rest), not a raw
+vendor-API text dump - see `reporting/evidence_gaps.py` and
+`reporting/extension_status_view.py`.
 
 The third altitude's own data - each machine's `PatchOutcome` (status,
 error code/message, the specific failed KB(s)/package(s)) and collection

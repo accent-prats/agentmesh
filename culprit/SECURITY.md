@@ -183,6 +183,44 @@ assignment. Fixed by building that element with `textContent`/
 `createTextNode` exclusively (`reporting/templates/settings.html.j2`),
 which never parses its input as HTML regardless of content.
 
+## Output encoding (Jinja autoescape) - app-wide, not page-specific
+
+A separate, broader finding while adding the SMTP email feature: every
+template in this app is named `*.html.j2`, but `reporting/render.py::_env()`
+called `select_autoescape(["html"])`, which matches on a template name's
+*actual final suffix* - `.j2`, not `.html`. That meant it silently
+returned `False` for every single page this app has ever rendered, so
+Jinja autoescaping had been off app-wide since this file was first
+written, not just on the one page above. Any server-rendered value
+containing HTML-meaningful characters - an Azure/Datadog error message, a
+scrubbed-but-not-HTML-escaped log line, a cause title, anything flowing
+through `render_*_html()` - would have rendered unescaped. Fixed with
+`autoescape=True` unconditionally, not another attempt at extension
+matching; confirmed no existing template relied on raw HTML output first
+(a repo-wide grep for Jinja's `|safe` filter found zero uses), so turning
+escaping on everywhere had no template left that depended on the old,
+broken behavior.
+
+## Email (SMTP) settings
+
+The SMTP password entered on `/settings`'s "Email" tab follows the exact
+same convention as Azure/Datadog above: encrypted at rest with the same
+Fernet key (`CULPRIT_ENCRYPTION_KEY`, `culprit/security/crypto.py`),
+decrypted only in-memory at the point of an actual connection (`POST
+/settings/smtp/test`, or a real send via `POST /runs/{run_id}/email`),
+never logged or returned by any `GET`. Updating settings with a blank
+password field leaves the previously-saved one untouched, same as
+Azure/Datadog's own "leave alone if blank" handling
+(`db/repository.py::save_smtp_settings`). Every recipient address (the
+default list on `/settings`, or the editable-per-send list on a report's
+own "Email report" widget) is validated against `EMAIL_ADDRESS_RE`
+(`models/settings.py`) before ever reaching `email.message.EmailMessage` -
+found while building this feature: an address containing `\r`/`\n` would
+otherwise let a caller inject arbitrary extra SMTP headers through
+`EmailMessage`'s own header-setting. Every send attempt, successful or
+not, is logged to `EmailLogRecord` (`db/models.py`) - an append-only
+audit log, the same convention `RemediationActionRecord` already uses.
+
 ## AI provider credentials (platform-wide, owned by Portal)
 
 Unlike Azure/Datadog above, the deep RCA agent's own AI provider

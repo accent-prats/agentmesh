@@ -41,7 +41,11 @@ from shared.src.feature_flags import FlagMiddleware, GrowthBookClient, set_clien
 - `GrowthBookClient` / `set_client` / `get_client` — initialized once at app startup (see
   `portal/api/main.py`'s lifespan handler), polls GrowthBook for flag definitions in the background.
 - `FlagMiddleware` — added to the FastAPI app, builds the per-request user attribute dict
-  (from the JWT) that GrowthBook targeting rules match against.
+  (from the JWT) that GrowthBook targeting rules match against. It also enforces one flag
+  itself, directly in `dispatch()`: when `shared.maintenance.readonly-mode` is on, every write
+  request (`POST`/`PUT`/`PATCH`/`DELETE`) other than auth/health is rejected with `503` before
+  it reaches a route. See [docs/feature-flags/README.md](../docs/feature-flags/README.md) for
+  this and the rest of the flag list.
 - `get_feature_flags` — a FastAPI dependency any router can use to read `request.state.flags`.
 
 ---

@@ -175,6 +175,17 @@ this app's externally-reachable URL (reverse-proxy prefix included, e.g.
 needs this env var, since `POST /runs/live` already has a real inbound
 request to build the link from.
 
+Unlike Teams/Slack (automatic on every completed run), emailing a
+specific run's report is a manual, per-report action, not something
+every run triggers on its own - enter the SMTP host/port/credentials and
+an optional default recipient list on `/settings`'s "Email" tab (**Test
+connection** makes a real SMTP connection and reports what happened,
+same convention as Azure/Datadog), then use the "Email report" widget on
+that run's own `report.html` page (`POST /runs/{run_id}/email`) -
+recipients default to the saved list but are editable per send. See
+`culprit/notifications/email_sender.py` and SECURITY.md's "Email (SMTP)
+settings" section for the credential-handling details.
+
 ## 8. Agent memory
 
 `pip install 'culprit[memory]'` (mem0ai + sentence-transformers - not in the

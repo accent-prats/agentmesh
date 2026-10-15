@@ -9,7 +9,7 @@
 | What | Where |
 |---|---|
 | **Admin UI** | `https://growthbook.local` |
-| **SDK API** (internal) | `http://growthbook:3101` |
+| **SDK API** (internal) | `http://growthbook:3100` |
 | **Python SDK module** | [shared/src/feature_flags/](../../shared/src/feature_flags/) |
 | **Docker service** | `growthbook` in [docker-compose.yml](../../docker-compose.yml) |
 
@@ -36,7 +36,8 @@
 │  GrowthBook Admin UI (growthbook.local)             │
 │  Define flags, targeting rules, experiments         │
 └──────────────────────┬──────────────────────────────┘
-                       │ SDK API (port 3101)
+                       │ SDK API (container port 3100 -
+                       │ host-mapped to 3101, see docker-compose.yml)
                        ▼
                   Portal API
                  (Python SDK)
@@ -74,6 +75,13 @@ Only the Portal integrates GrowthBook today — Culprit doesn't use it, and has 
 
 ```bash
 docker compose up -d growthbook
+```
+
+`https://growthbook.local` is its own nginx vhost (`infrastructure/nginx/conf.d/growthbook.conf`)
+with its own TLS cert, separate from `portal.local` — add a hosts entry for it too if you
+haven't already:
+```
+127.0.0.1  growthbook.local
 ```
 
 Wait ~15 seconds, then open `https://growthbook.local` and create your admin account.
@@ -129,7 +137,7 @@ docker compose restart portal-api
 |---|---|---|
 | `portal.admin.bulk-user-import` | Boolean | Shows the (not-yet-implemented) CSV user import panel in Admin |
 | `portal.launcher.maintenance-banner` | Boolean | Amber "scheduled maintenance" banner on the app launcher |
-| `shared.maintenance.readonly-mode` | Boolean | Red "read-only mode" banner on the app launcher |
+| `shared.maintenance.readonly-mode` | Boolean | Red "read-only mode" banner on the app launcher, and — enforced in `FlagMiddleware` itself, not just the UI — a 503 on every write request (`POST`/`PUT`/`PATCH`/`DELETE`) except auth/health, platform-wide |
 | `shared.beta.early-access` | Boolean | "Early Access" badge on the launcher hero strip |
 
 **Rules:**

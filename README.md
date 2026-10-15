@@ -23,7 +23,9 @@ second login. See [docs/SETUP.md](docs/SETUP.md) for first-time configuration.
 .
 ├── .mcp.json.template        # Claude Code MCP server config template (postgres, filesystem, fetch)
 ├── docker-compose.yml        # Full unified stack (all services, one command)
-├── .env.example              # All environment variables with defaults
+├── .env.example              # Core platform env vars with defaults — opt-in vars documented
+│                             # only in docs/SETUP.md (e.g. CULPRIT_SCHEDULER_ENABLED,
+│                             # CULPRIT_MEMORY_ENABLED) aren't mirrored here yet
 │
 ├── portal/                   # Unified login + app launcher
 │   ├── api/                  # FastAPI backend (auth, app registry, user management)
@@ -134,4 +136,6 @@ automatically.
 
 1. Run `pytest` in the affected app directory (`portal/` or `culprit/`) before opening a PR
 2. All structured logging uses `structlog` — `get_logger(__name__)` from `portal/logging_config.py`
-3. Docker images use an Alpine base with two-stage builds to minimize CVE surface
+3. Portal's Docker image uses an Alpine base with a two-stage build to minimize CVE
+   surface (`portal/Dockerfile`); Culprit's is a single-stage `python:3.12-slim-bookworm`
+   build (`culprit/Dockerfile`)
