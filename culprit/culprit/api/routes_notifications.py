@@ -35,7 +35,8 @@ def send_report_email(run_id: str, request: Request, body: SendReportRequest) ->
             raise HTTPException(status_code=400, detail="No recipients given and no default recipient list is configured")
 
         report_url = report_url_from_request(request, run_id)
-        subject, html_body = build_report_digest(report, report_url, body.note, body.requested_by)
+        tz_name = repository.load_display_timezone_settings(session).timezone
+        subject, html_body = build_report_digest(report, report_url, body.note, body.requested_by, tz_name=tz_name)
         ok, message = send_email(smtp_cfg, recipients, subject, html_body)
 
         repository.save_email_log(

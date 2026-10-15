@@ -1055,6 +1055,38 @@ def schedule_settings_view(session: Session, scheduler=None):
     )
 
 
+def load_display_timezone_settings(session: Session):
+    """Which IANA timezone every report/console/email timestamp is
+    rendered in - "UTC" (the pre-existing, hardcoded behavior) when
+    nothing's ever been saved, same "DB authoritative once a row exists"
+    convention as load_schedule_settings."""
+    from culprit.models.settings import DisplayTimezoneSettingsInput
+
+    record = session.get(SettingsRecord, "display_timezone")
+    if record is None:
+        return DisplayTimezoneSettingsInput()
+    return DisplayTimezoneSettingsInput(timezone=record.data_json.get("timezone", "UTC"))
+
+
+def save_display_timezone_settings(session: Session, cfg) -> SettingsRecord:
+    """`cfg` is a culprit.models.settings.DisplayTimezoneSettingsInput."""
+    record = session.get(SettingsRecord, "display_timezone")
+    if record is None:
+        record = SettingsRecord(provider="display_timezone", data_json={"timezone": cfg.timezone})
+        session.add(record)
+    else:
+        record.data_json = {"timezone": cfg.timezone}
+    session.commit()
+    return record
+
+
+def display_timezone_settings_view(session: Session):
+    from culprit.models.settings import DisplayTimezoneSettingsView
+
+    cfg = load_display_timezone_settings(session)
+    return DisplayTimezoneSettingsView(timezone=cfg.timezone)
+
+
 def datadog_settings_view(session: Session):
     from culprit.models.settings import DatadogSettingsView
 

@@ -11,7 +11,7 @@ from culprit.models.report import FleetReport
 _TEMPLATE_DIR = Path(__file__).parent / "templates"
 
 
-def _env() -> Environment:
+def _env(tz_name: str = "UTC") -> Environment:
     # remediation_enabled is a Jinja *global*, not a per-call render
     # kwarg, specifically so base.html.j2's shared nav (extended by every
     # page) can gate the "Remediation log" link on it without threading
@@ -34,6 +34,7 @@ def _env() -> Environment:
     from culprit.config import settings
     from culprit.models.remediation import SUPPORTED_ACTIONS
     from culprit.models.settings import GATE_MIN_SAMPLE_FLOOR, GATE_THRESHOLD_FLOOR
+    from culprit.reporting.timezone_display import register_localtime_filter
 
     # Found in review 2026-10-14 (the "email a report" feature): every
     # template this app has is named "*.html.j2", but select_autoescape
@@ -56,10 +57,11 @@ def _env() -> Environment:
     # this gets the same global treatment supported_action_families does.
     env.globals["gate_threshold_floor"] = GATE_THRESHOLD_FLOOR
     env.globals["gate_min_sample_floor"] = GATE_MIN_SAMPLE_FLOOR
+    register_localtime_filter(env, tz_name)
     return env
 
 
-def _cluster_date_ranges(report: FleetReport) -> dict[str, tuple]:
+def _cluster_date_ranges(report: FleetReport, tz_name: str = "UTC") -> dict[str, tuple]:
     """Per-cluster (earliest, latest) patch date across its own members,
     from data already collected and persisted (PatchOutcome.started_at,
     joined into FleetReport.machine_rows by _load_fleet_report_core) - no
@@ -82,11 +84,13 @@ def _cluster_date_ranges(report: FleetReport) -> dict[str, tuple]:
     - either it visibly differs (confirming "different cycle, not a
     duplicate"), or it doesn't (a signal to look at cause_family/evidence
     more closely instead, not a duplicate bug to merge away)."""
+    from culprit.reporting.timezone_display import localize_date
+
     ranges: dict[str, tuple] = {}
     by_cluster: dict[str, list] = {}
     for row in report.machine_rows:
         if row.outcome and row.outcome.started_at:
-            by_cluster.setdefault(row.cluster_id, []).append(row.outcome.started_at.date())
+            by_cluster.setdefault(row.cluster_id, []).append(localize_date(row.outcome.started_at, tz_name))
     for cluster_id, dates in by_cluster.items():
         ranges[cluster_id] = (min(dates), max(dates))
     return ranges
@@ -95,6 +99,7 @@ def _cluster_date_ranges(report: FleetReport) -> dict[str, tuple]:
 def render_fleet_report_html(
     report: FleetReport, family_precision=None, promotion_threshold: float = 0.95, promotion_min_sample: int = 50,
     smtp_configured: bool = False, default_recipients: list | None = None, installation_report_available: bool = False,
+    tz_name: str = "UTC",
 ) -> str:
     """`family_precision` (dict[CauseFamily, FamilyPrecision]) is a
     render-only input, deliberately kept off `FleetReport` itself (that
@@ -111,12 +116,12 @@ def render_fleet_report_html(
     gated in the template directly."""
     from culprit.reporting.evidence_gaps import parse_evidence_gaps
 
-    template = _env().get_template("fleet_report.html.j2")
+    template = _env(tz_name).get_template("fleet_report.html.j2")
     missing_evidence_by_cluster = {
         entry.cluster.cluster_id: parse_evidence_gaps(entry.result.missing_evidence)
         for entry in report.entries if entry.result.missing_evidence
     }
-    cluster_date_ranges = _cluster_date_ranges(report)
+    cluster_date_ranges = _cluster_date_ranges(report, tz_name)
     # This page lives two levels below the app root (runs/{id}/report.html),
     # unlike every other page here - nav_prefix corrects the shared sidebar's
     # otherwise-root-relative links (base.html.j2) so they still resolve
@@ -131,15 +136,15 @@ def render_fleet_report_html(
     )
 
 
-def render_installation_report_html(report: InstallationReport) -> str:
+def render_installation_report_html(report: InstallationReport, tz_name: str = "UTC") -> str:
     """The Azure Update Manager-style full-fleet view
     (models/installation_report.py) - lives at the same depth as
     report.html (runs/{id}/installation-report.html), same nav_prefix."""
-    template = _env().get_template("installation_report.html.j2")
+    template = _env(tz_name).get_template("installation_report.html.j2")
     return template.render(report=report, active="console", nav_prefix="../../")
 
 
-def render_runs_html(runs, demo_enabled: bool = True) -> str:
+def render_runs_html(runs, demo_enabled: bool = True, tz_name: str = "UTC") -> str:
     """The Runs list page - "which update jobs is Culprit monitoring",
     most recent first (culprit/db/repository.py::list_runs). Root-level,
     same depth as console/settings/precision.html. `demo_enabled` only
@@ -153,7 +158,7 @@ def render_runs_html(runs, demo_enabled: bool = True) -> str:
     yet doesn't show up as a dead filter option, and a new trigger/stage
     value needs no template change to filter on once something actually
     uses it. Sorted for a stable render (set iteration order isn't)."""
-    template = _env().get_template("runs.html.j2")
+    template = _env(tz_name).get_template("runs.html.j2")
     distinct_triggers = sorted({r.trigger_mode for r in runs})
     distinct_stages = sorted({r.stage for r in runs})
     return template.render(
@@ -162,13 +167,15 @@ def render_runs_html(runs, demo_enabled: bool = True) -> str:
     )
 
 
-def _trend_chart_geometry(trend, width: int = 300, height: int = 72, pad_x: float = 4, pad_y: float = 8):
+def _trend_chart_geometry(trend, tz_name: str = "UTC", width: int = 300, height: int = 72, pad_x: float = 4, pad_y: float = 8):
     """SVG coordinates for the Console dashboard's compliance trend line.
     Computed here, not in the template - scaling the line to its own
     data's min/max (not a fixed 0-100 axis, which would flatten real-world
     compliance% variation most runs never leave the 80-100 band in to a
     near-flat line) is a float computation across every point, not a
     single Jinja filter expression."""
+    from culprit.reporting.timezone_display import localize_date
+
     values = [p.compliance_pct for p in trend]
     lo, hi = min(values), max(values)
     if hi == lo:  # every point identical - avoid a divide by zero, draw a flat middle line instead
@@ -179,7 +186,7 @@ def _trend_chart_geometry(trend, width: int = 300, height: int = 72, pad_x: floa
     for i, p in enumerate(trend):
         x = width / 2 if n == 1 else pad_x + (i / (n - 1)) * (width - 2 * pad_x)
         y = pad_y + (1 - (p.compliance_pct - lo) / (hi - lo)) * (height - 2 * pad_y)
-        points.append({"x": round(x, 1), "y": round(y, 1), "pct": p.compliance_pct, "date": p.started_at.strftime("%Y-%m-%d")})
+        points.append({"x": round(x, 1), "y": round(y, 1), "pct": p.compliance_pct, "date": localize_date(p.started_at, tz_name).isoformat()})
 
     return {
         "width": width,
@@ -189,7 +196,7 @@ def _trend_chart_geometry(trend, width: int = 300, height: int = 72, pad_x: floa
     }
 
 
-def render_console_html(demo_enabled: bool = True, dashboard=None) -> str:
+def render_console_html(demo_enabled: bool = True, dashboard=None, tz_name: str = "UTC") -> str:
     """The app's landing page - what the AgentMesh launcher's 'Launch'
     button sends people to, and now a real dashboard (see
     db/repository.py::build_dashboard_summary /
@@ -207,9 +214,9 @@ def render_console_html(demo_enabled: bool = True, dashboard=None) -> str:
     dashboard = dashboard or DashboardSummary()
     # Fewer than 2 points isn't a trend, it's a dot - same "nothing to
     # compare against yet" shape as FleetTrend being None for a first cycle.
-    trend_chart = _trend_chart_geometry(dashboard.compliance_trend) if len(dashboard.compliance_trend) >= 2 else None
+    trend_chart = _trend_chart_geometry(dashboard.compliance_trend, tz_name) if len(dashboard.compliance_trend) >= 2 else None
 
-    template = _env().get_template("console.html.j2")
+    template = _env(tz_name).get_template("console.html.j2")
     return template.render(active="console", demo_enabled=demo_enabled, dashboard=dashboard, trend_chart=trend_chart)
 
 
@@ -220,7 +227,7 @@ def render_settings_html() -> str:
     return template.render(active="settings")
 
 
-def render_machine_html(cluster, member, result, outcome=None, collection_gaps=None, patch_extension_status=None) -> str:
+def render_machine_html(cluster, member, result, outcome=None, collection_gaps=None, patch_extension_status=None, tz_name: str = "UTC") -> str:
     """The third report altitude (proposal Section 8): one machine's own
     timeline deviation from its cluster's representative, plus its own
     `PatchOutcome` (status, error, failed KB/package) when this run saved
@@ -244,7 +251,7 @@ def render_machine_html(cluster, member, result, outcome=None, collection_gaps=N
     from culprit.reporting.evidence_gaps import parse_evidence_gaps
     from culprit.reporting.extension_status_view import build_extension_finding_views
 
-    template = _env().get_template("machine.html.j2")
+    template = _env(tz_name).get_template("machine.html.j2")
     return template.render(
         cluster=cluster, member=member, result=result, outcome=outcome,
         evidence_gaps=parse_evidence_gaps(collection_gaps or []),
@@ -262,7 +269,7 @@ def render_precision_html(precision: dict) -> str:
     return template.render(active="precision", precision=precision)
 
 
-def render_remediation_log_html(records) -> str:
+def render_remediation_log_html(records, tz_name: str = "UTC") -> str:
     """The Phase 2 remediation audit log - every automated action ever
     taken, most recent first (culprit/db/repository.py::
     list_remediation_actions). Served at /remediation/log.html - one level
@@ -273,11 +280,11 @@ def render_remediation_log_html(records) -> str:
     own nav_prefix. Found live via Playwright: without this, the page
     requested static/tailwind.js as /remediation/static/tailwind.js and
     rendered completely unstyled."""
-    template = _env().get_template("remediation_log.html.j2")
+    template = _env(tz_name).get_template("remediation_log.html.j2")
     return template.render(active="remediation", records=records, nav_prefix="../")
 
 
-def render_email_report_html(report: FleetReport, top_entries: list, report_url: str | None, note: str, requested_by: str) -> str:
+def render_email_report_html(report: FleetReport, top_entries: list, report_url: str | None, note: str, requested_by: str, tz_name: str = "UTC") -> str:
     """The HTML body of a "Email report" send (api/routes_notifications.py,
     culprit/notifications/email_sender.py) - standalone (no `extends
     base.html.j2`, same reasoning as render_login_html: nothing to put in
@@ -288,10 +295,10 @@ def render_email_report_html(report: FleetReport, top_entries: list, report_url:
     notify.py::top_entries(report)'s own selection, reused rather than
     duplicated so the email's "top findings" list always matches the
     Teams/Slack digest's."""
-    template = _env().get_template("email_report.html.j2")
+    template = _env(tz_name).get_template("email_report.html.j2")
     return template.render(
         report=report, top_entries=top_entries, report_url=report_url, note=note, requested_by=requested_by,
-        cluster_date_ranges=_cluster_date_ranges(report),
+        cluster_date_ranges=_cluster_date_ranges(report, tz_name),
     )
 
 

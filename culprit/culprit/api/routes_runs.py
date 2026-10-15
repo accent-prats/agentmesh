@@ -172,10 +172,11 @@ def get_report_html(run_id: str):
         # silently failed) showed a working-looking link that 404'd with
         # a raw JSON error instead of the app's own styled pages.
         installation_report_available = repository.installation_report_exists(session, run_id)
+        tz_name = repository.load_display_timezone_settings(session).timezone
     return HTMLResponse(render_fleet_report_html(
         report, family_precision=family_precision, promotion_threshold=threshold, promotion_min_sample=min_sample,
         smtp_configured=smtp.configured, default_recipients=smtp.default_recipients,
-        installation_report_available=installation_report_available,
+        installation_report_available=installation_report_available, tz_name=tz_name,
     ))
 
 
@@ -207,9 +208,10 @@ def get_installation_report_html(run_id: str):
 
     with deps.get_session_factory()() as session:
         report = repository.load_installation_report(session, run_id)
+        tz_name = repository.load_display_timezone_settings(session).timezone
     if report is None:
         raise HTTPException(status_code=404, detail=f"No installation report for run {run_id}")
-    return HTMLResponse(render_installation_report_html(report))
+    return HTMLResponse(render_installation_report_html(report, tz_name=tz_name))
 
 
 @router.get("/{run_id}/machines/{vm_name}.html")
@@ -223,7 +225,8 @@ def get_machine_html(run_id: str, vm_name: str):
 
     with deps.get_session_factory()() as session:
         detail = repository.get_machine_detail(session, run_id, vm_name)
+        tz_name = repository.load_display_timezone_settings(session).timezone
     if detail is None:
         raise HTTPException(status_code=404, detail=f"Machine {vm_name} not found in run {run_id}")
     cluster, member, result, outcome, collection_gaps, patch_extension_status = detail
-    return HTMLResponse(render_machine_html(cluster, member, result, outcome, collection_gaps, patch_extension_status))
+    return HTMLResponse(render_machine_html(cluster, member, result, outcome, collection_gaps, patch_extension_status, tz_name=tz_name))

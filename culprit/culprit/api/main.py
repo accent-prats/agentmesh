@@ -173,7 +173,8 @@ def console() -> str:
 
     with deps.get_session_factory()() as session:
         dashboard = repository.build_dashboard_summary(session)
-    return render_console_html(demo_enabled=config.settings.demo_enabled, dashboard=dashboard)
+        tz_name = repository.load_display_timezone_settings(session).timezone
+    return render_console_html(demo_enabled=config.settings.demo_enabled, dashboard=dashboard, tz_name=tz_name)
 
 
 @app.get("/settings", response_class=HTMLResponse)
@@ -192,7 +193,8 @@ def runs_page() -> str:
 
     with deps.get_session_factory()() as session:
         runs = repository.list_runs(session)
-    return render_runs_html(runs, demo_enabled=config.settings.demo_enabled)
+        tz_name = repository.load_display_timezone_settings(session).timezone
+    return render_runs_html(runs, demo_enabled=config.settings.demo_enabled, tz_name=tz_name)
 
 
 @app.get("/login", response_model=None)

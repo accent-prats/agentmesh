@@ -56,7 +56,7 @@
           data-requested-by="{{ r.requested_by|lower }}" data-message="{{ r.message|lower }}"
           data-status="{{ r.status.value }}"
           onclick="window.location.href='../runs/{{ r.run_id }}/report.html'">
-          <td class="px-5 py-3.5 text-gray-600 whitespace-nowrap">{{ r.requested_at.strftime('%Y-%m-%d %H:%M UTC') }}</td>
+          <td class="px-5 py-3.5 text-gray-600 whitespace-nowrap">{{ r.requested_at | localtime }}</td>
           <td class="px-5 py-3.5 overflow-hidden"><span class="font-medium text-gray-900 truncate truncate-tooltip block" data-full-text="{{ r.vm_name }}">{{ r.vm_name }}</span></td>
           <td class="px-5 py-3.5 text-gray-600">{{ r.cause_family.value|replace('_', ' ')|capitalize }}</td>
           <td class="px-5 py-3.5 text-gray-600">{{ r.action_type.value|replace('_', ' ')|capitalize }}</td>

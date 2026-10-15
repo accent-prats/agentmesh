@@ -16,8 +16,9 @@
   {% if dashboard.latest_run %}
   {% set report = dashboard.latest_run %}
   <p class="text-sm text-gray-500 mt-4">
-    Latest cycle: <span class="font-medium text-gray-700">{{ report.run.scope_name }}</span>
-    &middot; {{ report.run.started_at.strftime('%Y-%m-%d %H:%M UTC') }}
+    <span title="This is when Culprit's own scan began looking back, not when any specific Azure Update Manager maintenance job ran - see each machine's own page for its real patch job time.">Last scan started <i data-lucide="info" class="w-3 h-3 inline -mt-0.5"></i>:</span>
+    <span class="font-medium text-gray-700">{{ report.run.scope_name }}</span>
+    &middot; {{ report.run.started_at | localtime }}
     &middot; <a href="runs/{{ report.run.run_id }}/report.html" class="text-brand hover:underline font-medium">View full report &rarr;</a>
   </p>
 

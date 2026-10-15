@@ -20,6 +20,8 @@ from culprit.models.settings import (
     AzureSettingsView,
     DatadogSettingsInput,
     DatadogSettingsView,
+    DisplayTimezoneSettingsInput,
+    DisplayTimezoneSettingsView,
     GateChangeEntry,
     GateSettingsInput,
     GateSettingsView,
@@ -134,6 +136,28 @@ def put_schedule_settings(body: ScheduleSettingsInput, request: Request) -> Sche
 
             apply_schedule(scheduler, body)
         return repository.schedule_settings_view(session, scheduler=scheduler)
+
+
+@router.get("/display-timezone", response_model=DisplayTimezoneSettingsView)
+def get_display_timezone_settings() -> DisplayTimezoneSettingsView:
+    from culprit.db import repository
+
+    with deps.get_session_factory()() as session:
+        return repository.display_timezone_settings_view(session)
+
+
+@router.put("/display-timezone", response_model=DisplayTimezoneSettingsView)
+def put_display_timezone_settings(body: DisplayTimezoneSettingsInput) -> DisplayTimezoneSettingsView:
+    """Every stored datetime stays UTC regardless - this only changes how
+    report/console/email timestamps are *displayed* (reporting/
+    timezone_display.py). Validation (a real IANA name) already happened
+    in DisplayTimezoneSettingsInput's own field_validator before this
+    body was accepted."""
+    from culprit.db import repository
+
+    with deps.get_session_factory()() as session:
+        repository.save_display_timezone_settings(session, body)
+        return repository.display_timezone_settings_view(session)
 
 
 @router.get("/gate", response_model=GateSettingsView)

@@ -12,7 +12,9 @@ from culprit.models.settings import SmtpSettingsInput
 _SMTP_TIMEOUT_SECONDS = 10.0
 
 
-def build_report_digest(report: FleetReport, report_url: str | None, note: str, requested_by: str) -> tuple[str, str]:
+def build_report_digest(
+    report: FleetReport, report_url: str | None, note: str, requested_by: str, tz_name: str = "UTC",
+) -> tuple[str, str]:
     """Returns (subject, html_body). Same "top findings + headline facts"
     shape as reporting/notify.py's Teams/Slack digest - imports its
     top_entries rather than re-selecting independently, so this email's
@@ -23,6 +25,7 @@ def build_report_digest(report: FleetReport, report_url: str | None, note: str, 
     subject = f"Culprit · {report.run.scope_name} — {report.total_failed}/{report.total_machines} failed"
     html_body = render_email_report_html(
         report, top_entries=select_top_entries(report), report_url=report_url, note=note, requested_by=requested_by,
+        tz_name=tz_name,
     )
     return subject, html_body
 

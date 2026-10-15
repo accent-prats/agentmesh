@@ -18,7 +18,7 @@
   <tr><td style="padding:24px 28px 8px 28px;">
     <h1 style="margin:0; font-size:18px; color:#111827;">{{ report.run.scope_name }}</h1>
     <p style="margin:4px 0 0 0; font-size:12px; color:#6b7280;">
-      Run {{ report.run.run_id }} &middot; started {{ report.run.started_at.strftime('%Y-%m-%d %H:%M UTC') }}
+      Run {{ report.run.run_id }} &middot; started {{ report.run.started_at | localtime }}
     </p>
   </td></tr>
 

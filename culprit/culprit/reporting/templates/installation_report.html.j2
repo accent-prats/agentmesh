@@ -13,7 +13,7 @@
       <h1 class="text-2xl font-bold text-gray-900 tracking-tight">Patch installation report</h1>
       <p class="text-sm text-gray-500 mt-1">
         {{ report.run.scope_name }} &middot; run {{ report.run.run_id }} &middot;
-        {{ report.run.started_at.strftime('%Y-%m-%d %H:%M UTC') }}
+        {{ report.run.started_at | localtime }}
       </p>
     </div>
     <a href="report.html" class="shrink-0 inline-flex items-center gap-1.5 text-xs font-medium text-brand hover:text-brand-dark mt-1">
@@ -80,7 +80,7 @@
             <span class="text-[10px] font-semibold uppercase tracking-wide px-2 py-0.5 rounded-full bg-gray-50 text-gray-600 border border-gray-200">Excluded</span>
             {% endif %}
           </td>
-          <td class="px-5 py-3.5 text-gray-600 whitespace-nowrap">{{ row.started_at.strftime('%Y-%m-%d %H:%M UTC') if row.started_at else '—' }}</td>
+          <td class="px-5 py-3.5 text-gray-600 whitespace-nowrap">{{ row.started_at | localtime if row.started_at else '—' }}</td>
           <td class="px-5 py-3.5 text-gray-500 truncate truncate-tooltip" data-full-text="{{ row.subscription_id }}">{{ row.subscription_id }}</td>
           <td class="px-5 py-3.5 text-gray-600 truncate truncate-tooltip" data-full-text="{{ row.resource_group }}">{{ row.resource_group }}</td>
           <td class="px-5 py-3.5">

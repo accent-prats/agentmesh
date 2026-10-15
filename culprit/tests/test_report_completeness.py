@@ -38,6 +38,23 @@ def client(monkeypatch):
     return TestClient(app), store
 
 
+def test_fleet_report_html_honors_the_configured_display_timezone(client):
+    """2026-09-26 04:00 UTC (the demo scenario's own WINDOW_START,
+    generate_scenario.py:47) must render as 09:30 IST under Asia/Kolkata -
+    proves the admin-configurable display timezone (models/settings.py::
+    DisplayTimezoneSettingsInput) actually reaches the rendered HTML, not
+    just the unit-level localtime filter."""
+    test_client, _ = client
+    put_resp = test_client.put("/settings/display-timezone", json={"timezone": "Asia/Kolkata"})
+    assert put_resp.status_code == 200
+
+    resp = test_client.post("/runs/demo")
+    run_id = resp.json()["run"]["run_id"]
+    html = test_client.get(f"/runs/{run_id}/report.html").text
+    assert "2026-09-26 09:30 IST" in html
+    assert "2026-09-26 04:00 UTC" not in html
+
+
 def test_fleet_report_html_shows_evidence_citations_and_ruled_out(client):
     """The proposal's "no citation, no claim" hard constraint is enforced
     at the model layer (models/rca.py) - this proves the citations it

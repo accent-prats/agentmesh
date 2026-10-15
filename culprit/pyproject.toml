@@ -20,6 +20,9 @@ dependencies = [
     "cryptography>=42.0",
     "python-multipart>=0.0.9",  # required by Starlette's Request.form() - the /login POST route
     "python-jose[cryptography]==3.3.0",  # validates Portal's shared-secret JWT - see security/portal_jwt.py
+    "tzdata>=2024.1",  # IANA timezone database for stdlib zoneinfo (reporting/timezone_display.py) -
+                        # was only ever an undeclared transitive dependency before; pinned explicitly
+                        # since a minimal/slim deployment image has no guarantee of OS-level tzdata either
 ]
 
 [project.optional-dependencies]

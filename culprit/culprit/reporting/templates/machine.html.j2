@@ -46,7 +46,7 @@
       {% if outcome.started_at %}
       <div>
         <span class="text-gray-400">Window:</span>
-        {{ outcome.started_at.strftime('%Y-%m-%d %H:%M UTC') }}{% if outcome.ended_at %} &ndash; {{ outcome.ended_at.strftime('%H:%M UTC') }}{% endif %}{% if outcome.window_minutes %} ({{ outcome.window_minutes }} min){% endif %}
+        {{ outcome.started_at | localtime }}{% if outcome.ended_at %} &ndash; {{ outcome.ended_at | localtime }}{% endif %}{% if outcome.window_minutes %} ({{ outcome.window_minutes }} min){% endif %}
       </div>
       {% endif %}
     </div>

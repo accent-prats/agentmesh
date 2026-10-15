@@ -298,6 +298,30 @@ def test_schedule_settings_rejects_a_semantically_invalid_cron_expression(client
     assert reloaded["cron_expression"] != "60 99 * * *"
 
 
+def test_display_timezone_default_view_is_utc(client):
+    resp = client.get("/settings/display-timezone")
+    assert resp.status_code == 200
+    assert resp.json()["timezone"] == "UTC"
+
+
+def test_display_timezone_save_and_reload(client):
+    resp = client.put("/settings/display-timezone", json={"timezone": "Asia/Kolkata"})
+    assert resp.status_code == 200
+    assert resp.json()["timezone"] == "Asia/Kolkata"
+
+    reloaded = client.get("/settings/display-timezone").json()
+    assert reloaded["timezone"] == "Asia/Kolkata"
+
+
+def test_display_timezone_rejects_an_unrecognized_name(client):
+    resp = client.put("/settings/display-timezone", json={"timezone": "Not/A_Real_Zone"})
+    assert resp.status_code == 422
+
+    # Must never have been persisted.
+    reloaded = client.get("/settings/display-timezone").json()
+    assert reloaded["timezone"] == "UTC"
+
+
 def test_gate_settings_default_view_uses_config_defaults(client):
     """Nothing saved yet - GET must report the config.settings env-var
     defaults (CULPRIT_PROMOTION_THRESHOLD/CULPRIT_PROMOTION_MIN_SAMPLE,

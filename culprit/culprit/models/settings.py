@@ -245,3 +245,31 @@ class SmtpSettingsView(BaseModel):
     last_tested_at: datetime | None = None
     last_test_ok: bool | None = None
     last_test_message: str = ""
+
+
+class DisplayTimezoneSettingsInput(BaseModel):
+    """Which IANA timezone every report/console/email timestamp is
+    rendered in - every datetime is stored and collected in UTC
+    regardless of this setting; this only controls display. Default
+    "UTC" is a deliberate zero-behavior-change default for any
+    deployment that never touches this screen. Free-text IANA name
+    (not a curated dropdown) - this is an admin screen, not an
+    end-user picker, and validated below rather than restricted to a
+    hand-maintained shortlist."""
+
+    timezone: str = "UTC"
+
+    @field_validator("timezone")
+    @classmethod
+    def _must_be_a_real_iana_timezone(cls, v: str) -> str:
+        from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
+
+        try:
+            ZoneInfo(v)
+        except ZoneInfoNotFoundError as exc:
+            raise ValueError(f"'{v}' is not a recognized IANA timezone name (e.g. 'UTC', 'Asia/Kolkata')") from exc
+        return v
+
+
+class DisplayTimezoneSettingsView(BaseModel):
+    timezone: str = "UTC"

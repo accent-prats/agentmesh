@@ -196,4 +196,5 @@ def get_remediation_log_html():
 
     with deps.get_session_factory()() as session:
         records = repository.list_remediation_actions(session)
-    return HTMLResponse(render_remediation_log_html(records))
+        tz_name = repository.load_display_timezone_settings(session).timezone
+    return HTMLResponse(render_remediation_log_html(records, tz_name=tz_name))
