@@ -59,6 +59,39 @@ def _env() -> Environment:
     return env
 
 
+def _cluster_date_ranges(report: FleetReport) -> dict[str, tuple]:
+    """Per-cluster (earliest, latest) patch date across its own members,
+    from data already collected and persisted (PatchOutcome.started_at,
+    joined into FleetReport.machine_rows by _load_fleet_report_core) - no
+    new Azure query needed.
+
+    Why this exists: a live/scheduled run's discovery window is a time-
+    window heuristic standing in for "one maintenance run" (pipeline/
+    discovery.py's own docstring), not a resolved Azure maintenance-run
+    boundary - a wide window (the scheduled default is 8 days; an ad hoc
+    run can be configured up to 30) routinely sweeps machines from
+    several real maintenance executions into one Culprit run. Two cluster
+    cards can end up with the same RCA title for either reason: they're
+    the same recurring cause from two different maintenance cycles the
+    window happened to span, or they're genuinely different structural
+    causes (fingerprint.py clusters on error code/OS/failing target/
+    preconditions, never on when something failed, never on the title
+    text) that just read similarly once summarized into prose. A reported
+    team confusion ("why are there separate sections for the same
+    issue?") is resolved either way by showing each card's own date range
+    - either it visibly differs (confirming "different cycle, not a
+    duplicate"), or it doesn't (a signal to look at cause_family/evidence
+    more closely instead, not a duplicate bug to merge away)."""
+    ranges: dict[str, tuple] = {}
+    by_cluster: dict[str, list] = {}
+    for row in report.machine_rows:
+        if row.outcome and row.outcome.started_at:
+            by_cluster.setdefault(row.cluster_id, []).append(row.outcome.started_at.date())
+    for cluster_id, dates in by_cluster.items():
+        ranges[cluster_id] = (min(dates), max(dates))
+    return ranges
+
+
 def render_fleet_report_html(
     report: FleetReport, family_precision=None, promotion_threshold: float = 0.95, promotion_min_sample: int = 50,
     smtp_configured: bool = False, default_recipients: list | None = None, installation_report_available: bool = False,
@@ -83,12 +116,14 @@ def render_fleet_report_html(
         entry.cluster.cluster_id: parse_evidence_gaps(entry.result.missing_evidence)
         for entry in report.entries if entry.result.missing_evidence
     }
+    cluster_date_ranges = _cluster_date_ranges(report)
     # This page lives two levels below the app root (runs/{id}/report.html),
     # unlike every other page here - nav_prefix corrects the shared sidebar's
     # otherwise-root-relative links (base.html.j2) so they still resolve
     # correctly from this depth.
     return template.render(
         report=report, active="console", nav_prefix="../../", family_precision=family_precision or {},
+        cluster_date_ranges=cluster_date_ranges,
         promotion_threshold=promotion_threshold, promotion_min_sample=promotion_min_sample,
         smtp_configured=smtp_configured, default_recipients=default_recipients or [],
         installation_report_available=installation_report_available,

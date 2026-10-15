@@ -198,7 +198,11 @@
         {% endif %}
       </div>
       <h3 class="font-semibold text-gray-900 text-base leading-snug">{{ entry.result.title }}</h3>
-      <p class="text-xs text-gray-400 mt-1">Cause family: {{ entry.result.cause_family.value }} &middot; origin: {{ entry.result.origin.value }}</p>
+      {% set date_range = cluster_date_ranges.get(entry.cluster.cluster_id) %}
+      <p class="text-xs text-gray-400 mt-1">
+        Cause family: {{ entry.result.cause_family.value }} &middot; origin: {{ entry.result.origin.value }}
+        {%- if date_range %} &middot; patched {{ date_range[0].strftime('%Y-%m-%d') }}{% if date_range[1] != date_range[0] %}&ndash;{{ date_range[1].strftime('%Y-%m-%d') }}{% endif %}{% endif %}
+      </p>
     </div>
 
     <div class="px-6 py-5 text-sm">
