@@ -57,10 +57,10 @@
           data-status="{{ r.status.value }}"
           onclick="window.location.href='../runs/{{ r.run_id }}/report.html'">
           <td class="px-5 py-3.5 text-gray-600 whitespace-nowrap">{{ r.requested_at.strftime('%Y-%m-%d %H:%M UTC') }}</td>
-          <td class="px-5 py-3.5 overflow-hidden"><span class="font-medium text-gray-900 truncate block">{{ r.vm_name }}</span></td>
+          <td class="px-5 py-3.5 overflow-hidden"><span class="font-medium text-gray-900 truncate truncate-tooltip block" data-full-text="{{ r.vm_name }}">{{ r.vm_name }}</span></td>
           <td class="px-5 py-3.5 text-gray-600">{{ r.cause_family.value|replace('_', ' ')|capitalize }}</td>
           <td class="px-5 py-3.5 text-gray-600">{{ r.action_type.value|replace('_', ' ')|capitalize }}</td>
-          <td class="px-5 py-3.5 text-gray-600 truncate">{{ r.requested_by }}</td>
+          <td class="px-5 py-3.5 text-gray-600 truncate truncate-tooltip" data-full-text="{{ r.requested_by }}">{{ r.requested_by }}</td>
           <td class="px-5 py-3.5">
             {% if r.status.value == 'success' %}
             <span class="text-[10px] font-semibold uppercase tracking-wide px-2 py-0.5 rounded-full bg-emerald-50 text-emerald-700 border border-emerald-200">Success</span>
@@ -68,7 +68,7 @@
             <span class="text-[10px] font-semibold uppercase tracking-wide px-2 py-0.5 rounded-full bg-red-50 text-red-600 border border-red-200">Failed</span>
             {% endif %}
           </td>
-          <td class="px-5 py-3.5 text-gray-400 text-xs truncate" title="{{ r.message }}">{{ r.message }}</td>
+          <td class="px-5 py-3.5 text-gray-400 text-xs truncate truncate-tooltip" data-full-text="{{ r.message }}">{{ r.message }}</td>
         </tr>
         {% endfor %}
       </tbody>

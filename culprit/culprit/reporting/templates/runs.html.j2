@@ -73,7 +73,7 @@
           onclick="window.location.href='runs/{{ run.run_id }}/report.html'">
           <td class="px-5 py-3.5 overflow-hidden">
             <span class="font-medium text-gray-900">{{ run.scope_name }}</span>
-            <span class="block text-[11px] text-gray-400 mt-0.5 truncate" title="{{ run.maintenance_configuration_id }}">{{ run.maintenance_configuration_id }}</span>
+            <span class="block text-[11px] text-gray-400 mt-0.5 truncate truncate-tooltip" data-full-text="{{ run.maintenance_configuration_id }}">{{ run.maintenance_configuration_id }}</span>
           </td>
           <td class="px-5 py-3.5">
             <span class="whitespace-nowrap text-[10px] font-semibold uppercase tracking-wide px-2 py-0.5 rounded-full bg-gray-50 text-gray-600 border border-gray-200">{{ run.trigger_mode.replace('_', ' ') }}</span>

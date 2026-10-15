@@ -147,11 +147,11 @@
             <td class="px-3 py-2.5 font-mono text-[11.5px] text-gray-600 max-w-[160px]">
               {% if row.outcome and (row.outcome.kbs_failed or row.outcome.packages_failed) %}
               {% set failed_update = (row.outcome.kbs_failed + row.outcome.packages_failed)|join(', ') %}
-              <div class="truncate" title="{{ failed_update }}">{{ failed_update }}</div>
+              <div class="truncate truncate-tooltip" data-full-text="{{ failed_update }}">{{ failed_update }}</div>
               {% else %}&mdash;{% endif %}
             </td>
             <td class="px-3 py-2.5 max-w-[240px]">
-              <a href="#cluster-{{ row.cluster_id }}" class="block truncate text-gray-700 hover:text-brand" title="{{ row.title }}">{{ row.title }}</a>
+              <a href="#cluster-{{ row.cluster_id }}" class="block truncate truncate-tooltip text-gray-700 hover:text-brand" data-full-text="{{ row.title }}">{{ row.title }}</a>
             </td>
             <td class="px-3 py-2.5 whitespace-nowrap">
               {% if row.confidence >= 0.8 %}
