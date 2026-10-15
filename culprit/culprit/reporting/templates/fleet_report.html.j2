@@ -14,7 +14,7 @@
       <h1 class="text-2xl font-bold text-gray-900 tracking-tight">Fleet report</h1>
       <p class="text-sm text-gray-500 mt-1 mb-6">
         {{ report.run.scope_name }} &middot; run {{ report.run.run_id }} &middot;
-        {{ report.run.started_at | localtime }}
+        <span title="Culprit's own lookback window for this scan - the scan itself ran at the end of this range, not any specific Azure Update Manager maintenance job's time.">{{ report.run.started_at | localtime }}{% if report.run.ended_at %} &ndash; {{ report.run.ended_at | localtime }}{% endif %}</span>
       </p>
     </div>
     {% if installation_report_available %}
