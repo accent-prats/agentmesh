@@ -86,6 +86,54 @@ def test_valid_tool_call_parses_into_rca_result():
     assert result.causal_chain[0].evidence_refs == ["ref-1"]
 
 
+def test_diagnose_logs_start_and_completion_with_cluster_and_machine_context(caplog):
+    """Found 2026-10-16, tracing a real production timeout: this call had
+    no logging of its own - once confirmed (via a raised exception's own
+    traceback) that this was the thing actually hanging, there was still
+    no way to tell which cluster/machine a given slow call belonged to."""
+    response = FakeResponse(content=[FakeBlock(type="tool_use", name=_TOOL_NAME, input=dict(_VALID_INPUT))])
+    agent = DeepRCAAgent(client=FakeAnthropicClient(response))
+    bundle = _bundle()
+    cluster = _cluster(bundle)
+
+    with caplog.at_level("INFO"):
+        agent.diagnose(cluster, bundle)
+
+    messages = [r.message for r in caplog.records]
+    assert any("RCA diagnose starting" in m and cluster.cluster_id in m and "vm-1" in m for m in messages)
+    assert any("RCA diagnose call returned" in m and cluster.cluster_id in m for m in messages)
+
+
+def test_diagnose_logs_a_warning_on_failure_but_still_raises_the_real_exception(caplog):
+    """The most important property of this instrumentation: it must be
+    purely observational. A try/except that logs and re-raises can
+    accidentally swallow or replace the original exception - this pins
+    that the exact same exception type/instance keeps propagating."""
+    class ExplodingMessagesAPI:
+        def create(self, **kwargs):
+            raise TimeoutError("the gateway never responded")
+
+    class ExplodingClient:
+        messages = ExplodingMessagesAPI()
+
+    agent = DeepRCAAgent(client=ExplodingClient())
+    bundle = _bundle()
+    cluster = _cluster(bundle)
+
+    with caplog.at_level("WARNING"):
+        try:
+            agent.diagnose(cluster, bundle)
+            raised = None
+        except TimeoutError as exc:
+            raised = exc
+
+    assert raised is not None and str(raised) == "the gateway never responded"
+    assert any(
+        r.levelname == "WARNING" and "RCA diagnose call failed" in r.message and cluster.cluster_id in r.message
+        for r in caplog.records
+    )
+
+
 def test_missing_tool_call_downgrades_to_unresolved():
     response = FakeResponse(content=[FakeBlock(type="text", text="I'm not sure.")])
     agent = DeepRCAAgent(client=FakeAnthropicClient(response))

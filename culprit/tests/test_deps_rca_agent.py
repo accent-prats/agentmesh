@@ -62,6 +62,26 @@ class TestPortalHasAnActiveProvider:
         assert isinstance(agent, DeepRCAAgent)
         assert agent.model == "gpt-5"
 
+    def test_logs_which_provider_and_model_it_picked(self, monkeypatch, caplog):
+        """Found 2026-10-16, tracing a real production timeout: this
+        success path had no logging of its own - the only visible signal
+        anywhere in get_rca_agent() was the scripted-fallback warning, so
+        there was no way to confirm from logs alone which provider/model
+        a given run actually used. Also pins that the API key itself
+        never appears in the log message."""
+        _with_portal_secret(monkeypatch)
+        monkeypatch.setattr("httpx.get", lambda *a, **k: FakeHttpResponse({
+            "provider": "deepseek", "api_key": "sk-secret-dont-log-me", "base_url": "https://api.siemens.com/llm/v1",
+            "model": "deepseek-v4.1-flash", "api_version": "", "deployment": "",
+        }))
+
+        with caplog.at_level("INFO"):
+            deps_module.get_rca_agent()
+
+        messages = [r.message for r in caplog.records]
+        assert any("deepseek" in m and "deepseek-v4.1-flash" in m for m in messages)
+        assert not any("sk-secret-dont-log-me" in m for m in messages)
+
     def test_falls_back_to_the_catalog_default_model_when_none_is_saved(self, monkeypatch):
         _with_portal_secret(monkeypatch)
         monkeypatch.setattr("httpx.get", lambda *a, **k: FakeHttpResponse({
@@ -87,6 +107,16 @@ class TestPortalHasNothingConfigured:
 
         assert isinstance(agent, DeepRCAAgent)
         assert agent.model == deps_module.settings.rca_model
+
+    def test_env_var_fallback_is_logged_too(self, monkeypatch, caplog):
+        _with_portal_secret(monkeypatch)
+        monkeypatch.setattr("httpx.get", lambda *a, **k: FakeHttpResponse({"provider": ""}))
+        monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant-legacy")
+
+        with caplog.at_level("INFO"):
+            deps_module.get_rca_agent()
+
+        assert any("ANTHROPIC_API_KEY" in r.message and "env fallback" in r.message for r in caplog.records)
 
     def test_an_empty_provider_and_no_env_var_falls_back_to_the_scripted_agent(self, monkeypatch):
         _with_portal_secret(monkeypatch)

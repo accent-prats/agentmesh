@@ -221,6 +221,44 @@ class TestOpenAICompatibleClient:
         assert timeout.read >= 180.0
         assert timeout.connect <= 15.0
 
+    def test_calls_are_traced_with_duration_and_outcome(self, monkeypatch, caplog):
+        """Found 2026-10-16, tracing a real production timeout: this call
+        had no logging of its own at all - the only way to know it was
+        even the thing hanging was reading a raised exception's own
+        traceback. Pins that the API key never leaks into the log (it
+        lives in a header here, not the URL, but the log line must still
+        never include it)."""
+        captured: dict = {}
+        self._fake_post(monkeypatch, captured, {
+            "choices": [{"message": {"tool_calls": [{"function": {"name": "submit_rca_finding", "arguments": "{}"}}]}}],
+        })
+        client = OpenAICompatibleClient(api_key="sk-secret-dont-log-me", base_url="https://api.openai.com/v1")
+
+        with caplog.at_level("INFO"):
+            client.messages.create(model="gpt-5", max_tokens=10, thinking=None, system="s", tools=[_TOOL_SCHEMA], messages=[])
+
+        messages = [r.message for r in caplog.records]
+        assert any("calling" in m and "gpt-5" in m for m in messages)
+        assert any("responded" in m and "200" in m for m in messages)
+        assert not any("sk-secret-dont-log-me" in m for m in messages)
+
+    def test_a_failed_call_is_logged_but_the_real_exception_still_propagates(self, monkeypatch, caplog):
+        def fake_post(url, *, headers, json, timeout):
+            raise httpx.ReadTimeout("The read operation timed out")
+
+        monkeypatch.setattr("shared.src.llm.openai_compatible.httpx.post", fake_post)
+        client = OpenAICompatibleClient(api_key="k", base_url="https://api.openai.com/v1")
+
+        with caplog.at_level("WARNING"):
+            try:
+                client.messages.create(model="gpt-5", max_tokens=10, thinking=None, system="s", tools=[_TOOL_SCHEMA], messages=[])
+                raised = None
+            except httpx.ReadTimeout as exc:
+                raised = exc
+
+        assert raised is not None
+        assert any(r.levelname == "WARNING" and "failed after" in r.message for r in caplog.records)
+
 
 # ── GeminiClient ────────────────────────────────────────────────────────────
 
@@ -295,3 +333,46 @@ class TestGeminiClient:
         assert isinstance(timeout, httpx.Timeout)
         assert timeout.read >= 180.0
         assert timeout.connect <= 15.0
+
+    def test_the_api_key_never_leaks_into_the_trace_log(self, monkeypatch, caplog):
+        """Security-critical, not just a nice-to-have: unlike
+        OpenAICompatibleClient, Gemini's API key lives in the URL's own
+        query string (?key=...), not a header. Logging the real `url`
+        variable as-is (an easy mistake to copy-paste from the OpenAI
+        adapter's own tracing) would leak the credential straight into
+        logs. This must stay true both on a successful call and a failed
+        one - the API key must not appear in *any* log record."""
+        def fake_post(url, *, json, timeout):
+            return FakeHttpResponse({"candidates": [{"content": {"parts": [
+                {"functionCall": {"name": "submit_rca_finding", "args": {}}}
+            ]}}]})
+
+        monkeypatch.setattr("shared.src.llm.gemini.httpx.post", fake_post)
+        client = GeminiClient(api_key="AIzaSecretDontLogMe", base_url="https://generativelanguage.googleapis.com/v1beta")
+
+        with caplog.at_level("INFO"):
+            client.messages.create(model="gemini-2.5-pro", max_tokens=10, thinking=None, system="s", tools=[_TOOL_SCHEMA], messages=[])
+
+        messages = [r.message for r in caplog.records]
+        assert any("calling" in m and "gemini-2.5-pro" in m for m in messages)
+        assert any("REDACTED" in m for m in messages)
+        assert not any("AIzaSecretDontLogMe" in m for m in messages)
+
+    def test_a_failed_call_does_not_leak_the_api_key_either(self, monkeypatch, caplog):
+        def fake_post(url, *, json, timeout):
+            raise httpx.ReadTimeout("The read operation timed out")
+
+        monkeypatch.setattr("shared.src.llm.gemini.httpx.post", fake_post)
+        client = GeminiClient(api_key="AIzaSecretDontLogMe", base_url="https://generativelanguage.googleapis.com/v1beta")
+
+        with caplog.at_level("WARNING"):
+            try:
+                client.messages.create(model="gemini-2.5-pro", max_tokens=10, thinking=None, system="s", tools=[_TOOL_SCHEMA], messages=[])
+                raised = None
+            except httpx.ReadTimeout as exc:
+                raised = exc
+
+        assert raised is not None
+        messages = [r.message for r in caplog.records]
+        assert any(r.levelname == "WARNING" and "failed after" in r.message for r in caplog.records)
+        assert not any("AIzaSecretDontLogMe" in m for m in messages)

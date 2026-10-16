@@ -8,11 +8,15 @@ instead of seven near-identical ones.
 """
 from __future__ import annotations
 
+import logging
+import time
 from typing import Any
 
 import httpx
 
 from shared.src.llm.base import NormalizedResponse, ToolUseBlock
+
+log = logging.getLogger(__name__)
 
 _DEFAULT_AZURE_API_VERSION = "2024-08-01-preview"
 
@@ -115,8 +119,23 @@ class OpenAICompatibleClient:
         }
 
         url, headers = self._endpoint_and_headers(model)
-        response = httpx.post(url, headers=headers, json=payload, timeout=self.timeout)
-        response.raise_for_status()
+        # Found 2026-10-16, tracing a real production timeout: this call
+        # had no logging of its own - the only way to know it was even
+        # the thing hanging was reading a raised exception's own
+        # traceback. Logs the endpoint/model before sending (never
+        # headers/api_key) and the outcome + duration whichever way the
+        # call goes, so a slow-but-eventually-successful call and a
+        # genuinely-timed-out one are both visible without needing to
+        # wait for an exception to bubble all the way up to routes_runs.py.
+        log.info("OpenAICompatibleClient: calling %s (model=%s, max_tokens=%s)", url, model, max_tokens)
+        started = time.monotonic()
+        try:
+            response = httpx.post(url, headers=headers, json=payload, timeout=self.timeout)
+            response.raise_for_status()
+        except Exception:
+            log.warning("OpenAICompatibleClient: call to %s failed after %.1fs", url, time.monotonic() - started)
+            raise
+        log.info("OpenAICompatibleClient: %s responded %s after %.1fs", url, response.status_code, time.monotonic() - started)
         data = response.json()
 
         choice = data["choices"][0]

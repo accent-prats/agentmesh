@@ -15,8 +15,9 @@ from shared.src.llm.openai_compatible import OpenAICompatibleClient
 
 
 class FakeHttpResponse:
-    def __init__(self, json_data: dict):
+    def __init__(self, json_data: dict, status_code: int = 200):
         self._json = json_data
+        self.status_code = status_code
 
     def raise_for_status(self) -> None:
         return None

@@ -24,6 +24,7 @@ from __future__ import annotations
 
 import json
 import logging
+import time
 from typing import Any, Protocol
 
 from pydantic import ValidationError
@@ -203,13 +204,37 @@ class DeepRCAAgent:
         system = _build_system_prompt()
         user_prompt = _build_user_prompt(cluster, representative, near_misses or [], retrieval_context)
 
-        response = self.client.messages.create(
-            model=self.model,
-            max_tokens=8000,
-            thinking={"type": "adaptive"},
-            system=system,
-            tools=[_RCA_TOOL_SCHEMA],
-            messages=[{"role": "user", "content": user_prompt}],
+        # Found 2026-10-16, tracing a real production timeout: this call
+        # had no logging of its own at all - once it was confirmed to be
+        # the thing actually hanging/failing (via its own exception's
+        # traceback), there was still no way to tell from logs alone
+        # which cluster/machine a given slow or failed call belonged to,
+        # or how long it ran before failing. prompt_chars is a cheap
+        # proxy for "is this cluster's evidence unusually large" without
+        # logging the prompt content itself.
+        log.info(
+            "RCA diagnose starting: cluster=%s machine=%s model=%s prompt_chars=%d",
+            cluster.cluster_id, representative.machine.vm_name, self.model, len(user_prompt),
+        )
+        started = time.monotonic()
+        try:
+            response = self.client.messages.create(
+                model=self.model,
+                max_tokens=8000,
+                thinking={"type": "adaptive"},
+                system=system,
+                tools=[_RCA_TOOL_SCHEMA],
+                messages=[{"role": "user", "content": user_prompt}],
+            )
+        except Exception:
+            log.warning(
+                "RCA diagnose call failed: cluster=%s machine=%s after %.1fs",
+                cluster.cluster_id, representative.machine.vm_name, time.monotonic() - started,
+            )
+            raise
+        log.info(
+            "RCA diagnose call returned: cluster=%s machine=%s after %.1fs",
+            cluster.cluster_id, representative.machine.vm_name, time.monotonic() - started,
         )
 
         tool_call = next((b for b in response.content if getattr(b, "type", None) == "tool_use" and getattr(b, "name", None) == _TOOL_NAME), None)

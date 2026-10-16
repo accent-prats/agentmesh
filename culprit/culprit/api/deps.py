@@ -82,7 +82,10 @@ def get_rca_agent():
     already documents for Azure/Datadog. Called once per Pipeline
     construction (one network round-trip per run, not per machine), so
     the cost of not caching it is negligible next to the model call itself."""
+    import logging
     import os
+
+    log = logging.getLogger("culprit.api.deps")
 
     resolved = _fetch_active_ai_provider_from_portal()
     if resolved is not None:
@@ -99,11 +102,20 @@ def get_rca_agent():
                 api_version=resolved["api_version"],
                 deployment=resolved["deployment"],
             )
-            return DeepRCAAgent(client=client, model=resolved["model"] or spec.default_model)
+            model = resolved["model"] or spec.default_model
+            # Found 2026-10-16, tracing a real production timeout: neither
+            # success path below used to log anything at all - the only
+            # visible signal in this whole function was the scripted-
+            # fallback warning, so there was no way to confirm from logs
+            # alone which provider/model a given run actually used before
+            # it either succeeded or failed somewhere downstream.
+            log.info("RCA agent: using Portal-active provider=%s model=%s base_url=%s", resolved["provider"], model, resolved["base_url"] or spec.default_base_url)
+            return DeepRCAAgent(client=client, model=model)
 
     if os.environ.get("ANTHROPIC_API_KEY") or os.environ.get("ANTHROPIC_AUTH_TOKEN"):
         from culprit.pipeline.rca_agent import DeepRCAAgent
 
+        log.info("RCA agent: no Portal-active provider, using ANTHROPIC_API_KEY/CULPRIT_RCA_MODEL env fallback (model=%s)", settings.rca_model)
         return DeepRCAAgent(model=settings.rca_model)
 
     # Found 2026-10-16: this fallback had zero logging of its own - a
@@ -123,9 +135,7 @@ def get_rca_agent():
     # lifespan checks - this one fires once per Pipeline construction
     # (not cached), so a scheduled live run keeps restating it every
     # cycle until it's fixed, not just once at startup.
-    import logging
-
-    logging.getLogger("culprit.api.deps").warning(
+    log.warning(
         "No AI provider configured (neither a Portal-active provider nor "
         "ANTHROPIC_API_KEY/ANTHROPIC_AUTH_TOKEN) - using the SCRIPTED demo RCA "
         "agent for this run. It does not read collected evidence at all and "

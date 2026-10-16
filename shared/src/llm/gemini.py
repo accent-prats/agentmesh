@@ -11,11 +11,15 @@ once" contract the other adapters enforce structurally.
 """
 from __future__ import annotations
 
+import logging
+import time
 from typing import Any
 
 import httpx
 
 from shared.src.llm.base import NormalizedResponse, ToolUseBlock
+
+log = logging.getLogger(__name__)
 
 
 class _MessagesNamespace:
@@ -93,8 +97,22 @@ class GeminiClient:
         }
 
         url = f"{self.base_url}/models/{model}:generateContent?key={self.api_key}"
-        response = httpx.post(url, json=payload, timeout=self.timeout)
-        response.raise_for_status()
+        # Found 2026-10-16, same tracing added to
+        # shared/src/llm/openai_compatible.py's own _create() - logs the
+        # outcome + duration whichever way the call goes. Unlike that
+        # adapter, Gemini's API key lives in the URL's own query string
+        # (not a header), so the logged endpoint must have it redacted -
+        # logging `url` as-is here would leak the credential into logs.
+        safe_url = f"{self.base_url}/models/{model}:generateContent?key=REDACTED"
+        log.info("GeminiClient: calling %s (max_tokens=%s)", safe_url, max_tokens)
+        started = time.monotonic()
+        try:
+            response = httpx.post(url, json=payload, timeout=self.timeout)
+            response.raise_for_status()
+        except Exception:
+            log.warning("GeminiClient: call to %s failed after %.1fs", safe_url, time.monotonic() - started)
+            raise
+        log.info("GeminiClient: %s responded %s after %.1fs", safe_url, response.status_code, time.monotonic() - started)
         data = response.json()
 
         candidates = data.get("candidates") or []
