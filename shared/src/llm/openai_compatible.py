@@ -160,9 +160,21 @@ class OpenAICompatibleClient:
         # Logs "still waiting" on a fixed interval for as long as this one
         # call is actually in flight; does not change the call itself.
         heartbeat_label = f"OpenAICompatibleClient: call to {url} (model={model})"
+        # Found 2026-10-17: a plain httpx.post() gives no way to tell
+        # "the gateway never responded at all" apart from "the gateway
+        # sent a response and started on the body, then stalled" - both
+        # looked identical (just a ReadTimeout after the full window).
+        # httpx.stream() returns as soon as the response headers arrive,
+        # before the body is read, so logging in between those two steps
+        # gives a genuine time-to-first-byte marker.
         try:
             with log_heartbeat(log, heartbeat_label, interval=_HEARTBEAT_INTERVAL_SECONDS):
-                response = httpx.post(url, headers=headers, json=payload, timeout=self.timeout)
+                with httpx.stream("POST", url, headers=headers, json=payload, timeout=self.timeout) as response:
+                    log.info(
+                        "OpenAICompatibleClient: %s sent response headers (status=%s) after %.1fs - reading body",
+                        url, response.status_code, time.monotonic() - started,
+                    )
+                    response.read()
             response.raise_for_status()
         except Exception as exc:
             log.warning(
@@ -170,7 +182,7 @@ class OpenAICompatibleClient:
                 url, time.monotonic() - started, _safe_exc_summary(exc),
             )
             raise
-        log.info("OpenAICompatibleClient: %s responded %s after %.1fs", url, response.status_code, time.monotonic() - started)
+        log.info("OpenAICompatibleClient: %s fully responded (%s) after %.1fs", url, response.status_code, time.monotonic() - started)
         data = response.json()
 
         choice = data["choices"][0]

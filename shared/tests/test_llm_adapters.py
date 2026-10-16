@@ -3,10 +3,11 @@ app call something other than Anthropic through the same narrow,
 Anthropic-shaped interface.
 
 Verified against each provider's *documented* wire format via a fake
-httpx transport (monkeypatching `httpx.post`), the same fakes-not-real-
-SDKs rigor the rest of this platform applies elsewhere - not against live
-credentials for each of the eight non-Anthropic providers. See
-shared/src/llm/__init__.py's docstring.
+httpx transport (monkeypatching `httpx.stream`, since both adapters now
+stream the response - see FakeStream's own docstring for why), the same
+fakes-not-real-SDKs rigor the rest of this platform applies elsewhere -
+not against live credentials for each of the eight non-Anthropic
+providers. See shared/src/llm/__init__.py's docstring.
 
 The end-to-end proof that one of these can actually stand in for
 Anthropic inside a real caller lives in
@@ -42,11 +43,20 @@ _TOOL_SCHEMA = {
 
 
 class FakeHttpResponse:
+    """Stands in for the httpx.Response yielded by `with httpx.stream(...)
+    as response:`. `.read()` is a no-op (the fake body is already fully in
+    memory), matching real httpx's own contract that `.json()`/`.content`
+    keep working after `.read()` has been called inside the `with` block,
+    even once it's exited (confirmed empirically against a real
+    httpx.Response, not assumed)."""
     def __init__(self, json_data: dict, status_code: int = 200):
         self._json = json_data
         self.status_code = status_code
         self.text = str(json_data)
         self.request = httpx.Request("POST", "https://example.invalid")
+
+    def read(self) -> None:
+        pass
 
     def raise_for_status(self) -> None:
         if self.status_code >= 400:
@@ -54,6 +64,55 @@ class FakeHttpResponse:
 
     def json(self) -> dict:
         return self._json
+
+
+class FakeStream:
+    """Stands in for the context manager `httpx.stream(...)` returns. The
+    real one does the network connect/send/wait-for-headers on `__enter__`
+    and only reads the body when `.read()` is explicitly called - exactly
+    the two-phase split this module's own time-to-first-byte logging
+    depends on, so a test needs to be able to simulate each phase failing
+    (or taking time) independently:
+
+    - `enter_exc`: raised from `__enter__` - models a gateway that never
+      responds at all (no headers ever arrive).
+    - `read_exc`: raised from `.read()` - models a gateway that DID send
+      headers/status but then stalled or failed partway through the body.
+    - `sleep_before_enter` / `sleep_before_read`: models a slow phase for
+      heartbeat-logging tests, without needing a real multi-second wait.
+    """
+    def __init__(
+        self, response: FakeHttpResponse | None = None, *,
+        enter_exc: BaseException | None = None, read_exc: BaseException | None = None,
+        sleep_before_enter: float = 0.0, sleep_before_read: float = 0.0,
+    ):
+        self._response = response
+        self._enter_exc = enter_exc
+        self._read_exc = read_exc
+        self._sleep_before_enter = sleep_before_enter
+        self._sleep_before_read = sleep_before_read
+
+    def __enter__(self):
+        if self._sleep_before_enter:
+            time.sleep(self._sleep_before_enter)
+        if self._enter_exc is not None:
+            raise self._enter_exc
+        response = self._response
+        original_read = response.read
+        sleep_before_read, read_exc = self._sleep_before_read, self._read_exc
+
+        def read():
+            if sleep_before_read:
+                time.sleep(sleep_before_read)
+            if read_exc is not None:
+                raise read_exc
+            return original_read()
+
+        response.read = read
+        return response
+
+    def __exit__(self, exc_type, exc, tb) -> bool:
+        return False
 
 
 # ── catalog ────────────────────────────────────────────────────────────────
@@ -126,19 +185,20 @@ class TestFactory:
 # ── OpenAICompatibleClient ─────────────────────────────────────────────────
 
 class TestOpenAICompatibleClient:
-    def _fake_post(self, monkeypatch, captured: dict, response_json: dict):
-        def fake_post(url, *, headers, json, timeout):
+    def _fake_stream(self, monkeypatch, captured: dict, response_json: dict, status_code: int = 200):
+        def fake_stream(method, url, *, headers, json, timeout):
+            captured["method"] = method
             captured["url"] = url
             captured["headers"] = headers
             captured["json"] = json
             captured["timeout"] = timeout
-            return FakeHttpResponse(response_json)
+            return FakeStream(FakeHttpResponse(response_json, status_code))
 
-        monkeypatch.setattr("shared.src.llm.openai_compatible.httpx.post", fake_post)
+        monkeypatch.setattr("shared.src.llm.openai_compatible.httpx.stream", fake_stream)
 
     def test_request_shape_forces_the_tool_call(self, monkeypatch):
         captured: dict = {}
-        self._fake_post(monkeypatch, captured, {
+        self._fake_stream(monkeypatch, captured, {
             "choices": [{"message": {"tool_calls": [
                 {"function": {"name": "submit_rca_finding", "arguments": '{"cause_family": "capacity"}'}}
             ]}}],
@@ -163,7 +223,7 @@ class TestOpenAICompatibleClient:
 
     def test_strict_is_omitted_when_the_provider_does_not_support_it(self, monkeypatch):
         captured: dict = {}
-        self._fake_post(monkeypatch, captured, {
+        self._fake_stream(monkeypatch, captured, {
             "choices": [{"message": {"tool_calls": [{"function": {"name": "submit_rca_finding", "arguments": "{}"}}]}}],
         })
         client = OpenAICompatibleClient(api_key="k", base_url="https://api.deepseek.com/v1", supports_strict_tool_schema=False)
@@ -172,7 +232,7 @@ class TestOpenAICompatibleClient:
 
     def test_azure_endpoint_shape_uses_deployment_and_api_key_header(self, monkeypatch):
         captured: dict = {}
-        self._fake_post(monkeypatch, captured, {
+        self._fake_stream(monkeypatch, captured, {
             "choices": [{"message": {"tool_calls": [{"function": {"name": "submit_rca_finding", "arguments": "{}"}}]}}],
         })
         client = OpenAICompatibleClient(
@@ -190,7 +250,7 @@ class TestOpenAICompatibleClient:
 
     def test_no_tool_call_returns_empty_content_not_a_crash(self, monkeypatch):
         captured: dict = {}
-        self._fake_post(monkeypatch, captured, {"choices": [{"message": {}, "finish_reason": "stop"}]})
+        self._fake_stream(monkeypatch, captured, {"choices": [{"message": {}, "finish_reason": "stop"}]})
         client = OpenAICompatibleClient(api_key="k", base_url="https://api.openai.com/v1")
         response = client.messages.create(model="gpt-5", max_tokens=10, thinking=None, system="s", tools=[_TOOL_SCHEMA], messages=[])
         assert response.content == []
@@ -198,7 +258,7 @@ class TestOpenAICompatibleClient:
 
     def test_a_local_provider_omits_the_authorization_header_with_no_key(self, monkeypatch):
         captured: dict = {}
-        self._fake_post(monkeypatch, captured, {
+        self._fake_stream(monkeypatch, captured, {
             "choices": [{"message": {"tool_calls": [{"function": {"name": "submit_rca_finding", "arguments": "{}"}}]}}],
         })
         client = OpenAICompatibleClient(api_key="", base_url="http://localhost:11434/v1")
@@ -212,7 +272,7 @@ class TestOpenAICompatibleClient:
         streaming back a big completion) that failed, not connect. A
         genuinely dead endpoint must still fail fast."""
         captured: dict = {}
-        self._fake_post(monkeypatch, captured, {
+        self._fake_stream(monkeypatch, captured, {
             "choices": [{"message": {"tool_calls": [{"function": {"name": "submit_rca_finding", "arguments": "{}"}}]}}],
         })
         client = OpenAICompatibleClient(api_key="k", base_url="https://api.openai.com/v1")
@@ -231,7 +291,7 @@ class TestOpenAICompatibleClient:
         lives in a header here, not the URL, but the log line must still
         never include it)."""
         captured: dict = {}
-        self._fake_post(monkeypatch, captured, {
+        self._fake_stream(monkeypatch, captured, {
             "choices": [{"message": {"tool_calls": [{"function": {"name": "submit_rca_finding", "arguments": "{}"}}]}}],
         })
         client = OpenAICompatibleClient(api_key="sk-secret-dont-log-me", base_url="https://api.openai.com/v1")
@@ -241,14 +301,14 @@ class TestOpenAICompatibleClient:
 
         messages = [r.message for r in caplog.records]
         assert any("calling" in m and "gpt-5" in m for m in messages)
-        assert any("responded" in m and "200" in m for m in messages)
+        assert any("fully responded" in m and "200" in m for m in messages)
         assert not any("sk-secret-dont-log-me" in m for m in messages)
 
     def test_a_failed_call_is_logged_but_the_real_exception_still_propagates(self, monkeypatch, caplog):
-        def fake_post(url, *, headers, json, timeout):
-            raise httpx.ReadTimeout("The read operation timed out")
+        def fake_stream(method, url, *, headers, json, timeout):
+            return FakeStream(enter_exc=httpx.ReadTimeout("The read operation timed out"))
 
-        monkeypatch.setattr("shared.src.llm.openai_compatible.httpx.post", fake_post)
+        monkeypatch.setattr("shared.src.llm.openai_compatible.httpx.stream", fake_stream)
         client = OpenAICompatibleClient(api_key="k", base_url="https://api.openai.com/v1")
 
         with caplog.at_level("WARNING"):
@@ -268,13 +328,12 @@ class TestOpenAICompatibleClient:
         and a hung process looked identical from the logs alone."""
         monkeypatch.setattr("shared.src.llm.openai_compatible._HEARTBEAT_INTERVAL_SECONDS", 0.05)
 
-        def fake_post(url, *, headers, json, timeout):
-            time.sleep(0.2)
-            return FakeHttpResponse({
+        def fake_stream(method, url, *, headers, json, timeout):
+            return FakeStream(FakeHttpResponse({
                 "choices": [{"message": {"tool_calls": [{"function": {"name": "submit_rca_finding", "arguments": "{}"}}]}}],
-            })
+            }), sleep_before_enter=0.2)
 
-        monkeypatch.setattr("shared.src.llm.openai_compatible.httpx.post", fake_post)
+        monkeypatch.setattr("shared.src.llm.openai_compatible.httpx.stream", fake_stream)
         client = OpenAICompatibleClient(api_key="k", base_url="https://api.openai.com/v1")
 
         with caplog.at_level("INFO"):
@@ -290,11 +349,10 @@ class TestOpenAICompatibleClient:
         to close."""
         monkeypatch.setattr("shared.src.llm.openai_compatible._HEARTBEAT_INTERVAL_SECONDS", 0.05)
 
-        def fake_post(url, *, headers, json, timeout):
-            time.sleep(0.15)
-            raise httpx.ReadTimeout("The read operation timed out")
+        def fake_stream(method, url, *, headers, json, timeout):
+            return FakeStream(enter_exc=httpx.ReadTimeout("The read operation timed out"), sleep_before_enter=0.15)
 
-        monkeypatch.setattr("shared.src.llm.openai_compatible.httpx.post", fake_post)
+        monkeypatch.setattr("shared.src.llm.openai_compatible.httpx.stream", fake_stream)
         client = OpenAICompatibleClient(api_key="k", base_url="https://api.openai.com/v1")
 
         with caplog.at_level("INFO"):
@@ -305,6 +363,69 @@ class TestOpenAICompatibleClient:
 
         heartbeats = [r.message for r in caplog.records if "still waiting" in r.message]
         assert len(heartbeats) >= 1
+
+    def test_logs_time_to_first_byte_separately_from_full_response_time(self, monkeypatch, caplog):
+        """Found 2026-10-17: a flat httpx.post() call couldn't tell "the
+        gateway never responded at all" apart from "it responded and then
+        stalled partway through the body" - both just looked like the
+        same ReadTimeout after the same full window. httpx.stream()
+        returns as soon as headers arrive, before the body is read, so a
+        genuinely-answering-but-slow call now gets its own log line."""
+        def fake_stream(method, url, *, headers, json, timeout):
+            return FakeStream(FakeHttpResponse({
+                "choices": [{"message": {"tool_calls": [{"function": {"name": "submit_rca_finding", "arguments": "{}"}}]}}],
+            }))
+
+        monkeypatch.setattr("shared.src.llm.openai_compatible.httpx.stream", fake_stream)
+        client = OpenAICompatibleClient(api_key="k", base_url="https://api.openai.com/v1")
+
+        with caplog.at_level("INFO"):
+            client.messages.create(model="gpt-5", max_tokens=10, thinking=None, system="s", tools=[_TOOL_SCHEMA], messages=[])
+
+        messages = [r.message for r in caplog.records]
+        assert any("sent response headers" in m and "200" in m for m in messages)
+        assert any("fully responded" in m and "200" in m for m in messages)
+
+    def test_a_timeout_before_any_response_headers_never_logs_ttfb(self, monkeypatch, caplog):
+        """The gateway never responding at all - the real bug this was
+        built to diagnose - must NOT produce a "sent response headers"
+        line. That absence is itself the diagnostic signal."""
+        def fake_stream(method, url, *, headers, json, timeout):
+            return FakeStream(enter_exc=httpx.ReadTimeout("The read operation timed out"))
+
+        monkeypatch.setattr("shared.src.llm.openai_compatible.httpx.stream", fake_stream)
+        client = OpenAICompatibleClient(api_key="k", base_url="https://api.openai.com/v1")
+
+        with caplog.at_level("INFO"):
+            try:
+                client.messages.create(model="gpt-5", max_tokens=10, thinking=None, system="s", tools=[_TOOL_SCHEMA], messages=[])
+            except httpx.ReadTimeout:
+                pass
+
+        messages = [r.message for r in caplog.records]
+        assert not any("sent response headers" in m for m in messages)
+        assert any(r.levelname == "WARNING" and "failed after" in r.message for r in caplog.records)
+
+    def test_a_timeout_while_reading_the_body_still_logs_ttfb_first(self, monkeypatch, caplog):
+        """The opposite case: the gateway DID start responding (headers
+        arrived) but then stalled or failed partway through the body -
+        this must still log the TTFB line before the eventual failure,
+        distinguishing it from the "nothing ever came back" case above."""
+        def fake_stream(method, url, *, headers, json, timeout):
+            return FakeStream(FakeHttpResponse({"choices": []}), read_exc=httpx.ReadTimeout("The read operation timed out"))
+
+        monkeypatch.setattr("shared.src.llm.openai_compatible.httpx.stream", fake_stream)
+        client = OpenAICompatibleClient(api_key="k", base_url="https://api.openai.com/v1")
+
+        with caplog.at_level("INFO"):
+            try:
+                client.messages.create(model="gpt-5", max_tokens=10, thinking=None, system="s", tools=[_TOOL_SCHEMA], messages=[])
+            except httpx.ReadTimeout:
+                pass
+
+        messages = [r.message for r in caplog.records]
+        assert any("sent response headers" in m for m in messages)
+        assert any(r.levelname == "WARNING" and "failed after" in r.message for r in caplog.records)
 
 
 # ── GeminiClient ────────────────────────────────────────────────────────────
@@ -319,16 +440,16 @@ class TestGeminiClient:
     def test_request_shape_forces_the_function_call(self, monkeypatch):
         captured: dict = {}
 
-        def fake_post(url, *, json, timeout):
+        def fake_stream(method, url, *, json, timeout):
             captured["url"] = url
             captured["json"] = json
-            return FakeHttpResponse({
+            return FakeStream(FakeHttpResponse({
                 "candidates": [{"content": {"parts": [
                     {"functionCall": {"name": "submit_rca_finding", "args": {"cause_family": "capacity"}}}
                 ]}}],
-            })
+            }))
 
-        monkeypatch.setattr("shared.src.llm.gemini.httpx.post", fake_post)
+        monkeypatch.setattr("shared.src.llm.gemini.httpx.stream", fake_stream)
         client = GeminiClient(api_key="g-key", base_url="https://generativelanguage.googleapis.com/v1beta")
 
         response = client.messages.create(
@@ -349,10 +470,10 @@ class TestGeminiClient:
         assert response.content[0].input == {"cause_family": "capacity"}  # already a dict, unlike the OpenAI adapters
 
     def test_no_function_call_returns_empty_content_not_a_crash(self, monkeypatch):
-        def fake_post(url, *, json, timeout):
-            return FakeHttpResponse({"candidates": [{"content": {"parts": [{"text": "no tool call"}]}, "finishReason": "STOP"}]})
+        def fake_stream(method, url, *, json, timeout):
+            return FakeStream(FakeHttpResponse({"candidates": [{"content": {"parts": [{"text": "no tool call"}]}, "finishReason": "STOP"}]}))
 
-        monkeypatch.setattr("shared.src.llm.gemini.httpx.post", fake_post)
+        monkeypatch.setattr("shared.src.llm.gemini.httpx.stream", fake_stream)
         client = GeminiClient(api_key="k", base_url="https://generativelanguage.googleapis.com/v1beta")
         response = client.messages.create(model="gemini-2.5-pro", max_tokens=10, thinking=None, system="s", tools=[_TOOL_SCHEMA], messages=[])
         assert response.content == []
@@ -366,13 +487,13 @@ class TestGeminiClient:
         family got fixed first."""
         captured: dict = {}
 
-        def fake_post(url, *, json, timeout):
+        def fake_stream(method, url, *, json, timeout):
             captured["timeout"] = timeout
-            return FakeHttpResponse({"candidates": [{"content": {"parts": [
+            return FakeStream(FakeHttpResponse({"candidates": [{"content": {"parts": [
                 {"functionCall": {"name": "submit_rca_finding", "args": {}}}
-            ]}}]})
+            ]}}]}))
 
-        monkeypatch.setattr("shared.src.llm.gemini.httpx.post", fake_post)
+        monkeypatch.setattr("shared.src.llm.gemini.httpx.stream", fake_stream)
         client = GeminiClient(api_key="k", base_url="https://generativelanguage.googleapis.com/v1beta")
         client.messages.create(model="gemini-2.5-pro", max_tokens=10, thinking=None, system="s", tools=[_TOOL_SCHEMA], messages=[])
 
@@ -389,12 +510,12 @@ class TestGeminiClient:
         adapter's own tracing) would leak the credential straight into
         logs. This must stay true both on a successful call and a failed
         one - the API key must not appear in *any* log record."""
-        def fake_post(url, *, json, timeout):
-            return FakeHttpResponse({"candidates": [{"content": {"parts": [
+        def fake_stream(method, url, *, json, timeout):
+            return FakeStream(FakeHttpResponse({"candidates": [{"content": {"parts": [
                 {"functionCall": {"name": "submit_rca_finding", "args": {}}}
-            ]}}]})
+            ]}}]}))
 
-        monkeypatch.setattr("shared.src.llm.gemini.httpx.post", fake_post)
+        monkeypatch.setattr("shared.src.llm.gemini.httpx.stream", fake_stream)
         client = GeminiClient(api_key="AIzaSecretDontLogMe", base_url="https://generativelanguage.googleapis.com/v1beta")
 
         with caplog.at_level("INFO"):
@@ -406,10 +527,10 @@ class TestGeminiClient:
         assert not any("AIzaSecretDontLogMe" in m for m in messages)
 
     def test_a_failed_call_does_not_leak_the_api_key_either(self, monkeypatch, caplog):
-        def fake_post(url, *, json, timeout):
-            raise httpx.ReadTimeout("The read operation timed out")
+        def fake_stream(method, url, *, json, timeout):
+            return FakeStream(enter_exc=httpx.ReadTimeout("The read operation timed out"))
 
-        monkeypatch.setattr("shared.src.llm.gemini.httpx.post", fake_post)
+        monkeypatch.setattr("shared.src.llm.gemini.httpx.stream", fake_stream)
         client = GeminiClient(api_key="AIzaSecretDontLogMe", base_url="https://generativelanguage.googleapis.com/v1beta")
 
         with caplog.at_level("WARNING"):
@@ -434,15 +555,20 @@ class TestGeminiClient:
         re-leak the key through the exception message itself, bypassing
         the safe_url redaction entirely. This is exactly why the warning
         log uses _safe_exc_summary(exc) (class + status code only) and
-        never str(exc)."""
+        never str(exc). Uses a real httpx.Response (not the FakeHttpResponse
+        fake) so raise_for_status() produces the real, authentic message -
+        a 401 arrives with its status/headers immediately in practice, so
+        this models it succeeding through the streaming `with` block and
+        failing on the production code's own `response.raise_for_status()`
+        call afterward, same as the real flow."""
         real_key = "AIzaSecretDontLogMe"
 
-        def fake_post(url, *, json, timeout):
+        def fake_stream(method, url, *, json, timeout):
             request = httpx.Request("POST", url)
             response = httpx.Response(401, request=request, json={"error": "unauthorized"})
-            response.raise_for_status()  # raises httpx.HTTPStatusError, str() of which embeds `url` (with the real key)
+            return FakeStream(response)
 
-        monkeypatch.setattr("shared.src.llm.gemini.httpx.post", fake_post)
+        monkeypatch.setattr("shared.src.llm.gemini.httpx.stream", fake_stream)
         client = GeminiClient(api_key=real_key, base_url="https://generativelanguage.googleapis.com/v1beta")
 
         with caplog.at_level("WARNING"):
@@ -466,13 +592,12 @@ class TestGeminiClient:
         monkeypatch.setattr("shared.src.llm.gemini._HEARTBEAT_INTERVAL_SECONDS", 0.05)
         real_key = "AIzaSecretDontLogMe"
 
-        def fake_post(url, *, json, timeout):
-            time.sleep(0.2)
-            return FakeHttpResponse({"candidates": [{"content": {"parts": [
+        def fake_stream(method, url, *, json, timeout):
+            return FakeStream(FakeHttpResponse({"candidates": [{"content": {"parts": [
                 {"functionCall": {"name": "submit_rca_finding", "args": {}}}
-            ]}}]})
+            ]}}]}), sleep_before_enter=0.2)
 
-        monkeypatch.setattr("shared.src.llm.gemini.httpx.post", fake_post)
+        monkeypatch.setattr("shared.src.llm.gemini.httpx.stream", fake_stream)
         client = GeminiClient(api_key=real_key, base_url="https://generativelanguage.googleapis.com/v1beta")
 
         with caplog.at_level("INFO"):
@@ -483,3 +608,42 @@ class TestGeminiClient:
         assert len(heartbeats) >= 2
         assert all("REDACTED" in m for m in heartbeats)
         assert not any(real_key in m for m in messages)
+
+    def test_logs_time_to_first_byte_separately_and_never_leaks_the_key(self, monkeypatch, caplog):
+        """Found 2026-10-17, same gap as OpenAICompatibleClient's own
+        version of this test - must also pass through the redacted
+        safe_url, same as every other log line here."""
+        def fake_stream(method, url, *, json, timeout):
+            return FakeStream(FakeHttpResponse({"candidates": [{"content": {"parts": [
+                {"functionCall": {"name": "submit_rca_finding", "args": {}}}
+            ]}}]}))
+
+        monkeypatch.setattr("shared.src.llm.gemini.httpx.stream", fake_stream)
+        client = GeminiClient(api_key="AIzaSecretDontLogMe", base_url="https://generativelanguage.googleapis.com/v1beta")
+
+        with caplog.at_level("INFO"):
+            client.messages.create(model="gemini-2.5-pro", max_tokens=10, thinking=None, system="s", tools=[_TOOL_SCHEMA], messages=[])
+
+        messages = [r.message for r in caplog.records]
+        assert any("sent response headers" in m and "REDACTED" in m for m in messages)
+        assert any("fully responded" in m and "REDACTED" in m for m in messages)
+        assert not any("AIzaSecretDontLogMe" in m for m in messages)
+
+    def test_a_timeout_before_any_response_headers_never_logs_ttfb(self, monkeypatch, caplog):
+        """The gateway never responding at all must not produce a "sent
+        response headers" line - that absence is itself the diagnostic
+        signal this feature exists to surface."""
+        def fake_stream(method, url, *, json, timeout):
+            return FakeStream(enter_exc=httpx.ReadTimeout("The read operation timed out"))
+
+        monkeypatch.setattr("shared.src.llm.gemini.httpx.stream", fake_stream)
+        client = GeminiClient(api_key="k", base_url="https://generativelanguage.googleapis.com/v1beta")
+
+        with caplog.at_level("INFO"):
+            try:
+                client.messages.create(model="gemini-2.5-pro", max_tokens=10, thinking=None, system="s", tools=[_TOOL_SCHEMA], messages=[])
+            except httpx.ReadTimeout:
+                pass
+
+        messages = [r.message for r in caplog.records]
+        assert not any("sent response headers" in m for m in messages)

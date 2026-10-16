@@ -133,9 +133,20 @@ class GeminiClient:
         # uses safe_url, same as every other log line here, so the API key
         # never ends up in a heartbeat line either.
         heartbeat_label = f"GeminiClient: call to {safe_url} (model={model})"
+        # Found 2026-10-17, same gap and same fix as
+        # OpenAICompatibleClient's own _create(): httpx.stream() returns
+        # as soon as response headers arrive, before the body is read, so
+        # logging in between gives a genuine time-to-first-byte marker -
+        # "the gateway never responded at all" vs. "it responded and then
+        # stalled partway through the body" used to look identical.
         try:
             with log_heartbeat(log, heartbeat_label, interval=_HEARTBEAT_INTERVAL_SECONDS):
-                response = httpx.post(url, json=payload, timeout=self.timeout)
+                with httpx.stream("POST", url, json=payload, timeout=self.timeout) as response:
+                    log.info(
+                        "GeminiClient: %s sent response headers (status=%s) after %.1fs - reading body",
+                        safe_url, response.status_code, time.monotonic() - started,
+                    )
+                    response.read()
             response.raise_for_status()
         except Exception as exc:
             log.warning(
@@ -143,7 +154,7 @@ class GeminiClient:
                 safe_url, time.monotonic() - started, _safe_exc_summary(exc),
             )
             raise
-        log.info("GeminiClient: %s responded %s after %.1fs", safe_url, response.status_code, time.monotonic() - started)
+        log.info("GeminiClient: %s fully responded (%s) after %.1fs", safe_url, response.status_code, time.monotonic() - started)
         data = response.json()
 
         candidates = data.get("candidates") or []

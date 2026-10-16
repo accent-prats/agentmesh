@@ -15,15 +15,32 @@ from shared.src.llm.openai_compatible import OpenAICompatibleClient
 
 
 class FakeHttpResponse:
+    """Stands in for the httpx.Response yielded by `with httpx.stream(...)
+    as response:` - see shared/tests/test_llm_adapters.py's own copy of
+    this fake for why `.read()` exists and is a no-op."""
     def __init__(self, json_data: dict, status_code: int = 200):
         self._json = json_data
         self.status_code = status_code
+
+    def read(self) -> None:
+        pass
 
     def raise_for_status(self) -> None:
         return None
 
     def json(self) -> dict:
         return self._json
+
+
+class FakeStream:
+    def __init__(self, response: FakeHttpResponse):
+        self._response = response
+
+    def __enter__(self) -> FakeHttpResponse:
+        return self._response
+
+    def __exit__(self, exc_type, exc, tb) -> bool:
+        return False
 
 
 def _bundle() -> EvidenceBundle:
@@ -45,7 +62,7 @@ def test_openai_compatible_client_produces_a_valid_rca_result(monkeypatch):
     bundle = _bundle()
     cluster = cluster_run("run-1", [bundle])[0]
 
-    def fake_post(url, *, headers, json, timeout):
+    def fake_stream(method, url, *, headers, json, timeout):
         tool_name = json["tools"][0]["function"]["name"]
         arguments = (
             '{"cause_family": "configuration", "title": "t", "causal_chain": '
@@ -55,9 +72,9 @@ def test_openai_compatible_client_produces_a_valid_rca_result(monkeypatch):
             '"preventive_fix": "p", "preventive_risk": "low", "rollback": "", '
             '"phase2_candidate": false, "phase2_rationale": ""}'
         )
-        return FakeHttpResponse({"choices": [{"message": {"tool_calls": [{"function": {"name": tool_name, "arguments": arguments}}]}}]})
+        return FakeStream(FakeHttpResponse({"choices": [{"message": {"tool_calls": [{"function": {"name": tool_name, "arguments": arguments}}]}}]}))
 
-    monkeypatch.setattr("shared.src.llm.openai_compatible.httpx.post", fake_post)
+    monkeypatch.setattr("shared.src.llm.openai_compatible.httpx.stream", fake_stream)
     client = OpenAICompatibleClient(api_key="sk-x", base_url="https://api.openai.com/v1")
     agent = DeepRCAAgent(client=client, model="gpt-5")
 
