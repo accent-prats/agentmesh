@@ -30,6 +30,19 @@ from culprit.api.routes_verdicts import router as verdicts_router
 from culprit.reporting.render import render_console_html, render_login_html, render_runs_html, render_settings_html
 from culprit.scheduler.events import router as events_router
 
+# Found in review 2026-10-16: with no handler configured anywhere, every
+# logger's effective level falls back to the root logger's own default
+# (WARNING) - uvicorn's own startup only configures its own
+# uvicorn/uvicorn.error/uvicorn.access loggers, never the root logger, so
+# every `log.info(...)` call in this app (this module's own CULPRIT_API_TOKEN
+# notice above, pipeline/discovery.py's "falling back to vmId parsing"
+# recovery notice, etc.) was silently swallowed in every real deployment -
+# only `log.warning`+ ever reached stderr, via Python's own WARNING-level
+# `lastResort` handler. `basicConfig` is a no-op if something else already
+# configured the root logger (e.g. under pytest or a future real log-config
+# flag), so this only fills the gap, never fights a deliberate setup.
+logging.basicConfig(level=logging.INFO)
+
 log = logging.getLogger(__name__)
 
 

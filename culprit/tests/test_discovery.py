@@ -207,6 +207,31 @@ def _two_call_fake_client(failed_rows: list[dict], details_rows: list[dict]):
     ])
 
 
+def test_discover_failed_machines_issues_a_case_insensitive_resource_graph_join(monkeypatch):
+    """Found in review (2026-10-16): the other new tests here prove the
+    Python-level `.lower()` lookup and the vmId-parsing fallback are both
+    load-bearing, but none of them inspect the actual KQL text sent to
+    Resource Graph - the fake client returns its canned `details_rows`
+    regardless of the query string, so reverting `in~` back to `in` in
+    _VM_DETAILS_QUERY left every other test here green. This asserts on
+    the literal query text itself, so that specific regression - the
+    literal root-cause fix named in this change - has real coverage."""
+    pytest.importorskip("azure.mgmt.resourcegraph")
+    fake_cls = _two_call_fake_client(failed_rows=[{"vmId": "/subscriptions/s/.../vm-1"}], details_rows=[])
+    monkeypatch.setattr("azure.mgmt.resourcegraph.ResourceGraphClient", fake_cls)
+
+    from datetime import datetime, timezone
+
+    discover_failed_machines(
+        credential=object(), subscription_ids=["sub-1"],
+        window_start=datetime(2026, 10, 16, tzinfo=timezone.utc), window_end=datetime(2026, 10, 17, tzinfo=timezone.utc),
+    )
+
+    details_query = fake_cls.instances[0].calls[1].query
+    assert "where id in~ (" in details_query
+    assert "where id in (" not in details_query  # would also match "in~ (" via substring - checked separately above
+
+
 def test_discover_failed_machines_resolves_a_casing_mismatch_between_the_two_tables(monkeypatch):
     """Two vmIds from step 1: `vm-a` (resolved, but the Resources row's own
     `id` comes back in *different* casing than the vmId extracted from
