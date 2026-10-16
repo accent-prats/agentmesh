@@ -51,6 +51,34 @@ def test_console_landing_page(client):
     assert "fetch('/runs/demo'" not in resp.text
 
 
+def test_live_run_failure_is_logged_with_a_real_traceback_and_not_double_prefixed(client, caplog, monkeypatch):
+    """Found 2026-10-16, debugging a real deployment: a live run failing
+    with e.g. "The read operation timed out" (an Azure call, a Run
+    Command poll, or an RCA provider's own HTTP call - several candidates
+    exist in one run) used to surface only a flattened one-line message
+    to the UI with nothing logged server-side to tell which one it was.
+    Separately, the UI's own catch block already prepends "Live run
+    failed: " for every error branch, so this route's own generic-
+    exception branch doubling that prefix into "Live run failed: Live
+    run failed: ..." was a second, independent bug in the same code."""
+    import culprit.pipeline.live_run as live_run_module
+
+    def _boom(**kwargs):
+        raise TimeoutError("The read operation timed out")
+
+    monkeypatch.setattr(live_run_module, "execute_live_run", _boom)
+
+    with caplog.at_level("ERROR"):
+        resp = client.post("/runs/live", json={})
+
+    assert resp.status_code == 502
+    assert resp.json()["detail"] == "The read operation timed out"
+    assert any(
+        r.levelname == "ERROR" and "Live run failed" in r.message and r.exc_info
+        for r in caplog.records
+    )
+
+
 def test_trigger_demo_run_and_read_back_report(client):
     resp = client.post("/runs/demo")
     assert resp.status_code == 200

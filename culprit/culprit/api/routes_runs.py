@@ -127,7 +127,21 @@ def trigger_live_run(request: Request, body: LiveRunRequest = LiveRunRequest()) 
     except InvalidToken as exc:
         raise HTTPException(status_code=500, detail=_DECRYPT_ERROR_DETAIL) from exc
     except Exception as exc:  # noqa: BLE001 - surface the real Azure/pipeline error rather than a generic 500
-        raise HTTPException(status_code=502, detail=f"Live run failed: {exc}") from exc
+        # Found 2026-10-16: this branch raised the flattened one-line
+        # HTTPException detail but never actually logged the real
+        # exception anywhere - a live run failing with e.g. "The read
+        # operation timed out" (which could be a Resource Graph call, a
+        # Run Command poll, or now an RCA provider's own HTTP call
+        # timing out) left no way to tell which one from the container's
+        # own logs, only a flattened message in the browser. Full
+        # traceback now reaches the logs before the UI-facing detail is
+        # built from the same exception.
+        log.exception("Live run failed")
+        # No "Live run failed: " prefix here - console.html.j2's own catch
+        # block already prepends that for every error branch above too
+        # (none of which prefix their own `detail`); this one used to
+        # double it up into "Live run failed: Live run failed: ...".
+        raise HTTPException(status_code=502, detail=str(exc)) from exc
 
     _notify_if_configured(report, request)
     return report
