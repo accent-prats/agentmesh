@@ -36,6 +36,25 @@ from culprit.models.taxonomy import CauseFamily
 
 log = logging.getLogger(__name__)
 
+
+def _safe_exc_summary(exc: BaseException) -> str:
+    """A short, provably-secret-free description of an exception for a log
+    line - just the exception class, plus an HTTP status code when one is
+    actually available. Deliberately never `str(exc)`: found in review
+    2026-10-16 that `httpx.HTTPStatusError`'s own string representation
+    embeds the full request URL - which for a Gemini-backed client
+    (shared/src/llm/gemini.py) carries the real API key in its query
+    string, re-leaking exactly the secret the adapter's own logging was
+    reviewed and fixed to redact, just via the exception message instead
+    of a log argument. `self.client` here can be any provider's adapter
+    (or the raw Anthropic SDK), so this stays conservative regardless of
+    which one actually raised."""
+    status = getattr(getattr(exc, "response", None), "status_code", None)
+    if status is not None:
+        return f"{type(exc).__name__}(status={status})"
+    return type(exc).__name__
+
+
 DEFAULT_MODEL = "claude-opus-5"
 
 _TOOL_NAME = "submit_rca_finding"
@@ -226,10 +245,10 @@ class DeepRCAAgent:
                 tools=[_RCA_TOOL_SCHEMA],
                 messages=[{"role": "user", "content": user_prompt}],
             )
-        except Exception:
+        except Exception as exc:
             log.warning(
-                "RCA diagnose call failed: cluster=%s machine=%s after %.1fs",
-                cluster.cluster_id, representative.machine.vm_name, time.monotonic() - started,
+                "RCA diagnose call failed: cluster=%s machine=%s after %.1fs (%s)",
+                cluster.cluster_id, representative.machine.vm_name, time.monotonic() - started, _safe_exc_summary(exc),
             )
             raise
         log.info(

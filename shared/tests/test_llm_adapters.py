@@ -376,3 +376,37 @@ class TestGeminiClient:
         messages = [r.message for r in caplog.records]
         assert any(r.levelname == "WARNING" and "failed after" in r.message for r in caplog.records)
         assert not any("AIzaSecretDontLogMe" in m for m in messages)
+
+    def test_an_http_status_error_does_not_leak_the_key_via_its_own_str(self, monkeypatch, caplog):
+        """The sharper version of the test above: httpx.HTTPStatusError's
+        own __str__ embeds the *full request URL* it was raised for -
+        confirmed empirically (not assumed) that this includes Gemini's
+        real API key, since it lives in the URL's query string. Logging
+        `str(exc)` anywhere in the failure path - an easy thing to add
+        when a status code would be genuinely useful in the log - would
+        re-leak the key through the exception message itself, bypassing
+        the safe_url redaction entirely. This is exactly why the warning
+        log uses _safe_exc_summary(exc) (class + status code only) and
+        never str(exc)."""
+        real_key = "AIzaSecretDontLogMe"
+
+        def fake_post(url, *, json, timeout):
+            request = httpx.Request("POST", url)
+            response = httpx.Response(401, request=request, json={"error": "unauthorized"})
+            response.raise_for_status()  # raises httpx.HTTPStatusError, str() of which embeds `url` (with the real key)
+
+        monkeypatch.setattr("shared.src.llm.gemini.httpx.post", fake_post)
+        client = GeminiClient(api_key=real_key, base_url="https://generativelanguage.googleapis.com/v1beta")
+
+        with caplog.at_level("WARNING"):
+            try:
+                client.messages.create(model="gemini-2.5-pro", max_tokens=10, thinking=None, system="s", tools=[_TOOL_SCHEMA], messages=[])
+                raised = None
+            except httpx.HTTPStatusError as exc:
+                raised = exc
+                assert real_key in str(exc)  # sanity check: confirms the exception really does embed the key
+
+        assert raised is not None
+        messages = [r.message for r in caplog.records]
+        assert any("HTTPStatusError" in m and "401" in m for m in messages)
+        assert not any(real_key in m for m in messages)

@@ -172,3 +172,63 @@ class TestPortalUnreachable:
         agent = deps_module.get_rca_agent()
 
         assert isinstance(agent, ScriptedRCAAgent)
+
+    def test_a_network_failure_is_logged_with_exception_type_and_duration(self, monkeypatch, caplog):
+        """Found in review 2026-10-16: this call to Portal - a real HTTP
+        hop in the same resolution->dispatch->HTTP-call pathway the rest
+        of get_rca_agent() was instrumented for - had only ever logged a
+        generic message plus a full traceback (exc_info=True), with no
+        short, readable summary of what actually went wrong, unlike the
+        new tracing added everywhere else in this same chain."""
+        _with_portal_secret(monkeypatch)
+
+        def fake_get(*args, **kwargs):
+            raise httpx.ConnectError("connection refused")
+
+        monkeypatch.setattr("httpx.get", fake_get)
+        monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant-legacy")
+
+        with caplog.at_level("WARNING"):
+            deps_module.get_rca_agent()
+
+        assert any(r.levelname == "WARNING" and "ConnectError" in r.message for r in caplog.records)
+
+    def test_an_http_error_status_is_logged_with_the_status_code_not_a_raw_traceback_string(self, monkeypatch, caplog):
+        _with_portal_secret(monkeypatch)
+        monkeypatch.setattr("httpx.get", lambda *a, **k: FakeHttpResponse({}, status_code=503))
+        monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+        monkeypatch.delenv("ANTHROPIC_AUTH_TOKEN", raising=False)
+
+        with caplog.at_level("WARNING"):
+            deps_module.get_rca_agent()
+
+        assert any(
+            r.levelname == "WARNING" and "HTTPStatusError" in r.message and "503" in r.message
+            for r in caplog.records
+        )
+
+
+class TestPortalCallTracing:
+    def test_a_resolved_provider_logs_which_one_with_duration(self, monkeypatch, caplog):
+        _with_portal_secret(monkeypatch)
+        monkeypatch.setattr("httpx.get", lambda *a, **k: FakeHttpResponse({
+            "provider": "deepseek", "api_key": "sk-secret-dont-log-me", "base_url": "https://api.siemens.com/llm/v1",
+            "model": "deepseek-v4.1-flash", "api_version": "", "deployment": "",
+        }))
+
+        with caplog.at_level("INFO"):
+            deps_module.get_rca_agent()
+
+        messages = [r.message for r in caplog.records]
+        assert any("Portal active AI provider: deepseek" in m for m in messages)
+        assert not any("sk-secret-dont-log-me" in m for m in messages)
+
+    def test_no_active_provider_logs_that_fact_too(self, monkeypatch, caplog):
+        _with_portal_secret(monkeypatch)
+        monkeypatch.setattr("httpx.get", lambda *a, **k: FakeHttpResponse({"provider": ""}))
+        monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant-legacy")
+
+        with caplog.at_level("INFO"):
+            deps_module.get_rca_agent()
+
+        assert any("no active AI provider configured" in r.message for r in caplog.records)

@@ -22,6 +22,20 @@ from shared.src.llm.base import NormalizedResponse, ToolUseBlock
 log = logging.getLogger(__name__)
 
 
+def _safe_exc_summary(exc: BaseException) -> str:
+    """A short, provably-secret-free description of an exception for a log
+    line - just the exception class, plus an HTTP status code when one is
+    actually available. Deliberately never `str(exc)`: `httpx.HTTPStatusError`'s
+    own string representation embeds the full request URL, which for this
+    client carries the real API key in its query string - str(exc) would
+    re-leak exactly the secret this module's own logging redacts via
+    safe_url, just through the exception message instead of a log argument."""
+    status = getattr(getattr(exc, "response", None), "status_code", None)
+    if status is not None:
+        return f"{type(exc).__name__}(status={status})"
+    return type(exc).__name__
+
+
 class _MessagesNamespace:
     def __init__(self, client: "GeminiClient"):
         self._client = client
@@ -109,8 +123,11 @@ class GeminiClient:
         try:
             response = httpx.post(url, json=payload, timeout=self.timeout)
             response.raise_for_status()
-        except Exception:
-            log.warning("GeminiClient: call to %s failed after %.1fs", safe_url, time.monotonic() - started)
+        except Exception as exc:
+            log.warning(
+                "GeminiClient: call to %s failed after %.1fs (%s)",
+                safe_url, time.monotonic() - started, _safe_exc_summary(exc),
+            )
             raise
         log.info("GeminiClient: %s responded %s after %.1fs", safe_url, response.status_code, time.monotonic() - started)
         data = response.json()

@@ -159,6 +159,19 @@ def _fetch_active_ai_provider_from_portal() -> dict | None:
     that has nothing to do with the Portal."""
     if not settings.portal_jwt_secret:
         return None
+    import logging
+    import time
+
+    log = logging.getLogger("culprit.api.deps")
+    url = f"{settings.portal_internal_url}/api/ai-providers/resolved-active"
+    # Found in review 2026-10-16: this is a real HTTP hop in the exact
+    # same "resolution -> dispatch -> HTTP call" pathway the rest of
+    # get_rca_agent() was just instrumented for - it already had a
+    # failure-path warning, but no start-of-call or success-path log at
+    # all, so a slow or hanging Portal (not the RCA provider itself)
+    # would have looked identical to one from the outside.
+    log.info("Fetching active AI provider from Portal: %s", url)
+    started = time.monotonic()
     try:
         from datetime import datetime, timedelta, timezone
 
@@ -174,23 +187,38 @@ def _fetch_active_ai_provider_from_portal() -> dict | None:
             {"sub": "culprit", "type": "service", "exp": datetime.now(timezone.utc) + timedelta(minutes=5)},
             settings.portal_jwt_secret, algorithm="HS256",
         )
-        response = httpx.get(
-            f"{settings.portal_internal_url}/api/ai-providers/resolved-active",
-            headers={"Authorization": f"Bearer {token}"}, timeout=5,
-        )
+        response = httpx.get(url, headers={"Authorization": f"Bearer {token}"}, timeout=5)
         response.raise_for_status()
         data = response.json()
         if not data.get("provider"):
+            log.info("Portal has no active AI provider configured (after %.1fs)", time.monotonic() - started)
             return None
+        log.info("Portal active AI provider: %s (after %.1fs)", data["provider"], time.monotonic() - started)
         return data
-    except Exception:  # noqa: BLE001 - see docstring; any failure here just means "use the env-var fallback"
-        import logging
-
-        logging.getLogger("culprit.api.deps").warning(
-            "Could not fetch the active AI provider from the Portal - falling back to "
-            "ANTHROPIC_API_KEY/CULPRIT_RCA_MODEL env vars.", exc_info=True,
+    except Exception as exc:  # noqa: BLE001 - see docstring; any failure here just means "use the env-var fallback"
+        log.warning(
+            "Could not fetch the active AI provider from the Portal (%s) after %.1fs - falling back to "
+            "ANTHROPIC_API_KEY/CULPRIT_RCA_MODEL env vars.",
+            _safe_exc_summary(exc), time.monotonic() - started, exc_info=True,
         )
         return None
+
+
+def _safe_exc_summary(exc: BaseException) -> str:
+    """A short, provably-secret-free description of an exception for a log
+    line - just the exception class, plus an HTTP status code when one is
+    actually available (`httpx.HTTPStatusError.response.status_code`).
+    Deliberately never `str(exc)`: found in review 2026-10-16 that
+    `httpx.HTTPStatusError`'s own string representation embeds the full
+    request URL, which for shared/src/llm/gemini.py's provider carries the
+    real API key in its query string - the exact leak this module's own
+    logging was just reviewed for logging the raw `url` variable instead
+    of a redacted one would have reintroduced, just through the exception
+    message instead of a log argument."""
+    status = getattr(getattr(exc, "response", None), "status_code", None)
+    if status is not None:
+        return f"{type(exc).__name__}(status={status})"
+    return type(exc).__name__
 
 
 def build_live_collectors(session):

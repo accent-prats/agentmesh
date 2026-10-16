@@ -18,6 +18,23 @@ from shared.src.llm.base import NormalizedResponse, ToolUseBlock
 
 log = logging.getLogger(__name__)
 
+
+def _safe_exc_summary(exc: BaseException) -> str:
+    """A short, provably-secret-free description of an exception for a log
+    line - just the exception class, plus an HTTP status code when one is
+    actually available (`httpx.HTTPStatusError.response.status_code`).
+    Deliberately never `str(exc)`: `httpx.HTTPStatusError`'s own string
+    representation embeds the full request URL - for an Azure deployment
+    the API key is a header, not the URL, so that specific leak path
+    doesn't apply here, but staying off `str(exc)` entirely keeps this
+    safe regardless of what any given provider's error body/message might
+    ever embed."""
+    status = getattr(getattr(exc, "response", None), "status_code", None)
+    if status is not None:
+        return f"{type(exc).__name__}(status={status})"
+    return type(exc).__name__
+
+
 _DEFAULT_AZURE_API_VERSION = "2024-08-01-preview"
 
 
@@ -132,8 +149,11 @@ class OpenAICompatibleClient:
         try:
             response = httpx.post(url, headers=headers, json=payload, timeout=self.timeout)
             response.raise_for_status()
-        except Exception:
-            log.warning("OpenAICompatibleClient: call to %s failed after %.1fs", url, time.monotonic() - started)
+        except Exception as exc:
+            log.warning(
+                "OpenAICompatibleClient: call to %s failed after %.1fs (%s)",
+                url, time.monotonic() - started, _safe_exc_summary(exc),
+            )
             raise
         log.info("OpenAICompatibleClient: %s responded %s after %.1fs", url, response.status_code, time.monotonic() - started)
         data = response.json()
