@@ -15,8 +15,15 @@ from typing import Any
 import httpx
 
 from shared.src.llm.base import NormalizedResponse, ToolUseBlock
+from shared.src.llm.heartbeat import log_heartbeat
 
 log = logging.getLogger(__name__)
+
+# Module-level so a test can monkeypatch it down to something short-lived
+# instead of waiting out a real 30s interval. Read fresh from the module
+# namespace on every call (not a function-default), so monkeypatching it
+# takes effect even though _create() already exists by the time a test runs.
+_HEARTBEAT_INTERVAL_SECONDS = 30.0
 
 
 def _safe_exc_summary(exc: BaseException) -> str:
@@ -146,8 +153,16 @@ class OpenAICompatibleClient:
         # wait for an exception to bubble all the way up to routes_runs.py.
         log.info("OpenAICompatibleClient: calling %s (model=%s, max_tokens=%s)", url, model, max_tokens)
         started = time.monotonic()
+        # Found 2026-10-17 from a real production run: a slow/custom
+        # gateway can sit silent on this call for the *entire* several-
+        # minute read timeout, and until now nothing logged anything in
+        # that window - indistinguishable from the app itself hanging.
+        # Logs "still waiting" on a fixed interval for as long as this one
+        # call is actually in flight; does not change the call itself.
+        heartbeat_label = f"OpenAICompatibleClient: call to {url} (model={model})"
         try:
-            response = httpx.post(url, headers=headers, json=payload, timeout=self.timeout)
+            with log_heartbeat(log, heartbeat_label, interval=_HEARTBEAT_INTERVAL_SECONDS):
+                response = httpx.post(url, headers=headers, json=payload, timeout=self.timeout)
             response.raise_for_status()
         except Exception as exc:
             log.warning(

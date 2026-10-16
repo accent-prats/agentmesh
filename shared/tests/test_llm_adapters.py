@@ -15,6 +15,8 @@ own pipeline/models - this file only depends on shared/src/llm itself.
 """
 from __future__ import annotations
 
+import time
+
 import httpx
 import pytest
 
@@ -259,6 +261,51 @@ class TestOpenAICompatibleClient:
         assert raised is not None
         assert any(r.levelname == "WARNING" and "failed after" in r.message for r in caplog.records)
 
+    def test_a_slow_call_logs_heartbeats_while_still_waiting(self, monkeypatch, caplog):
+        """Found 2026-10-17 from a real production run: the service log
+        showed "calling ..." once, then nothing at all for the entire
+        ~10-minute read timeout before the eventual failure - a slow call
+        and a hung process looked identical from the logs alone."""
+        monkeypatch.setattr("shared.src.llm.openai_compatible._HEARTBEAT_INTERVAL_SECONDS", 0.05)
+
+        def fake_post(url, *, headers, json, timeout):
+            time.sleep(0.2)
+            return FakeHttpResponse({
+                "choices": [{"message": {"tool_calls": [{"function": {"name": "submit_rca_finding", "arguments": "{}"}}]}}],
+            })
+
+        monkeypatch.setattr("shared.src.llm.openai_compatible.httpx.post", fake_post)
+        client = OpenAICompatibleClient(api_key="k", base_url="https://api.openai.com/v1")
+
+        with caplog.at_level("INFO"):
+            client.messages.create(model="gpt-5", max_tokens=10, thinking=None, system="s", tools=[_TOOL_SCHEMA], messages=[])
+
+        heartbeats = [r.message for r in caplog.records if "still waiting" in r.message]
+        assert len(heartbeats) >= 2
+        assert all("gpt-5" in m for m in heartbeats)
+
+    def test_heartbeats_stop_once_a_call_finally_fails(self, monkeypatch, caplog):
+        """The heartbeat must cover the whole wait leading up to a timeout,
+        not just a successful call - that's the exact gap this was built
+        to close."""
+        monkeypatch.setattr("shared.src.llm.openai_compatible._HEARTBEAT_INTERVAL_SECONDS", 0.05)
+
+        def fake_post(url, *, headers, json, timeout):
+            time.sleep(0.15)
+            raise httpx.ReadTimeout("The read operation timed out")
+
+        monkeypatch.setattr("shared.src.llm.openai_compatible.httpx.post", fake_post)
+        client = OpenAICompatibleClient(api_key="k", base_url="https://api.openai.com/v1")
+
+        with caplog.at_level("INFO"):
+            try:
+                client.messages.create(model="gpt-5", max_tokens=10, thinking=None, system="s", tools=[_TOOL_SCHEMA], messages=[])
+            except httpx.ReadTimeout:
+                pass
+
+        heartbeats = [r.message for r in caplog.records if "still waiting" in r.message]
+        assert len(heartbeats) >= 1
+
 
 # ── GeminiClient ────────────────────────────────────────────────────────────
 
@@ -409,4 +456,30 @@ class TestGeminiClient:
         assert raised is not None
         messages = [r.message for r in caplog.records]
         assert any("HTTPStatusError" in m and "401" in m for m in messages)
+        assert not any(real_key in m for m in messages)
+
+    def test_a_slow_call_logs_heartbeats_without_leaking_the_key(self, monkeypatch, caplog):
+        """Same gap as OpenAICompatibleClient's own version of this test -
+        and since Gemini's key lives in the URL's query string, the
+        heartbeat line must use the same redacted safe_url every other log
+        line here already uses, not the raw `url` variable."""
+        monkeypatch.setattr("shared.src.llm.gemini._HEARTBEAT_INTERVAL_SECONDS", 0.05)
+        real_key = "AIzaSecretDontLogMe"
+
+        def fake_post(url, *, json, timeout):
+            time.sleep(0.2)
+            return FakeHttpResponse({"candidates": [{"content": {"parts": [
+                {"functionCall": {"name": "submit_rca_finding", "args": {}}}
+            ]}}]})
+
+        monkeypatch.setattr("shared.src.llm.gemini.httpx.post", fake_post)
+        client = GeminiClient(api_key=real_key, base_url="https://generativelanguage.googleapis.com/v1beta")
+
+        with caplog.at_level("INFO"):
+            client.messages.create(model="gemini-2.5-pro", max_tokens=10, thinking=None, system="s", tools=[_TOOL_SCHEMA], messages=[])
+
+        messages = [r.message for r in caplog.records]
+        heartbeats = [m for m in messages if "still waiting" in m]
+        assert len(heartbeats) >= 2
+        assert all("REDACTED" in m for m in heartbeats)
         assert not any(real_key in m for m in messages)

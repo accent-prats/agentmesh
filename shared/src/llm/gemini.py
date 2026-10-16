@@ -18,8 +18,14 @@ from typing import Any
 import httpx
 
 from shared.src.llm.base import NormalizedResponse, ToolUseBlock
+from shared.src.llm.heartbeat import log_heartbeat
 
 log = logging.getLogger(__name__)
+
+# Same reasoning as shared/src/llm/openai_compatible.py's own copy of this
+# constant - module-level so a test can monkeypatch it short rather than
+# waiting out a real 30s interval.
+_HEARTBEAT_INTERVAL_SECONDS = 30.0
 
 
 def _safe_exc_summary(exc: BaseException) -> str:
@@ -120,8 +126,16 @@ class GeminiClient:
         safe_url = f"{self.base_url}/models/{model}:generateContent?key=REDACTED"
         log.info("GeminiClient: calling %s (max_tokens=%s)", safe_url, max_tokens)
         started = time.monotonic()
+        # Found 2026-10-17, same gap as OpenAICompatibleClient's own fix:
+        # a slow/custom gateway can sit silent for the entire multi-minute
+        # read timeout with nothing logged in that window. Logs "still
+        # waiting" on a fixed interval while this one call is in flight -
+        # uses safe_url, same as every other log line here, so the API key
+        # never ends up in a heartbeat line either.
+        heartbeat_label = f"GeminiClient: call to {safe_url} (model={model})"
         try:
-            response = httpx.post(url, json=payload, timeout=self.timeout)
+            with log_heartbeat(log, heartbeat_label, interval=_HEARTBEAT_INTERVAL_SECONDS):
+                response = httpx.post(url, json=payload, timeout=self.timeout)
             response.raise_for_status()
         except Exception as exc:
             log.warning(
