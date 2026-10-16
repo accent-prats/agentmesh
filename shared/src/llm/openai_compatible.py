@@ -35,7 +35,7 @@ class OpenAICompatibleClient:
         api_version: str = "",
         deployment: str = "",
         supports_strict_tool_schema: bool = False,
-        timeout: float = 60.0,
+        timeout: float = 240.0,
     ):
         if not base_url:
             raise ValueError("base_url is required for an OpenAI-compatible provider")
@@ -45,7 +45,22 @@ class OpenAICompatibleClient:
         self.api_version = api_version or _DEFAULT_AZURE_API_VERSION
         self.deployment = deployment
         self.supports_strict_tool_schema = supports_strict_tool_schema
-        self.timeout = timeout
+        # Found 2026-10-16 from a real production traceback: the old flat
+        # `timeout: float = 60.0` applied the same 60s to every phase
+        # (connect/write/pool *and* read), and it was the read phase that
+        # actually failed - waiting for a custom enterprise LLM gateway
+        # (DeepSeek via a Siemens-internal proxy) to even start streaming
+        # back an 8000-max-token completion over a now much larger
+        # evidence prompt (this week's new guest-log collectors added
+        # several hundred more lines per machine). Anthropic's own SDK -
+        # the path every other provider in this catalog was validated
+        # against before a real non-Anthropic provider was ever actually
+        # activated - defaults to a 10-minute timeout; this adapter's flat
+        # 60s had only ever been exercised against instant unit-test
+        # fakes, never a real slow backend. Split so a genuinely dead
+        # endpoint still fails fast (connect) while a slow-to-respond one
+        # gets real patience on the phase that actually failed (read).
+        self.timeout = httpx.Timeout(connect=10.0, read=timeout, write=30.0, pool=10.0)
         self.messages = _MessagesNamespace(self)
 
     def _endpoint_and_headers(self, model: str) -> tuple[str, dict[str, str]]:

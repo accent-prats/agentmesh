@@ -129,6 +129,7 @@ class TestOpenAICompatibleClient:
             captured["url"] = url
             captured["headers"] = headers
             captured["json"] = json
+            captured["timeout"] = timeout
             return FakeHttpResponse(response_json)
 
         monkeypatch.setattr("shared.src.llm.openai_compatible.httpx.post", fake_post)
@@ -201,6 +202,24 @@ class TestOpenAICompatibleClient:
         client = OpenAICompatibleClient(api_key="", base_url="http://localhost:11434/v1")
         client.messages.create(model="llama3.1", max_tokens=10, thinking=None, system="s", tools=[_TOOL_SCHEMA], messages=[])
         assert "Authorization" not in captured["headers"]
+
+    def test_timeout_gives_the_read_phase_real_patience_but_fails_fast_on_connect(self, monkeypatch):
+        """Found 2026-10-16 from a real production traceback: a flat 60s
+        timeout applied to every phase equally, and it was specifically
+        the read phase (waiting for a slow custom gateway to start
+        streaming back a big completion) that failed, not connect. A
+        genuinely dead endpoint must still fail fast."""
+        captured: dict = {}
+        self._fake_post(monkeypatch, captured, {
+            "choices": [{"message": {"tool_calls": [{"function": {"name": "submit_rca_finding", "arguments": "{}"}}]}}],
+        })
+        client = OpenAICompatibleClient(api_key="k", base_url="https://api.openai.com/v1")
+        client.messages.create(model="gpt-5", max_tokens=10, thinking=None, system="s", tools=[_TOOL_SCHEMA], messages=[])
+
+        timeout = captured["timeout"]
+        assert isinstance(timeout, httpx.Timeout)
+        assert timeout.read >= 180.0
+        assert timeout.connect <= 15.0
 
 
 # ── GeminiClient ────────────────────────────────────────────────────────────
