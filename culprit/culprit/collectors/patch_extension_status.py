@@ -30,6 +30,7 @@ Status file shape (one element array):
 from __future__ import annotations
 
 import json
+import re
 from datetime import datetime, timezone
 
 from culprit.models.evidence import Source, TimelineEvent
@@ -39,6 +40,62 @@ _SUMMARY_MAX_CHARS = 240
 # directory or just the status file inside it was missing - one marker,
 # not two, covers everything either script can actually produce.
 _NO_STATUS_FILE_MARKER = "no status file found"
+
+# Shared by guest_linux.py's waagent.log/core.log parsers and
+# guest_windows.py's WindowsPatchExtension.log parser (found 2026-10-16:
+# neither file ever collected the extension's own detailed operational
+# log, only its terse .status summary parsed above - Microsoft's own
+# Update Manager troubleshooting docs name these log files specifically
+# as where "information about patches assessed/installed and problems
+# encountered" actually lives). Deliberately a generic anomaly-keyword
+# scan, not a schema-specific parse like parse_dpkg_log/parse_cbs_log
+# get: unlike dpkg.log/CBS.log, Culprit has no live-verified real sample
+# of waagent.log/core.log/WindowsPatchExtension.log line formats to build
+# an exact regex against - same honesty this module's own docstring
+# already applies to the Windows status-file path being "a documented,
+# cited assumption" rather than independently confirmed.
+EXTENSION_LOG_ANOMALY_RE = re.compile(
+    r"error|exception|failed|timed? ?out|traceback|could not|refused|denied|unreachable",
+    re.IGNORECASE,
+)
+
+# Found in review 2026-10-16: a routine, healthy summary line reporting a
+# zero count ("0 packages failed", "No errors encountered") matches
+# EXTENSION_LOG_ANOMALY_RE just as readily as a real failure does - the
+# keyword alone can't distinguish "this failed" from "nothing failed".
+# Checked alongside it (not merged into one regex, so each stays
+# independently readable/testable) to suppress exactly that shape of
+# false positive without narrowing the anomaly scan itself.
+EXTENSION_LOG_ZERO_COUNT_RE = re.compile(
+    r"\b0\s+\w*\s*(failed|denied|errors?|exceptions?)\b|\bno\s+(errors?|failures?|exceptions?|issues?)\b",
+    re.IGNORECASE,
+)
+
+# Shared by the same three new parsers as EXTENSION_LOG_ANOMALY_RE above -
+# same caveat applies: these are the formats Azure's own agent/extension
+# logging is documented/commonly observed to use
+# ("YYYY/MM/DD HH:MM:SS" for waagent.log, "YYYY-MM-DD HH:MM:SS,ffffff" for
+# core.log's Python-logging output), not independently verified against a
+# live sample. Best-effort only - a line that doesn't match any of these
+# falls back to collection time (the caller's job, not this function's),
+# the same graceful-degradation shape parse_dpkg_log already uses in
+# guest_linux.py rather than this module inventing a different contract.
+_LEADING_TIMESTAMP_FORMATS = (
+    (19, "%Y/%m/%d %H:%M:%S"),      # waagent.log, e.g. "2026/10/16 03:04:00"
+    (23, "%Y-%m-%d %H:%M:%S,%f"),   # core.log (Python logging default), e.g. "2026-10-16 03:04:00,000"
+    (19, "%Y-%m-%d %H:%M:%S"),      # WindowsPatchExtension.log / a plain ISO-ish prefix
+)
+
+
+def parse_leading_timestamp(line: str) -> datetime | None:
+    """The real per-line timestamp if this line starts with one of the
+    formats above, else None (caller falls back to collection time)."""
+    for length, fmt in _LEADING_TIMESTAMP_FORMATS:
+        try:
+            return datetime.strptime(line[:length], fmt).replace(tzinfo=timezone.utc)
+        except ValueError:
+            continue
+    return None
 
 
 def _message(status_obj: dict) -> str:

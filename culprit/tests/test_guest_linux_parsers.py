@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import shutil
 import subprocess
+from datetime import datetime, timezone
 
 import pytest
 
@@ -9,10 +10,12 @@ from culprit.collectors.guest_linux import (
     ALLOWED_LINUX_SCRIPT,
     parse_disk_usage,
     parse_dpkg_log,
+    parse_extension_core_log,
     parse_linux_output,
     parse_lock_holder,
     parse_repo_check,
     parse_subscription_manager,
+    parse_waagent_log,
 )
 
 _DPKG_LOG = """\
@@ -141,6 +144,93 @@ def test_ext_status_section_is_sliced_out_and_handed_to_the_shared_parser():
     assert not any(e.kind == "entitlement_state" for e in events)  # Current is silent
 
 
+# ── waagent.log / core.log (found 2026-10-16: the extension's own detailed
+# logs - what Microsoft's docs name as where "information about patches
+# assessed/installed and problems encountered" actually lives - were never
+# collected at all, only the terse .status summary) ─────────────────────────
+
+def test_parse_waagent_log_flags_an_anomaly_line():
+    text = "2026/10/16 03:03:00 INFO ExtHandler Command succeeded\n2026/10/16 03:04:00 ERROR ExtHandler Failed to download extension package: Connection refused\n"
+    events = parse_waagent_log(text, vm_id="vm-1")
+    assert len(events) == 1
+    assert "Connection refused" in events[0].summary
+    assert events[0].kind == "waagent_log"
+    assert events[0].raw_ref == "guest:waagent.log:vm-1:1"
+
+
+def test_parse_waagent_log_quiet_log_is_silent():
+    text = "2026/10/16 03:03:00 INFO ExtHandler Command succeeded\n2026/10/16 03:04:00 INFO ExtHandler Heartbeat sent\n"
+    assert parse_waagent_log(text, vm_id="vm-1") == []
+
+
+def test_parse_waagent_log_empty_is_silent():
+    assert parse_waagent_log("", vm_id="vm-1") == []
+
+
+def test_parse_waagent_log_zero_count_is_not_a_false_positive():
+    """Found in review: the keyword scan alone can't tell "0 packages
+    failed" (healthy) from a real failure - EXTENSION_LOG_ZERO_COUNT_RE
+    must suppress it."""
+    text = "2026/10/16 03:04:00 INFO ExtHandler Assessment complete: 0 packages failed, 42 succeeded\n"
+    assert parse_waagent_log(text, vm_id="vm-1") == []
+
+
+def test_parse_waagent_log_uses_the_real_line_timestamp():
+    text = "2026/10/16 03:04:00 ERROR ExtHandler Failed to download extension package\n"
+    events = parse_waagent_log(text, vm_id="vm-1")
+    assert events[0].ts == datetime(2026, 10, 16, 3, 4, 0, tzinfo=timezone.utc)
+
+
+def test_parse_extension_core_log_flags_an_anomaly_line():
+    text = "2026-10-16 03:03:00,000 - root - INFO - Assessing patches\n2026-10-16 03:04:00,000 - root - ERROR - Repository unreachable: timed out after 30s\n"
+    events = parse_extension_core_log(text, vm_id="vm-1")
+    assert len(events) == 1
+    assert "timed out" in events[0].summary
+    assert events[0].kind == "extension_core_log"
+    assert events[0].raw_ref == "guest:core.log:vm-1:1"
+
+
+def test_parse_extension_core_log_quiet_log_is_silent():
+    text = "2026-10-16 03:03:00,000 - root - INFO - Assessing patches\n2026-10-16 03:03:30,000 - root - INFO - Installation complete\n"
+    assert parse_extension_core_log(text, vm_id="vm-1") == []
+
+
+def test_parse_extension_core_log_zero_count_is_not_a_false_positive():
+    text = "2026-10-16 03:04:00,000 - root - INFO - No errors encountered, 0 denied requests\n"
+    assert parse_extension_core_log(text, vm_id="vm-1") == []
+
+
+def test_parse_extension_core_log_uses_the_real_line_timestamp():
+    text = "2026-10-16 03:04:00,500 - root - ERROR - Repository unreachable: timed out after 30s\n"
+    events = parse_extension_core_log(text, vm_id="vm-1")
+    assert events[0].ts == datetime(2026, 10, 16, 3, 4, 0, 500000, tzinfo=timezone.utc)
+
+
+def test_full_output_sectioning_includes_the_new_log_sections():
+    """parse_linux_output must actually slice WAAGENT_LOG/EXT_CORE_LOG out
+    and hand them to their parsers - not just that the parsers work in
+    isolation (the two tests above)."""
+    stdout = (
+        "---DPKG_LOG---\n\n"
+        "---APT_HISTORY---\n\n"
+        "---YUM_LOG---\n\n"
+        "---DNF_LOG---\n\n"
+        "---DISK_USAGE---\n\n"
+        "---LOCK_HOLDER---\n\n"
+        "---REPO_CHECK---\n200\n\n"
+        "---KERNELS---\n\n"
+        "---SUBMAN---\n\n"
+        "---WAAGENT_LOG---\n2026/10/16 03:04:00 ERROR ExtHandler Failed to download extension package\n\n"
+        "---EXT_CORE_LOG---\n2026-10-16 03:04:00,000 - root - ERROR - Repository unreachable\n\n"
+        "---EXT_VERSION---\n\n"
+        "---EXT_STATUS---\nNo status file found\n"
+    )
+    events, _ = parse_linux_output(stdout, vm_id="vm-1")
+    kinds = {e.kind for e in events}
+    assert "waagent_log" in kinds
+    assert "extension_core_log" in kinds
+
+
 def test_repo_check_curl_format_ends_with_a_newline():
     """Review caught a real bug: curl's -w "%{http_code}" (no trailing
     newline - documented curl behavior, not an environment quirk) glued
@@ -173,7 +263,8 @@ def test_allowed_linux_script_runs_cleanly_through_a_real_shell(tmp_path):
 
     for marker in (
         "DPKG_LOG", "APT_HISTORY", "YUM_LOG", "DNF_LOG", "DISK_USAGE",
-        "LOCK_HOLDER", "REPO_CHECK", "KERNELS", "SUBMAN", "EXT_VERSION", "EXT_STATUS",
+        "LOCK_HOLDER", "REPO_CHECK", "KERNELS", "SUBMAN", "WAAGENT_LOG",
+        "EXT_CORE_LOG", "EXT_VERSION", "EXT_STATUS",
     ):
         assert f"---{marker}---" in stdout.splitlines(), f"{marker} marker missing or merged onto another line"
 

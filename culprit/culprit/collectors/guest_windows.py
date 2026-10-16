@@ -12,7 +12,12 @@ import threading
 from datetime import datetime, timezone
 
 from culprit.collectors.base import CollectionRequest, CollectionResult, Collector
-from culprit.collectors.patch_extension_status import parse_patch_extension_status
+from culprit.collectors.patch_extension_status import (
+    EXTENSION_LOG_ANOMALY_RE,
+    EXTENSION_LOG_ZERO_COUNT_RE,
+    parse_leading_timestamp,
+    parse_patch_extension_status,
+)
 from culprit.models.evidence import Source, TimelineEvent
 
 try:  # pragma: no cover
@@ -43,6 +48,11 @@ $latestVersionDir = Get-ChildItem -Path $extRoot -Directory -ErrorAction Silentl
     Sort-Object { [version]$_.Name } -Descending -ErrorAction SilentlyContinue | Select-Object -First 1
 Write-Output "---EXT_VERSION---"
 if ($latestVersionDir) { Write-Output $latestVersionDir.Name }
+Write-Output "---EXT_LOG---"
+if ($latestVersionDir) {
+    $extLogPath = "C:\WindowsAzure\Logs\Plugins\Microsoft.CPlat.Core.WindowsPatchExtension\$($latestVersionDir.Name)\WindowsPatchExtension.log"
+    Get-Content $extLogPath -Tail 200 -ErrorAction SilentlyContinue
+}
 Write-Output "---EXT_STATUS---"
 $latestStatusFile = $null
 if ($latestVersionDir) {
@@ -230,6 +240,35 @@ def parse_disk_usage(text: str, vm_id: str, min_free_bytes: int = 250 * 1024 * 1
     return events
 
 
+def parse_extension_log(text: str, vm_id: str) -> list[TimelineEvent]:
+    """The Windows patch extension's own detailed operational log
+    (C:\\WindowsAzure\\Logs\\Plugins\\Microsoft.CPlat.Core.
+    WindowsPatchExtension\\<version>\\WindowsPatchExtension.log) -
+    pipeline/installation_report.py::_guest_log_path already names this
+    exact path as the human-facing hint, but no collector read it until
+    now. Same generic anomaly scan as guest_linux.py's
+    parse_waagent_log/parse_extension_core_log - see
+    EXTENSION_LOG_ANOMALY_RE's own comment for why this isn't an
+    exact-format parse. EXTENSION_LOG_ZERO_COUNT_RE suppresses the "0
+    packages failed"/"no errors" shape of false positive the keyword
+    scan alone can't distinguish from a real failure."""
+    events: list[TimelineEvent] = []
+    for i, line in enumerate(text.splitlines()):
+        if not line.strip() or not EXTENSION_LOG_ANOMALY_RE.search(line) or EXTENSION_LOG_ZERO_COUNT_RE.search(line):
+            continue
+        events.append(
+            TimelineEvent(
+                ts=parse_leading_timestamp(line) or datetime.now(timezone.utc),
+                source=Source.GUEST_WINDOWS,
+                kind="extension_log",
+                summary=line.strip()[:240],
+                detail={},
+                raw_ref=f"guest:WindowsPatchExtension.log:{vm_id}:{i}",
+            )
+        )
+    return events
+
+
 def parse_windows_output(stdout: str, vm_id: str) -> tuple[list[TimelineEvent], list[dict]]:
     sections = _split_sections(stdout)
     events: list[TimelineEvent] = []
@@ -238,6 +277,7 @@ def parse_windows_output(stdout: str, vm_id: str) -> tuple[list[TimelineEvent], 
     events += parse_pending_reboot(sections.get("PENDING_REBOOT", ""), vm_id)
     events += parse_wuauserv_state(sections.get("WUAUSERV", ""), vm_id)
     events += parse_disk_usage(sections.get("DISK_USAGE", ""), vm_id)
+    events += parse_extension_log(sections.get("EXT_LOG", ""), vm_id)
     ext_events, ext_findings = parse_patch_extension_status(
         sections.get("EXT_STATUS", ""), vm_id, Source.GUEST_WINDOWS,
         extension_version=sections.get("EXT_VERSION", "").strip() or None,

@@ -17,7 +17,12 @@ import threading
 from datetime import datetime, timezone
 
 from culprit.collectors.base import CollectionRequest, CollectionResult, Collector
-from culprit.collectors.patch_extension_status import parse_patch_extension_status
+from culprit.collectors.patch_extension_status import (
+    EXTENSION_LOG_ANOMALY_RE,
+    EXTENSION_LOG_ZERO_COUNT_RE,
+    parse_leading_timestamp,
+    parse_patch_extension_status,
+)
 from culprit.models.evidence import Source, TimelineEvent
 
 try:  # pragma: no cover
@@ -64,6 +69,10 @@ ALLOWED_LINUX_SCRIPT = (
     "echo ---REPO_CHECK---; timeout 5 curl -o /dev/null -s -w \"%{http_code}\\n\" http://archive.ubuntu.com 2>&1; "
     "echo ---KERNELS---; dpkg -l 'linux-image-*' 2>/dev/null | grep ^ii; uname -r; "
     "echo ---SUBMAN---; timeout 5 subscription-manager status 2>&1; "
+    "echo ---WAAGENT_LOG---; tail -n 200 /var/log/waagent.log 2>/dev/null; "
+    "echo ---EXT_CORE_LOG---; "
+    "LATESTCORE=$(ls -t /var/log/azure/Microsoft.CPlat.Core.LinuxPatchExtension/*.core.log 2>/dev/null | head -1); "
+    "if [ -n \"$LATESTCORE\" ]; then tail -n 200 \"$LATESTCORE\"; fi; "
     "EXTDIR=$(find /var/lib/waagent -maxdepth 1 -type d "
     "-name 'Microsoft.CPlat.Core.LinuxPatchExtension-*' 2>/dev/null | sort -V | tail -1); "
     "echo ---EXT_VERSION---; "
@@ -258,6 +267,55 @@ def parse_repo_check(text: str, vm_id: str) -> list[TimelineEvent]:
     ]
 
 
+def parse_waagent_log(text: str, vm_id: str) -> list[TimelineEvent]:
+    """Azure Linux Agent's own log - a generic anomaly-keyword scan, see
+    EXTENSION_LOG_ANOMALY_RE's own comment for why this isn't an
+    exact-format parse like parse_dpkg_log above. EXTENSION_LOG_ZERO_COUNT_RE
+    suppresses the "0 packages failed"/"no errors" shape of false positive
+    the keyword scan alone can't distinguish from a real failure."""
+    events: list[TimelineEvent] = []
+    for i, line in enumerate(text.splitlines()):
+        if not line.strip() or not EXTENSION_LOG_ANOMALY_RE.search(line) or EXTENSION_LOG_ZERO_COUNT_RE.search(line):
+            continue
+        events.append(
+            TimelineEvent(
+                ts=parse_leading_timestamp(line) or datetime.now(timezone.utc),
+                source=Source.GUEST_LINUX,
+                kind="waagent_log",
+                summary=line.strip()[:240],
+                detail={},
+                raw_ref=f"guest:waagent.log:{vm_id}:{i}",
+            )
+        )
+    return events
+
+
+def parse_extension_core_log(text: str, vm_id: str) -> list[TimelineEvent]:
+    """The Linux patch extension's own detailed operational log
+    (/var/log/azure/Microsoft.CPlat.Core.LinuxPatchExtension/<seq>.core.log)
+    - Microsoft's own docs describe this as containing "information about
+    patches assessed/installed and problems encountered during the
+    process", distinct from the terse .status summary
+    patch_extension_status.py already parses. Same generic anomaly scan
+    (and the same zero-count false-positive guard) as parse_waagent_log
+    above - see EXTENSION_LOG_ANOMALY_RE/EXTENSION_LOG_ZERO_COUNT_RE."""
+    events: list[TimelineEvent] = []
+    for i, line in enumerate(text.splitlines()):
+        if not line.strip() or not EXTENSION_LOG_ANOMALY_RE.search(line) or EXTENSION_LOG_ZERO_COUNT_RE.search(line):
+            continue
+        events.append(
+            TimelineEvent(
+                ts=parse_leading_timestamp(line) or datetime.now(timezone.utc),
+                source=Source.GUEST_LINUX,
+                kind="extension_core_log",
+                summary=line.strip()[:240],
+                detail={},
+                raw_ref=f"guest:core.log:{vm_id}:{i}",
+            )
+        )
+    return events
+
+
 def parse_subscription_manager(text: str, vm_id: str) -> list[TimelineEvent]:
     if "Overall Status: Current" in text or not text.strip():
         return []
@@ -284,6 +342,8 @@ def parse_linux_output(stdout: str, vm_id: str) -> tuple[list[TimelineEvent], li
     events += parse_lock_holder(sections.get("LOCK_HOLDER", ""), vm_id)
     events += parse_repo_check(sections.get("REPO_CHECK", ""), vm_id)
     events += parse_subscription_manager(sections.get("SUBMAN", ""), vm_id)
+    events += parse_waagent_log(sections.get("WAAGENT_LOG", ""), vm_id)
+    events += parse_extension_core_log(sections.get("EXT_CORE_LOG", ""), vm_id)
     ext_events, ext_findings = parse_patch_extension_status(
         sections.get("EXT_STATUS", ""), vm_id, Source.GUEST_LINUX,
         extension_version=sections.get("EXT_VERSION", "").strip() or None,
