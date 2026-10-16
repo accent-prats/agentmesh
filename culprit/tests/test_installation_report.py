@@ -13,8 +13,9 @@ from fastapi.testclient import TestClient
 
 from culprit.db.engine import make_engine, make_session_factory
 from culprit.models.installation_report import InstallationStatus
+from culprit.models.evidence import OSFamily
 from culprit.pipeline.discovery import _identity_from_vm_id, _rows_to_outcomes
-from culprit.pipeline.installation_report import _status_from_raw, build_installation_report
+from culprit.pipeline.installation_report import _guest_log_path, _status_from_raw, build_installation_report
 
 
 # ── Pure-function tests (no live Resource Graph call) ─────────────────────────
@@ -78,6 +79,33 @@ def test_status_from_raw_maps_the_four_buckets():
     assert _status_from_raw(None) == InstallationStatus.UNRESPONSIVE_OR_SHUTDOWN
     assert _status_from_raw("Failed") == InstallationStatus.FAILED
     assert _status_from_raw("CompletedWithWarnings") == InstallationStatus.FAILED  # folded into Failed, no 5th bucket
+
+
+def test_guest_log_path_linux_has_no_version_subdirectory():
+    """Found in review 2026-10-16: the Linux patch extension's real log
+    directory (/var/log/azure/Microsoft.CPlat.Core.LinuxPatchExtension/)
+    is flat and sequence-numbered, not version-rooted like Windows - the
+    previous hint invented a `.../{version}/core.log` shape that doesn't
+    exist on a real guest. extension_version must not appear in the
+    Linux path at all (unlike Windows, where it's load-bearing)."""
+    path = _guest_log_path(OSFamily.LINUX, extension_version="1.6.71")
+    assert "1.6.71" not in path
+    assert path.startswith("/var/log/azure/Microsoft.CPlat.Core.LinuxPatchExtension/")
+    assert "core.log" in path
+
+
+def test_guest_log_path_windows_substitutes_the_real_version():
+    path = _guest_log_path(OSFamily.WINDOWS, extension_version="1.5.71")
+    assert path == r"C:\WindowsAzure\Logs\Plugins\Microsoft.CPlat.Core.WindowsPatchExtension\1.5.71\WindowsPatchExtension.log"
+
+
+def test_guest_log_path_windows_falls_back_when_version_not_collected():
+    path = _guest_log_path(OSFamily.WINDOWS, extension_version=None)
+    assert "not collected for this machine" in path
+
+
+def test_guest_log_path_unknown_os_is_none():
+    assert _guest_log_path(OSFamily.UNKNOWN) is None
 
 
 # ── Repository save/load round trip ────────────────────────────────────────────

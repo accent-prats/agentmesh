@@ -86,6 +86,18 @@ def test_parse_extension_log_zero_count_is_not_a_false_positive():
     assert parse_extension_log(text, vm_id="vm-1") == []
 
 
+def test_parse_extension_log_zero_count_does_not_mask_a_real_co_occurring_failure():
+    """Found in a second review: the original guard suppressed the whole
+    line whenever a zero-count phrase appeared anywhere on it, including
+    a line that also reports a real, separate failure - e.g. this line's
+    "0 packages failed" phrase alone would have suppressed it in full
+    under the old implementation, losing the genuine endpoint failure."""
+    text = "2026-10-16 03:04:00 ERROR 0 packages failed to assess, but Windows Update endpoint check failed: timed out\n"
+    events = parse_extension_log(text, vm_id="vm-1")
+    assert len(events) == 1
+    assert "endpoint check failed" in events[0].summary
+
+
 def test_parse_extension_log_uses_the_real_line_timestamp():
     text = "2026-10-16 03:04:00 ERROR Failed to reach Windows Update endpoint: timed out\n"
     events = parse_extension_log(text, vm_id="vm-1")

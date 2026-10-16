@@ -39,10 +39,22 @@ def _guest_log_path(os_family: OSFamily, extension_version: str | None = None) -
     previous version always showed the literal, unsubstituted
     `<extension-version>` placeholder even when nothing was collected,
     which reads as a broken path rather than a convention a human could
-    still go look up manually."""
+    still go look up manually.
+
+    The Linux branch has no version-subdirectory component - found in
+    review 2026-10-16, while adding collectors/guest_linux.py's EXT_CORE_LOG
+    section for this exact file: unlike the Windows patch extension's log
+    (versioned, `.../WindowsPatchExtension\\<version>\\WindowsPatchExtension.log`),
+    the Linux patch extension's own log directory is flat and not
+    version-rooted - Microsoft's docs and the real collector both target
+    `/var/log/azure/Microsoft.CPlat.Core.LinuxPatchExtension/<sequence-
+    number>.core.log`, a sequence-numbered file directly under that
+    directory. The previous version of this hint invented a
+    `.../{version}/core.log` shape that doesn't exist on a real guest -
+    anyone following it by hand would have looked in a directory that
+    was never there."""
     if os_family == OSFamily.LINUX:
-        version = extension_version or "<extension-version> (version not collected for this machine)"
-        return f"/var/log/azure/Microsoft.CPlat.Core.LinuxPatchExtension/{version}/core.log"
+        return "/var/log/azure/Microsoft.CPlat.Core.LinuxPatchExtension/<sequence-number>.core.log (use the most recent by file time)"
     if os_family == OSFamily.WINDOWS:
         version = extension_version or "<extension-version> (version not collected for this machine)"
         return rf"C:\WindowsAzure\Logs\Plugins\Microsoft.CPlat.Core.WindowsPatchExtension\{version}\WindowsPatchExtension.log"

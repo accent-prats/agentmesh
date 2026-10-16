@@ -71,6 +71,25 @@ EXTENSION_LOG_ZERO_COUNT_RE = re.compile(
     re.IGNORECASE,
 )
 
+
+def has_extension_log_anomaly(line: str) -> bool:
+    """True if `line` contains a real anomaly - not just a healthy
+    zero-count phrase. Found in a second review, 2026-10-16: checking
+    "does the line contain an anomaly keyword AND not contain a
+    zero-count phrase" (the original shape of this guard) suppresses the
+    *entire line* whenever a zero-count phrase appears anywhere on it -
+    including a line that also reports a real, separate failure, e.g.
+    "0 packages failed to assess, but 2 packages failed to install:
+    KB1, KB2" was silently dropped in full, the genuine failure lost
+    along with the healthy phrase. Stripping only the zero-count
+    substrings out first, then re-checking for an anomaly keyword in
+    what's left, correctly keeps a line that has both and only drops a
+    line that's purely a healthy zero-count summary."""
+    if not EXTENSION_LOG_ANOMALY_RE.search(line):
+        return False
+    remainder = EXTENSION_LOG_ZERO_COUNT_RE.sub("", line)
+    return bool(EXTENSION_LOG_ANOMALY_RE.search(remainder))
+
 # Shared by the same three new parsers as EXTENSION_LOG_ANOMALY_RE above -
 # same caveat applies: these are the formats Azure's own agent/extension
 # logging is documented/commonly observed to use

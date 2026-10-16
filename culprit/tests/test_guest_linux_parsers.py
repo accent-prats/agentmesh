@@ -169,10 +169,23 @@ def test_parse_waagent_log_empty_is_silent():
 
 def test_parse_waagent_log_zero_count_is_not_a_false_positive():
     """Found in review: the keyword scan alone can't tell "0 packages
-    failed" (healthy) from a real failure - EXTENSION_LOG_ZERO_COUNT_RE
+    failed" (healthy) from a real failure - has_extension_log_anomaly
     must suppress it."""
     text = "2026/10/16 03:04:00 INFO ExtHandler Assessment complete: 0 packages failed, 42 succeeded\n"
     assert parse_waagent_log(text, vm_id="vm-1") == []
+
+
+def test_parse_waagent_log_zero_count_does_not_mask_a_real_co_occurring_failure():
+    """Found in a second review: the first fix suppressed the *entire
+    line* whenever a zero-count phrase appeared anywhere on it - which
+    also silently dropped a real, separate failure sharing that line.
+    has_extension_log_anomaly only strips the zero-count substring
+    itself before re-checking, so a genuine anomaly elsewhere on the
+    same line must still be caught."""
+    text = "2026/10/16 03:04:00 ERROR ExtHandler Assessment: 0 packages failed to assess, but 2 packages failed to install: KB1, KB2\n"
+    events = parse_waagent_log(text, vm_id="vm-1")
+    assert len(events) == 1
+    assert "failed to install" in events[0].summary
 
 
 def test_parse_waagent_log_uses_the_real_line_timestamp():
@@ -198,6 +211,13 @@ def test_parse_extension_core_log_quiet_log_is_silent():
 def test_parse_extension_core_log_zero_count_is_not_a_false_positive():
     text = "2026-10-16 03:04:00,000 - root - INFO - No errors encountered, 0 denied requests\n"
     assert parse_extension_core_log(text, vm_id="vm-1") == []
+
+
+def test_parse_extension_core_log_zero_count_does_not_mask_a_real_co_occurring_failure():
+    text = "2026-10-16 03:04:00,000 - root - ERROR - No errors encountered during download phase, however installation failed with exit code 1\n"
+    events = parse_extension_core_log(text, vm_id="vm-1")
+    assert len(events) == 1
+    assert "installation failed" in events[0].summary
 
 
 def test_parse_extension_core_log_uses_the_real_line_timestamp():

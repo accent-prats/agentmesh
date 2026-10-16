@@ -13,8 +13,7 @@ from datetime import datetime, timezone
 
 from culprit.collectors.base import CollectionRequest, CollectionResult, Collector
 from culprit.collectors.patch_extension_status import (
-    EXTENSION_LOG_ANOMALY_RE,
-    EXTENSION_LOG_ZERO_COUNT_RE,
+    has_extension_log_anomaly,
     parse_leading_timestamp,
     parse_patch_extension_status,
 )
@@ -248,13 +247,13 @@ def parse_extension_log(text: str, vm_id: str) -> list[TimelineEvent]:
     exact path as the human-facing hint, but no collector read it until
     now. Same generic anomaly scan as guest_linux.py's
     parse_waagent_log/parse_extension_core_log - see
-    EXTENSION_LOG_ANOMALY_RE's own comment for why this isn't an
-    exact-format parse. EXTENSION_LOG_ZERO_COUNT_RE suppresses the "0
-    packages failed"/"no errors" shape of false positive the keyword
-    scan alone can't distinguish from a real failure."""
+    has_extension_log_anomaly's own comment for why this isn't an
+    exact-format parse, and for why a healthy "0 packages failed"/"no
+    errors" phrase is suppressed without also dropping a real, separate
+    failure that happens to share the line."""
     events: list[TimelineEvent] = []
     for i, line in enumerate(text.splitlines()):
-        if not line.strip() or not EXTENSION_LOG_ANOMALY_RE.search(line) or EXTENSION_LOG_ZERO_COUNT_RE.search(line):
+        if not line.strip() or not has_extension_log_anomaly(line):
             continue
         events.append(
             TimelineEvent(
