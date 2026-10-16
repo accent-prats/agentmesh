@@ -98,6 +98,26 @@ class TestPortalHasNothingConfigured:
 
         assert isinstance(agent, ScriptedRCAAgent)
 
+    def test_falling_back_to_the_scripted_agent_logs_a_loud_warning(self, monkeypatch, caplog):
+        """Found 2026-10-16: this fallback used to have zero logging of
+        its own - a real deployment with nothing configured would
+        silently get the scripted demo stand-in (which doesn't read
+        collected evidence at all) for every run, forever, with nothing
+        in the logs to explain why RCA quality never improved no matter
+        what evidence-collection fixes landed. Every real caller
+        (pipeline/live_run.py, api/routes_runs.py's demo trigger) must
+        get this warning so it's visible wherever Culprit's own logs are
+        actually read, not just discoverable by reading this source file."""
+        _with_portal_secret(monkeypatch)
+        monkeypatch.setattr("httpx.get", lambda *a, **k: FakeHttpResponse({"provider": ""}))
+        monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+        monkeypatch.delenv("ANTHROPIC_AUTH_TOKEN", raising=False)
+
+        with caplog.at_level("WARNING"):
+            deps_module.get_rca_agent()
+
+        assert any("SCRIPTED demo RCA agent" in r.message for r in caplog.records)
+
 
 class TestPortalUnreachable:
     def test_a_network_failure_falls_back_gracefully_rather_than_raising(self, monkeypatch):

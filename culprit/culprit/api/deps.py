@@ -105,6 +105,35 @@ def get_rca_agent():
         from culprit.pipeline.rca_agent import DeepRCAAgent
 
         return DeepRCAAgent(model=settings.rca_model)
+
+    # Found 2026-10-16: this fallback had zero logging of its own - a
+    # production deployment with no Portal AI provider configured and no
+    # ANTHROPIC_API_KEY/ANTHROPIC_AUTH_TOKEN set silently gets the
+    # scripted demo stand-in (demo/scripted_rca.py) for every real run,
+    # forever, with no signal anywhere that real Claude-reasoned RCA
+    # never actually ran - get_retrieval_store()'s own comment above
+    # already (incorrectly) describes this path as "logged once, not
+    # raised", which it never was. ScriptedRCAAgent only recognizes one
+    # error code (MaintenanceWindowExceeded) and returns an identical,
+    # fixed 15%-confidence "Insufficient evidence" result for every other
+    # cluster regardless of what evidence was actually collected - no
+    # amount of improving the collectors changes its output, since it
+    # never reads the evidence at all. Same "loud, unmissable warning for
+    # a silent insecure/degraded default" discipline as api/main.py's own
+    # lifespan checks - this one fires once per Pipeline construction
+    # (not cached), so a scheduled live run keeps restating it every
+    # cycle until it's fixed, not just once at startup.
+    import logging
+
+    logging.getLogger("culprit.api.deps").warning(
+        "No AI provider configured (neither a Portal-active provider nor "
+        "ANTHROPIC_API_KEY/ANTHROPIC_AUTH_TOKEN) - using the SCRIPTED demo RCA "
+        "agent for this run. It does not read collected evidence at all and "
+        "always returns the same fixed, low-confidence 'insufficient evidence' "
+        "result for anything other than a MaintenanceWindowExceeded error code. "
+        "Set ANTHROPIC_API_KEY/ANTHROPIC_AUTH_TOKEN or configure an AI provider "
+        "in Portal before trusting this deployment's RCA output."
+    )
     from culprit.demo.scripted_rca import ScriptedRCAAgent
 
     return ScriptedRCAAgent()
