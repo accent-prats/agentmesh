@@ -38,10 +38,25 @@ from culprit.scheduler.events import router as events_router
 # notice above, pipeline/discovery.py's "falling back to vmId parsing"
 # recovery notice, etc.) was silently swallowed in every real deployment -
 # only `log.warning`+ ever reached stderr, via Python's own WARNING-level
-# `lastResort` handler. `basicConfig` is a no-op if something else already
-# configured the root logger (e.g. under pytest or a future real log-config
-# flag), so this only fills the gap, never fights a deliberate setup.
-logging.basicConfig(level=logging.INFO)
+# `lastResort` handler.
+#
+# Found 2026-10-16, second pass, after seeing it in a real deployment's
+# logs: a blanket root-level INFO threshold also turned on every
+# third-party library's own INFO logging - most visibly azure-core's
+# `http_logging_policy`, which dumps full request/response headers for
+# *every single* Azure API call (Resource Graph queries, Run Command
+# polling, ...). That flooded real logs with HTTP noise, burying the
+# actual diagnostic lines this fix exists to surface - the opposite of
+# the goal. Root stays at its normal default (WARNING, so azure-core/
+# msal/urllib3 etc. stay quiet unless they themselves warn or error);
+# only this app's own loggers get INFO - every logger in this codebase
+# is created via `logging.getLogger(__name__)`, so they all nest under
+# "culprit", and bumping that one node's level cascades to every child.
+# `basicConfig` is a no-op if something else already configured the root
+# logger (e.g. under pytest or a future real log-config flag), so this
+# only fills the gap, never fights a deliberate setup.
+logging.basicConfig(level=logging.WARNING)
+logging.getLogger("culprit").setLevel(logging.INFO)
 
 log = logging.getLogger(__name__)
 
