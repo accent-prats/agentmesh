@@ -43,19 +43,20 @@ def _strip_unsupported_schema_keys(schema: Any) -> Any:
 
 
 class GeminiClient:
-    def __init__(self, *, api_key: str, base_url: str, timeout: float = 240.0):
+    def __init__(self, *, api_key: str, base_url: str, timeout: float = 600.0):
         if not api_key:
             raise ValueError("api_key is required for Gemini")
         self.api_key = api_key
         self.base_url = base_url.rstrip("/")
-        # Same fix as shared/src/llm/openai_compatible.py::OpenAICompatibleClient
-        # (found 2026-10-16, a real production timeout) - a flat timeout
-        # applies the same short window to connect/write/pool *and* read,
-        # when it's specifically the read phase (waiting for the model's
-        # response) that needs real patience for a slow or custom gateway.
-        # Gemini is an independently-activatable catalog provider just
-        # like the openai_compatible family, so it needs the identical
-        # split rather than being left on the old flat default.
+        # Same fix, same reasoning as shared/src/llm/openai_compatible.py::
+        # OpenAICompatibleClient (found 2026-10-16, a real production
+        # timeout, raised twice: first the type - flat vs. split by phase -
+        # then the value, once 240s on the read phase still wasn't enough
+        # for a real large tool-calling completion through a slow/custom
+        # gateway). Matches Anthropic's own 10-minute SDK default rather
+        # than picking another number by guesswork. Gemini is an
+        # independently-activatable catalog provider just like the
+        # openai_compatible family, so it needs the identical treatment.
         self.timeout = httpx.Timeout(connect=10.0, read=timeout, write=30.0, pool=10.0)
         self.messages = _MessagesNamespace(self)
 

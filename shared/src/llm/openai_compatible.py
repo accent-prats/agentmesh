@@ -35,7 +35,7 @@ class OpenAICompatibleClient:
         api_version: str = "",
         deployment: str = "",
         supports_strict_tool_schema: bool = False,
-        timeout: float = 240.0,
+        timeout: float = 600.0,
     ):
         if not base_url:
             raise ValueError("base_url is required for an OpenAI-compatible provider")
@@ -52,14 +52,22 @@ class OpenAICompatibleClient:
         # (DeepSeek via a Siemens-internal proxy) to even start streaming
         # back an 8000-max-token completion over a now much larger
         # evidence prompt (this week's new guest-log collectors added
-        # several hundred more lines per machine). Anthropic's own SDK -
-        # the path every other provider in this catalog was validated
-        # against before a real non-Anthropic provider was ever actually
-        # activated - defaults to a 10-minute timeout; this adapter's flat
-        # 60s had only ever been exercised against instant unit-test
-        # fakes, never a real slow backend. Split so a genuinely dead
-        # endpoint still fails fast (connect) while a slow-to-respond one
-        # gets real patience on the phase that actually failed (read).
+        # several hundred more lines per machine). Split so a genuinely
+        # dead endpoint still fails fast (connect) while a slow-to-respond
+        # one gets real patience on the phase that actually failed (read).
+        #
+        # 240s still wasn't enough in the real deployment this was found
+        # in - confirmed the request itself was never the problem: the
+        # Portal "test connection" button (shared/src/llm/credential_test.py)
+        # sends a trivial `max_tokens=1` one-word completion and gets a
+        # fast reply, while the real RCA call asks for up to 8000 tokens
+        # of output under a *forced* structured tool-call, over a much
+        # larger evidence prompt - a fundamentally heavier request a slow
+        # or custom gateway can legitimately take minutes to fully decode,
+        # not seconds. Raised to match Anthropic's own SDK default (10
+        # minutes) - the one path in this catalog already proven to need
+        # exactly this much patience for the same kind of call, rather
+        # than picking another number by guesswork.
         self.timeout = httpx.Timeout(connect=10.0, read=timeout, write=30.0, pool=10.0)
         self.messages = _MessagesNamespace(self)
 
