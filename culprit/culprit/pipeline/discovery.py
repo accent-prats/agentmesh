@@ -20,10 +20,13 @@ different architecture.
 """
 from __future__ import annotations
 
+import logging
 import re
 from datetime import datetime
 
 from culprit.models.evidence import MachineIdentity, OSFamily
+
+log = logging.getLogger(__name__)
 
 _MAX_MACHINES_PER_RUN = 200  # sane cap so a live run can't accidentally fan out across an entire estate
 
@@ -38,10 +41,20 @@ patchinstallationresources
 | limit {limit}
 """
 
+# `in~` (case-insensitive), not `in` - found 2026-10-16: this vmId comes
+# from the *different* patchinstallationresources table's own `id`
+# column (_FAILED_MACHINES_QUERY above), while this query joins against
+# the Resources table's own `id` column for the same VM. Azure resource
+# IDs are only documented case-insensitive for comparison - a
+# case-sensitive `in` here silently matched zero rows whenever the two
+# Resource Graph surfaces disagreed on casing for the same resource,
+# dropping a genuinely-failed machine out of discover_failed_machines
+# with no error at all (same failure class already fixed in
+# installation_report.py's own vm_id dedup, just never propagated here).
 _VM_DETAILS_QUERY = """
 Resources
 | where type =~ 'microsoft.compute/virtualmachines'
-| where id in ({vm_ids})
+| where id in~ ({vm_ids})
 | project id, name, resourceGroup, subscriptionId, osType = tostring(properties.storageProfile.osDisk.osType), tags
 """
 
@@ -83,6 +96,28 @@ def _quote_ids(vm_ids: list[str]) -> str:
     return ", ".join(f"'{escape_kql_string(vid)}'" for vid in vm_ids)
 
 
+def _fallback_identity(vm_id: str) -> MachineIdentity | None:
+    """Last resort for a vmId _FAILED_MACHINES_QUERY found that the
+    _VM_DETAILS_QUERY join still didn't resolve a row for - e.g. the VM
+    was deleted, renamed, or moved between posting its patch result and
+    this query running. Reuses discover_all_patch_outcomes_with_identity's
+    own `_identity_from_vm_id` (it already solves exactly this: parsing
+    identity straight out of the vmId's own ARM resource-id shape, no
+    second network round-trip to possibly miss). OS family can't be
+    known this way - OSFamily.UNKNOWN is an existing, handled value
+    (pipeline/collection.py's `_applies_to` already skips only the two
+    OS-specific guest collectors for it; every OS-agnostic collector
+    still runs), so this machine still gets a real, partial-evidence RCA
+    instead of silently vanishing from the pipeline."""
+    identity = _identity_from_vm_id(vm_id)
+    if identity is None:
+        return None
+    return MachineIdentity(
+        vm_id=vm_id, vm_name=identity["vm_name"], resource_group=identity["resource_group"],
+        subscription_id=identity["subscription_id"], os_family=OSFamily.UNKNOWN, tags={},
+    )
+
+
 def discover_failed_machines(
     credential,
     subscription_ids: list[str],
@@ -91,7 +126,13 @@ def discover_failed_machines(
 ) -> list[MachineIdentity]:
     """Live Resource Graph lookup - the two queries above, run for real.
     Returns [] (rather than raising) if nothing failed in the window, so
-    callers can report a clean "nothing to diagnose" instead of an error."""
+    callers can report a clean "nothing to diagnose" instead of an error.
+
+    Every vmId the first query finds gets a MachineIdentity one way or
+    another - found 2026-10-16: a vmId the _VM_DETAILS_QUERY join didn't
+    return a row for used to be dropped here silently, taking a
+    genuinely-failed machine out of the deep-RCA pipeline entirely with
+    no error or log line. _fallback_identity (above) now covers it."""
     from azure.mgmt.resourcegraph import ResourceGraphClient
     from azure.mgmt.resourcegraph.models import QueryRequest
 
@@ -107,7 +148,22 @@ def discover_failed_machines(
 
     details_query = _VM_DETAILS_QUERY.format(vm_ids=_quote_ids(vm_ids))
     details_result = client.resources(QueryRequest(subscriptions=subscription_ids, query=details_query))
-    return _machines_from_rows(details_result.data or [])
+    resolved = _machines_from_rows(details_result.data or [])
+    resolved_by_id = {m.vm_id.lower(): m for m in resolved}
+
+    machines: list[MachineIdentity] = []
+    for vm_id in vm_ids:
+        machine = resolved_by_id.get(vm_id.lower())
+        if machine is not None:
+            machines.append(machine)
+            continue
+        log.info("discover_failed_machines: %s not resolved via Resources lookup, falling back to vmId parsing", vm_id)
+        fallback = _fallback_identity(vm_id)
+        if fallback is None:
+            log.warning("discover_failed_machines: could not resolve identity for vmId %s, dropping it", vm_id)
+            continue
+        machines.append(fallback)
+    return machines
 
 
 _COUNT_QUERY = "Resources | where type =~ 'microsoft.compute/virtualmachines' | count"
