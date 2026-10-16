@@ -19,7 +19,15 @@
    first fix exists to surface. Fixed by leaving the root logger at its
    normal default (WARNING) and only bumping this app's own "culprit"
    logger node (and therefore every culprit.* child, since all of this
-   codebase's loggers nest under it) to INFO."""
+   codebase's loggers nest under it) to INFO.
+
+3. (2026-10-16, found in review of fix #2) demo/run_demo.py is a
+   separate, real entrypoint (`python -m culprit.demo.run_demo`) that
+   never imports api/main.py - it independently set its own blanket
+   `logging.basicConfig(level=logging.INFO)`, reintroducing exactly the
+   same noise pattern fix #2 eliminated for the main app the moment this
+   script's scope grows (it already posts to Slack/Teams webhooks via
+   httpx when configured). Scoped the same way as api/main.py."""
 from __future__ import annotations
 
 import logging
@@ -28,10 +36,11 @@ import sys
 
 
 def test_importing_the_app_makes_info_logs_visible_on_a_culprit_logger():
-    """Runs in a fresh subprocess - importing culprit.api.main in-process
-    here would inherit whatever logging config pytest itself (or an
-    earlier test module) already set up, masking the exact bug this
-    pins (the real deployed process's logging config, not pytest's)."""
+    """Runs in a fresh subprocess, not in-process: once anything imports
+    culprit.api.main in this same interpreter, Python's own sys.modules
+    cache makes a later import a no-op, so an in-process version of this
+    test could pass without the module body's logging setup ever
+    actually re-running (the way a real deployed process starts fresh)."""
     script = (
         "import logging, culprit.api.main\n"
         "logger = logging.getLogger('culprit.pipeline.discovery')\n"
@@ -57,3 +66,18 @@ def test_importing_the_app_does_not_turn_on_third_party_http_logging_noise():
     result = subprocess.run([sys.executable, "-c", script], capture_output=True, text=True, timeout=30)
     assert result.returncode == 0, result.stderr
     assert result.stdout.strip() == "False"
+
+
+def test_demo_entrypoint_has_the_same_scoped_logging_as_the_main_app():
+    """demo/run_demo.py is a separate real entrypoint that never imports
+    api/main.py, so fix #2 above doesn't automatically cover it - it
+    needs (and now has) the identical scoping applied independently."""
+    script = (
+        "import logging, culprit.demo.run_demo\n"
+        "culprit_logger = logging.getLogger('culprit.demo')\n"
+        "noisy_logger = logging.getLogger('azure.core.pipeline.policies.http_logging_policy')\n"
+        "print(culprit_logger.isEnabledFor(logging.INFO), noisy_logger.isEnabledFor(logging.INFO))\n"
+    )
+    result = subprocess.run([sys.executable, "-c", script], capture_output=True, text=True, timeout=30)
+    assert result.returncode == 0, result.stderr
+    assert result.stdout.strip() == "True False"

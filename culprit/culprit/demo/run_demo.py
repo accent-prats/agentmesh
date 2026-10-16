@@ -18,7 +18,17 @@ import os
 import sys
 from pathlib import Path
 
-logging.basicConfig(level=logging.INFO, format="%(levelname)s %(name)s: %(message)s")
+# Scoped the same way as api/main.py's own fix (2026-10-16, found in
+# review): a blanket root-level INFO threshold also turns on every
+# third-party library's own INFO logging - this script's own log.info
+# calls below are what matter, but a real ANTHROPIC_API_KEY run or the
+# Slack/Teams webhook branch (reporting/notify.py, via httpx) would
+# otherwise start emitting the same HTTP-header-dump noise this fix
+# eliminated for the main app. Root stays at WARNING; only this
+# package's own loggers (everything under "culprit", including this
+# module's "culprit.demo") get INFO.
+logging.basicConfig(level=logging.WARNING, format="%(levelname)s %(name)s: %(message)s")
+logging.getLogger("culprit").setLevel(logging.INFO)
 log = logging.getLogger("culprit.demo")
 
 
