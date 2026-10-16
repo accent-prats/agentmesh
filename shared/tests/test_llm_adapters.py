@@ -272,3 +272,26 @@ class TestGeminiClient:
         response = client.messages.create(model="gemini-2.5-pro", max_tokens=10, thinking=None, system="s", tools=[_TOOL_SCHEMA], messages=[])
         assert response.content == []
         assert response.stop_reason == "STOP"
+
+    def test_timeout_gives_the_read_phase_real_patience_but_fails_fast_on_connect(self, monkeypatch):
+        """Same fix, same reason as OpenAICompatibleClient's own version of
+        this test above - found in review 2026-10-16: Gemini is an
+        independently-activatable catalog provider too, and was left with
+        the identical flat-timeout bug while only the OpenAI-compatible
+        family got fixed first."""
+        captured: dict = {}
+
+        def fake_post(url, *, json, timeout):
+            captured["timeout"] = timeout
+            return FakeHttpResponse({"candidates": [{"content": {"parts": [
+                {"functionCall": {"name": "submit_rca_finding", "args": {}}}
+            ]}}]})
+
+        monkeypatch.setattr("shared.src.llm.gemini.httpx.post", fake_post)
+        client = GeminiClient(api_key="k", base_url="https://generativelanguage.googleapis.com/v1beta")
+        client.messages.create(model="gemini-2.5-pro", max_tokens=10, thinking=None, system="s", tools=[_TOOL_SCHEMA], messages=[])
+
+        timeout = captured["timeout"]
+        assert isinstance(timeout, httpx.Timeout)
+        assert timeout.read >= 180.0
+        assert timeout.connect <= 15.0
