@@ -16,12 +16,17 @@ enforceable guarantee rather than a policy on paper.
 """
 from __future__ import annotations
 
+import logging
+import time
 from datetime import datetime, timezone
 
 from pydantic import ValidationError
 
 from culprit.collectors.base import CollectionRequest, CollectionResult, Collector
 from culprit.models.evidence import AzureApiErrorDetail, PatchOutcome, Source, TimelineEvent
+from culprit.observability import safe_exc_summary
+
+log = logging.getLogger(__name__)
 
 try:  # pragma: no cover - exercised only when the optional Azure SDKs are installed
     from azure.identity import DefaultAzureCredential
@@ -95,6 +100,7 @@ class AzureControlPlaneCollector(Collector):
         outcome: PatchOutcome | None = None
         error = None
 
+        started = time.monotonic()
         try:
             from culprit.security.kql import escape_kql_string
 
@@ -107,6 +113,10 @@ class AzureControlPlaneCollector(Collector):
                 QueryRequest(subscriptions=[request.machine.subscription_id], query=query)
             )
             rows = result.data or []
+            log.info(
+                "azure_control_plane: install-result query for %s returned %d row(s) after %.1fs",
+                request.machine.vm_name, len(rows), time.monotonic() - started,
+            )
             if rows:
                 props = rows[0]["properties"]
                 outcome = _outcome_from_install_result(props)
@@ -140,11 +150,25 @@ class AzureControlPlaneCollector(Collector):
                         )
                     )
         except Exception as exc:  # noqa: BLE001 - collection must degrade, not crash the pipeline
+            log.warning(
+                "azure_control_plane: install-result query for %s failed after %.1fs (%s)",
+                request.machine.vm_name, time.monotonic() - started, safe_exc_summary(exc),
+            )
             error = f"Resource Graph query failed: {exc}"
 
+        activity_started = time.monotonic()
         try:
-            events.extend(self._activity_log_events(request))
+            activity_events = self._activity_log_events(request)
+            log.info(
+                "azure_control_plane: activity-log query for %s returned %d event(s) after %.1fs",
+                request.machine.vm_name, len(activity_events), time.monotonic() - activity_started,
+            )
+            events.extend(activity_events)
         except Exception as exc:  # noqa: BLE001
+            log.warning(
+                "azure_control_plane: activity-log query for %s failed after %.1fs (%s)",
+                request.machine.vm_name, time.monotonic() - activity_started, safe_exc_summary(exc),
+            )
             error = (error + "; " if error else "") + f"Activity Log query failed: {exc}"
 
         return CollectionResult(events=events, outcome=outcome, error=error)

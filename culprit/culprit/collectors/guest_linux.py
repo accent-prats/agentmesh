@@ -12,8 +12,10 @@ formats of dpkg, apt and yum/dnf, not an invented shape.
 """
 from __future__ import annotations
 
+import logging
 import re
 import threading
+import time
 from datetime import datetime, timezone
 
 from culprit.collectors.base import CollectionRequest, CollectionResult, Collector
@@ -23,6 +25,9 @@ from culprit.collectors.patch_extension_status import (
     parse_patch_extension_status,
 )
 from culprit.models.evidence import Source, TimelineEvent
+from culprit.observability import safe_exc_summary
+
+log = logging.getLogger(__name__)
 
 try:  # pragma: no cover
     from azure.identity import DefaultAzureCredential
@@ -122,6 +127,8 @@ class GuestLinuxCollector(Collector):
         # second pass, worth a longer timeout than the first attempt's
         # identical 60s window that already wasn't enough once.
         timeout = 180 if request.only else 60
+        log.info("guest_linux: running Run Command on %s (timeout=%ds)", request.machine.vm_name, timeout)
+        started = time.monotonic()
         try:
             poller = client.virtual_machines.begin_run_command(
                 request.machine.resource_group,
@@ -131,7 +138,12 @@ class GuestLinuxCollector(Collector):
             result = poller.result(timeout=timeout)
             stdout = result.value[0].message if result.value else ""
         except Exception as exc:  # noqa: BLE001
+            log.warning(
+                "guest_linux: Run Command on %s failed after %.1fs (%s)",
+                request.machine.vm_name, time.monotonic() - started, safe_exc_summary(exc),
+            )
             return CollectionResult(events=[], error=f"Run Command failed: {exc}")
+        log.info("guest_linux: Run Command on %s completed after %.1fs", request.machine.vm_name, time.monotonic() - started)
 
         events, patch_extension_status = parse_linux_output(stdout, vm_id=request.machine.vm_id)
         return CollectionResult(events=events, patch_extension_status=patch_extension_status)

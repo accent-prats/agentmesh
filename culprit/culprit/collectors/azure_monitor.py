@@ -8,10 +8,15 @@ here - pass it via `CULPRIT_LOG_ANALYTICS_WORKSPACE_ID` or the constructor.
 """
 from __future__ import annotations
 
+import logging
+import time
 from datetime import timedelta
 
 from culprit.collectors.base import CollectionRequest, CollectionResult, Collector
 from culprit.models.evidence import OSFamily, Source, TimelineEvent
+from culprit.observability import safe_exc_summary
+
+log = logging.getLogger(__name__)
 
 try:  # pragma: no cover
     from azure.identity import DefaultAzureCredential
@@ -78,17 +83,44 @@ class AzureMonitorCollector(Collector):
         error = None
         computer = request.machine.vm_name
 
+        heartbeat_started = time.monotonic()
         try:
-            events.extend(self._heartbeat_events(request, computer))
+            heartbeat_events = self._heartbeat_events(request, computer)
+            log.info(
+                "azure_monitor: heartbeat query for %s returned %d event(s) after %.1fs",
+                computer, len(heartbeat_events), time.monotonic() - heartbeat_started,
+            )
+            events.extend(heartbeat_events)
         except Exception as exc:  # noqa: BLE001
+            log.warning(
+                "azure_monitor: heartbeat query for %s failed after %.1fs (%s)",
+                computer, time.monotonic() - heartbeat_started, safe_exc_summary(exc),
+            )
             error = f"Heartbeat query failed: {exc}"
 
+        event_started = time.monotonic()
         try:
+            # No `else` branch - an OSFamily.UNKNOWN machine gets no
+            # event/syslog query attempted at all (unchanged from before),
+            # so nothing is logged for it either; logging "0 events" here
+            # would misleadingly imply a query ran when none did.
             if request.machine.os_family == OSFamily.WINDOWS:
-                events.extend(self._run_event_query(_WINDOWS_EVENT_QUERY, request, computer, Source.AZURE_MONITOR))
+                event_results = self._run_event_query(_WINDOWS_EVENT_QUERY, request, computer, Source.AZURE_MONITOR)
             elif request.machine.os_family == OSFamily.LINUX:
-                events.extend(self._run_event_query(_LINUX_SYSLOG_QUERY, request, computer, Source.AZURE_MONITOR))
+                event_results = self._run_event_query(_LINUX_SYSLOG_QUERY, request, computer, Source.AZURE_MONITOR)
+            else:
+                event_results = None
+            if event_results is not None:
+                log.info(
+                    "azure_monitor: event/syslog query for %s returned %d event(s) after %.1fs",
+                    computer, len(event_results), time.monotonic() - event_started,
+                )
+                events.extend(event_results)
         except Exception as exc:  # noqa: BLE001
+            log.warning(
+                "azure_monitor: event/syslog query for %s failed after %.1fs (%s)",
+                computer, time.monotonic() - event_started, safe_exc_summary(exc),
+            )
             error = (error + "; " if error else "") + f"Event/Syslog query failed: {exc}"
 
         return CollectionResult(events=events, error=error)

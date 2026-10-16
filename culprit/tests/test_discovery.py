@@ -342,3 +342,79 @@ def test_fallback_identity_parses_the_vm_id_with_unknown_os():
 
 def test_fallback_identity_returns_none_for_a_non_standard_id():
     assert _fallback_identity("/subscriptions/s/providers/Microsoft.HybridCompute/machines/arc-box") is None
+
+
+# ── Tracing (2026-10-17: extended the same discipline added to the RCA
+# provider path to every real Resource Graph call here too) ─────────────────
+
+def test_discover_failed_machines_logs_progress_at_each_step(monkeypatch, caplog):
+    fake_cls = _two_call_fake_client(
+        failed_rows=[{"vmId": "/subscriptions/s/resourceGroups/rg/providers/Microsoft.Compute/virtualMachines/vm-1"}],
+        details_rows=[{
+            "id": "/subscriptions/s/resourceGroups/rg/providers/Microsoft.Compute/virtualMachines/vm-1",
+            "name": "vm-1", "resourceGroup": "rg", "subscriptionId": "s", "osType": "Linux", "tags": {},
+        }],
+    )
+    monkeypatch.setattr("azure.mgmt.resourcegraph.ResourceGraphClient", fake_cls)
+
+    from datetime import datetime, timezone
+
+    with caplog.at_level("INFO"):
+        discover_failed_machines(
+            credential=object(), subscription_ids=["sub-1"],
+            window_start=datetime(2026, 10, 16, tzinfo=timezone.utc), window_end=datetime(2026, 10, 17, tzinfo=timezone.utc),
+        )
+
+    messages = [r.message for r in caplog.records]
+    assert any("querying failed machines" in m for m in messages)
+    assert any("1 candidate vmId" in m for m in messages)
+    assert any("1 of 1 vmId" in m and "resolved" in m for m in messages)
+
+
+def test_discover_failed_machines_logs_a_warning_and_still_raises_on_a_real_query_failure(monkeypatch, caplog):
+    """The most important property of this tracing: it must be purely
+    observational. A try/except that logs and re-raises can accidentally
+    swallow or replace the original exception - this pins that the exact
+    same exception keeps propagating, same discipline already proven for
+    the RCA-provider call sites."""
+    class ExplodingClient:
+        def __init__(self, credential):
+            pass
+
+        def resources(self, request):
+            raise RuntimeError("Resource Graph is unavailable")
+
+    monkeypatch.setattr("azure.mgmt.resourcegraph.ResourceGraphClient", ExplodingClient)
+
+    from datetime import datetime, timezone
+
+    with caplog.at_level("WARNING"):
+        try:
+            discover_failed_machines(
+                credential=object(), subscription_ids=["sub-1"],
+                window_start=datetime(2026, 10, 16, tzinfo=timezone.utc), window_end=datetime(2026, 10, 17, tzinfo=timezone.utc),
+            )
+            raised = None
+        except RuntimeError as exc:
+            raised = exc
+
+    assert raised is not None and str(raised) == "Resource Graph is unavailable"
+    assert any(
+        r.levelname == "WARNING" and "failed-machines query failed" in r.message and "RuntimeError" in r.message
+        for r in caplog.records
+    )
+
+
+def test_discover_all_machines_logs_total_rows_and_pages(monkeypatch, caplog):
+    pytest.importorskip("azure.mgmt.resourcegraph")
+    fake_cls = _fake_resource_graph_client([
+        {"data": [_row("vm-1"), _row("vm-2")], "skip_token": "page-2"},
+        {"data": [_row("vm-3")], "skip_token": None},
+    ])
+    monkeypatch.setattr("azure.mgmt.resourcegraph.ResourceGraphClient", fake_cls)
+
+    with caplog.at_level("INFO"):
+        discover_all_machines(credential=object(), subscription_ids=["sub-1"])
+
+    messages = [r.message for r in caplog.records]
+    assert any("3 row(s) across 2 page(s)" in m for m in messages)

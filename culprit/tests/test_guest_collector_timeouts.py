@@ -98,3 +98,43 @@ def test_recollection_pass_gets_a_longer_timeout(monkeypatch, collector_cls, os_
     )
     collector.collect(request)
     assert recorder == [180]
+
+
+class _FakeExplodingComputeClient:
+    def __init__(self):
+        self.virtual_machines = self
+
+    def begin_run_command(self, resource_group, vm_name, run_command_input):
+        raise TimeoutError("WinRM unreachable")
+
+
+@pytest.mark.parametrize("collector_cls,os_family,label", [
+    (GuestWindowsCollector, OSFamily.WINDOWS, "guest_windows"),
+    (GuestLinuxCollector, OSFamily.LINUX, "guest_linux"),
+])
+def test_a_failed_run_command_is_traced_but_still_returns_a_collection_gap(monkeypatch, caplog, collector_cls, os_family, label):
+    """Found 2026-10-17: extended the same tracing discipline added to the
+    RCA-provider path to Run Command too. Unlike that path, these
+    collectors deliberately never re-raise - a single machine's collection
+    failure must degrade to a collection_gaps entry, not crash the whole
+    pipeline - so the property to pin here is "the warning is logged AND
+    the existing error-conversion behavior is unchanged", not "re-raises"."""
+    collector = collector_cls(credential=object())
+    monkeypatch.setattr(collector, "_client_for", lambda sub_id: _FakeExplodingComputeClient())
+    monkeypatch.setattr(
+        __import__(collector_cls.__module__, fromlist=["RunCommandInput"]), "RunCommandInput", lambda **kw: kw, raising=False
+    )
+
+    request = CollectionRequest(
+        machine=_machine(os_family), window_start=datetime.now(timezone.utc) - timedelta(hours=3),
+        window_end=datetime.now(timezone.utc), run_id="run-1", only=[],
+    )
+
+    with caplog.at_level("WARNING"):
+        result = collector.collect(request)
+
+    assert result.error == "Run Command failed: WinRM unreachable"  # unchanged behavior
+    assert any(
+        r.levelname == "WARNING" and f"{label}: Run Command on vm-1 failed" in r.message and "TimeoutError" in r.message
+        for r in caplog.records
+    )

@@ -7,8 +7,10 @@ the script below is the entire attack surface, and it is read-only -
 """
 from __future__ import annotations
 
+import logging
 import re
 import threading
+import time
 from datetime import datetime, timezone
 
 from culprit.collectors.base import CollectionRequest, CollectionResult, Collector
@@ -18,6 +20,9 @@ from culprit.collectors.patch_extension_status import (
     parse_patch_extension_status,
 )
 from culprit.models.evidence import Source, TimelineEvent
+from culprit.observability import safe_exc_summary
+
+log = logging.getLogger(__name__)
 
 try:  # pragma: no cover
     from azure.identity import DefaultAzureCredential
@@ -103,6 +108,8 @@ class GuestWindowsCollector(Collector):
         # regardless of pass, so a VM still busy/unresponsive at the end
         # of the first attempt's window just failed again the same way).
         timeout = 180 if request.only else 60
+        log.info("guest_windows: running Run Command on %s (timeout=%ds)", request.machine.vm_name, timeout)
+        started = time.monotonic()
         try:
             poller = client.virtual_machines.begin_run_command(
                 request.machine.resource_group,
@@ -112,7 +119,12 @@ class GuestWindowsCollector(Collector):
             result = poller.result(timeout=timeout)
             stdout = result.value[0].message if result.value else ""
         except Exception as exc:  # noqa: BLE001
+            log.warning(
+                "guest_windows: Run Command on %s failed after %.1fs (%s)",
+                request.machine.vm_name, time.monotonic() - started, safe_exc_summary(exc),
+            )
             return CollectionResult(events=[], error=f"Run Command failed: {exc}")
+        log.info("guest_windows: Run Command on %s completed after %.1fs", request.machine.vm_name, time.monotonic() - started)
 
         events, patch_extension_status = parse_windows_output(stdout, vm_id=request.machine.vm_id)
         return CollectionResult(events=events, patch_extension_status=patch_extension_status)

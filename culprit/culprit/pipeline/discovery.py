@@ -22,9 +22,11 @@ from __future__ import annotations
 
 import logging
 import re
+import time
 from datetime import datetime
 
 from culprit.models.evidence import MachineIdentity, OSFamily
+from culprit.observability import safe_exc_summary
 
 log = logging.getLogger(__name__)
 
@@ -132,23 +134,42 @@ def discover_failed_machines(
     another - found 2026-10-16: a vmId the _VM_DETAILS_QUERY join didn't
     return a row for used to be dropped here silently, taking a
     genuinely-failed machine out of the deep-RCA pipeline entirely with
-    no error or log line. _fallback_identity (above) now covers it."""
+    no error or log line. _fallback_identity (above) now covers it.
+
+    Found in review 2026-10-16: neither Resource Graph call here had any
+    logging of its own - a slow or hanging query (the same class of
+    problem this same kind of tracing already solved for the RCA-provider
+    path) would have been invisible until it either returned or the whole
+    live run eventually failed with no indication of which query it was
+    stuck in."""
     from azure.mgmt.resourcegraph import ResourceGraphClient
     from azure.mgmt.resourcegraph.models import QueryRequest
 
     client = ResourceGraphClient(credential)
-
-    failed_query = _FAILED_MACHINES_QUERY.format(
-        window_start=window_start.isoformat(), window_end=window_end.isoformat(), limit=_MAX_MACHINES_PER_RUN
-    )
-    failed_result = client.resources(QueryRequest(subscriptions=subscription_ids, query=failed_query))
+    started = time.monotonic()
+    log.info("discover_failed_machines: querying failed machines for window %s - %s", window_start.isoformat(), window_end.isoformat())
+    try:
+        failed_query = _FAILED_MACHINES_QUERY.format(
+            window_start=window_start.isoformat(), window_end=window_end.isoformat(), limit=_MAX_MACHINES_PER_RUN
+        )
+        failed_result = client.resources(QueryRequest(subscriptions=subscription_ids, query=failed_query))
+    except Exception as exc:
+        log.warning("discover_failed_machines: failed-machines query failed after %.1fs (%s)", time.monotonic() - started, safe_exc_summary(exc))
+        raise
     vm_ids = _extract_vm_ids(failed_result.data or [])
+    log.info("discover_failed_machines: %d candidate vmId(s) found after %.1fs", len(vm_ids), time.monotonic() - started)
     if not vm_ids:
         return []
 
-    details_query = _VM_DETAILS_QUERY.format(vm_ids=_quote_ids(vm_ids))
-    details_result = client.resources(QueryRequest(subscriptions=subscription_ids, query=details_query))
+    details_started = time.monotonic()
+    try:
+        details_query = _VM_DETAILS_QUERY.format(vm_ids=_quote_ids(vm_ids))
+        details_result = client.resources(QueryRequest(subscriptions=subscription_ids, query=details_query))
+    except Exception as exc:
+        log.warning("discover_failed_machines: vm-details query failed after %.1fs (%s)", time.monotonic() - details_started, safe_exc_summary(exc))
+        raise
     resolved = _machines_from_rows(details_result.data or [])
+    log.info("discover_failed_machines: %d of %d vmId(s) resolved via Resources lookup after %.1fs", len(resolved), len(vm_ids), time.monotonic() - details_started)
     resolved_by_id = {m.vm_id.lower(): m for m in resolved}
 
     machines: list[MachineIdentity] = []
@@ -177,9 +198,16 @@ def count_total_machines(credential, subscription_ids: list[str]) -> int:
     from azure.mgmt.resourcegraph.models import QueryRequest
 
     client = ResourceGraphClient(credential)
-    result = client.resources(QueryRequest(subscriptions=subscription_ids, query=_COUNT_QUERY))
+    started = time.monotonic()
+    try:
+        result = client.resources(QueryRequest(subscriptions=subscription_ids, query=_COUNT_QUERY))
+    except Exception as exc:
+        log.warning("count_total_machines: query failed after %.1fs (%s)", time.monotonic() - started, safe_exc_summary(exc))
+        raise
     rows = result.data or []
-    return int(rows[0]["Count"]) if rows else 0
+    count = int(rows[0]["Count"]) if rows else 0
+    log.info("count_total_machines: %d machine(s) after %.1fs", count, time.monotonic() - started)
+    return count
 
 
 _ALL_MACHINES_QUERY = """
@@ -301,15 +329,27 @@ def discover_all_patch_outcomes(
     client = ResourceGraphClient(credential)
     query = _ALL_PATCH_RESULTS_QUERY.format(window_start=window_start.isoformat(), window_end=window_end.isoformat())
 
+    started = time.monotonic()
+    log.info("discover_all_patch_outcomes: querying all patch outcomes for window %s - %s", window_start.isoformat(), window_end.isoformat())
     rows: list[dict] = []
     skip_token: str | None = None
-    for _ in range(_MAX_PREFLIGHT_PAGES):
-        options = QueryRequestOptions(top=_RESOURCE_GRAPH_MAX_PAGE_SIZE, skip_token=skip_token)
-        result = client.resources(QueryRequest(subscriptions=subscription_ids, query=query, options=options))
-        rows.extend(result.data or [])
-        skip_token = getattr(result, "skip_token", None)
-        if not skip_token:
-            break
+    pages = 0
+    try:
+        for _ in range(_MAX_PREFLIGHT_PAGES):
+            options = QueryRequestOptions(top=_RESOURCE_GRAPH_MAX_PAGE_SIZE, skip_token=skip_token)
+            result = client.resources(QueryRequest(subscriptions=subscription_ids, query=query, options=options))
+            pages += 1
+            rows.extend(result.data or [])
+            skip_token = getattr(result, "skip_token", None)
+            if not skip_token:
+                break
+    except Exception as exc:
+        log.warning(
+            "discover_all_patch_outcomes: query failed on page %d after %.1fs (%s)",
+            pages + 1, time.monotonic() - started, safe_exc_summary(exc),
+        )
+        raise
+    log.info("discover_all_patch_outcomes: %d row(s) across %d page(s) after %.1fs", len(rows), pages, time.monotonic() - started)
     return _rows_to_outcomes(rows)
 
 
@@ -408,15 +448,27 @@ def discover_all_machines(credential, subscription_ids: list[str]) -> list[Machi
 
     client = ResourceGraphClient(credential)
 
+    started = time.monotonic()
+    log.info("discover_all_machines: querying the full fleet")
     rows: list[dict] = []
     skip_token: str | None = None
-    for _ in range(_MAX_PREFLIGHT_PAGES):
-        options = QueryRequestOptions(top=_RESOURCE_GRAPH_MAX_PAGE_SIZE, skip_token=skip_token)
-        result = client.resources(
-            QueryRequest(subscriptions=subscription_ids, query=_ALL_MACHINES_QUERY, options=options)
+    pages = 0
+    try:
+        for _ in range(_MAX_PREFLIGHT_PAGES):
+            options = QueryRequestOptions(top=_RESOURCE_GRAPH_MAX_PAGE_SIZE, skip_token=skip_token)
+            result = client.resources(
+                QueryRequest(subscriptions=subscription_ids, query=_ALL_MACHINES_QUERY, options=options)
+            )
+            pages += 1
+            rows.extend(result.data or [])
+            skip_token = getattr(result, "skip_token", None)
+            if not skip_token:
+                break
+    except Exception as exc:
+        log.warning(
+            "discover_all_machines: query failed on page %d after %.1fs (%s)",
+            pages + 1, time.monotonic() - started, safe_exc_summary(exc),
         )
-        rows.extend(result.data or [])
-        skip_token = getattr(result, "skip_token", None)
-        if not skip_token:
-            break
+        raise
+    log.info("discover_all_machines: %d row(s) across %d page(s) after %.1fs", len(rows), pages, time.monotonic() - started)
     return _machines_from_rows(rows)

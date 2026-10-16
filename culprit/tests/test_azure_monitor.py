@@ -101,3 +101,29 @@ def test_a_failed_event_query_becomes_a_collection_gap_not_silence():
 
     assert result.error is not None
     assert "query did not succeed" in result.error
+
+
+def test_a_failed_query_is_traced_with_duration_and_exception_type(caplog):
+    """Found 2026-10-17: extended the same tracing discipline added to the
+    RCA-provider path to this collector too - the warning must be logged
+    alongside the existing (unchanged) error-conversion behavior."""
+    collector = _collector(heartbeat_response=_FakeResponse(status=LogsQueryStatus.PARTIAL))
+
+    with caplog.at_level("WARNING"):
+        result = collector.collect(_request())
+
+    assert result.error is not None  # unchanged behavior
+    assert any(
+        r.levelname == "WARNING" and "azure_monitor: heartbeat query for vm-1 failed" in r.message and "RuntimeError" in r.message
+        for r in caplog.records
+    )
+
+
+def test_a_successful_query_is_traced_too(caplog):
+    collector = _collector()
+
+    with caplog.at_level("INFO"):
+        collector.collect(_request())
+
+    messages = [r.message for r in caplog.records]
+    assert any("azure_monitor: heartbeat query for vm-1 returned" in m for m in messages)

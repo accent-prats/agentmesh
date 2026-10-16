@@ -10,14 +10,19 @@ tenant run."""
 from __future__ import annotations
 
 import re
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
+
+import pytest
 
 from culprit.collectors.azure_control_plane import (
     _INSTALL_RESULT_QUERY,
+    AzureControlPlaneCollector,
     _outcome_from_install_result,
     _parse_error_details,
     _parse_ts,
 )
+from culprit.collectors.base import CollectionRequest
+from culprit.models.evidence import MachineIdentity, OSFamily
 
 # Matches an `order by` clause whose sort key is a bare `properties.foo`
 # reference with no cast function wrapped around it - the exact shape
@@ -146,3 +151,57 @@ def test_parse_ts_falls_back_to_now_for_missing_or_invalid_input():
     now_before = datetime.now(timezone.utc)
     assert _parse_ts(None) >= now_before
     assert _parse_ts("not a timestamp") >= now_before
+
+
+# ── collect() tracing (2026-10-17) ───────────────────────────────────────────
+# No collect()-level fixture existed before this - built here the same way
+# tests/test_guest_collector_timeouts.py bypasses the real Azure SDK, by
+# pre-setting the collector's own client attributes directly rather than
+# going through _ensure_clients().
+
+class _ExplodingGraphClient:
+    def resources(self, request):
+        raise RuntimeError("Resource Graph is unavailable")
+
+
+class _FakeActivityLogs:
+    def list(self, filter):
+        return []
+
+
+class _FakeMonitorClient:
+    def __init__(self):
+        self.activity_logs = _FakeActivityLogs()
+
+
+def _request():
+    now = datetime.now(timezone.utc)
+    machine = MachineIdentity(
+        vm_id="/subscriptions/s/resourceGroups/rg/providers/Microsoft.Compute/virtualMachines/vm-1",
+        vm_name="vm-1", resource_group="rg", subscription_id="s", os_family=OSFamily.LINUX,
+    )
+    return CollectionRequest(machine=machine, window_start=now - timedelta(hours=3), window_end=now, run_id="run-1")
+
+
+def test_a_failed_install_result_query_is_traced_but_still_returns_a_collection_gap(caplog):
+    """Found 2026-10-17: extended the same tracing discipline added to the
+    RCA-provider path to this collector too - the warning must be logged
+    alongside the existing (unchanged) error-conversion behavior, which
+    must never raise out of collect() (a single machine's query failure
+    must degrade, not crash the whole pipeline)."""
+    pytest.importorskip("azure.mgmt.monitor")  # optional `culprit[azure]` extra - see pyproject.toml; its own
+    # module-level `try: import azure.identity/mgmt.monitor/mgmt.resourcegraph` leaves ALL of them unbound
+    # (not just the missing one) if any single one is absent, including QueryRequest this test's fakes need.
+    collector = AzureControlPlaneCollector(credential=object())
+    collector._graph_client = _ExplodingGraphClient()
+    collector._monitor_client = _FakeMonitorClient()
+    collector._ensure_clients = lambda subscription_id: None  # bypass the real SDK-availability check entirely
+
+    with caplog.at_level("WARNING"):
+        result = collector.collect(_request())
+
+    assert result.error is not None and "Resource Graph query failed" in result.error  # unchanged behavior
+    assert any(
+        r.levelname == "WARNING" and "azure_control_plane: install-result query for vm-1 failed" in r.message and "RuntimeError" in r.message
+        for r in caplog.records
+    )
