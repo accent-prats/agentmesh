@@ -73,6 +73,9 @@ if (Test-Path "C:\WindowsAzure\Logs\AggregateStatus" -PathType Leaf) {
         Sort-Object LastWriteTime -Descending | Select-Object -First 1
     if ($aggStatusFile) { Get-Content $aggStatusFile.FullName -Tail 200 -ErrorAction SilentlyContinue }
 }
+Write-Output "---SYSTEM_EVENTLOG---"
+Get-WinEvent -FilterHashtable @{LogName='System'; Level=1,2,3; StartTime=(Get-Date).AddHours(-6)} -MaxEvents 100 -ErrorAction SilentlyContinue |
+    ForEach-Object { "$($_.TimeCreated.ToString('yyyy-MM-dd HH:mm:ss')) [$($_.LevelDisplayName)] Id=$($_.Id) $($_.Message)" }
 $extRoot = "C:\Packages\Plugins\Microsoft.CPlat.Core.WindowsPatchExtension"
 $latestVersionDir = Get-ChildItem -Path $extRoot -Directory -ErrorAction SilentlyContinue |
     Sort-Object { [version]$_.Name } -Descending -ErrorAction SilentlyContinue | Select-Object -First 1
@@ -348,6 +351,34 @@ def parse_vmagent_status(text: str, vm_id: str) -> list[TimelineEvent]:
     return events[:MAX_ANOMALY_EVENTS_PER_SECTION]
 
 
+def parse_system_eventlog(text: str, vm_id: str) -> list[TimelineEvent]:
+    """Windows System Event Log, Critical/Error/Warning levels, a fixed
+    6-hour lookback (ALLOWED_WINDOWS_SCRIPT is static/non-parameterized by
+    design - same constraint as every other section's fixed `-Tail 200`,
+    no real window_start can be interpolated in) - Windows' counterpart to
+    guest_linux.py's parse_journal_reboot. Same generic anomaly-keyword
+    scan and the same honesty caveat as every other new guest-log parser
+    added 2026-10-18. Each line is independently scanned (a multi-line
+    event's continuation lines carry no timestamp prefix and fall back to
+    collection time, the same graceful degradation every other parser
+    here already uses for a line it can't timestamp)."""
+    events: list[TimelineEvent] = []
+    for i, line in enumerate(text.splitlines()):
+        if not line.strip() or not has_extension_log_anomaly(line):
+            continue
+        events.append(
+            TimelineEvent(
+                ts=parse_leading_timestamp(line) or datetime.now(timezone.utc),
+                source=Source.GUEST_WINDOWS,
+                kind="system_eventlog",
+                summary=line.strip()[:240],
+                detail={},
+                raw_ref=f"guest:system_eventlog:{vm_id}:{i}",
+            )
+        )
+    return events[:MAX_ANOMALY_EVENTS_PER_SECTION]
+
+
 def parse_extension_log(text: str, vm_id: str) -> list[TimelineEvent]:
     """The Windows patch extension's own detailed operational log
     (C:\\WindowsAzure\\Logs\\Plugins\\Microsoft.CPlat.Core.
@@ -395,6 +426,7 @@ def parse_windows_output(stdout: str, vm_id: str) -> tuple[list[TimelineEvent], 
     events += parse_disk_usage(sections.get("DISK_USAGE", ""), vm_id)
     events += _log_if_found("parse_wsus_connectivity", parse_wsus_connectivity(sections.get("WSUS_CONNECTIVITY", ""), vm_id), vm_id)
     events += _log_if_found("parse_vmagent_status", parse_vmagent_status(sections.get("VMAGENT_STATUS", ""), vm_id), vm_id)
+    events += _log_if_found("parse_system_eventlog", parse_system_eventlog(sections.get("SYSTEM_EVENTLOG", ""), vm_id), vm_id)
     events += parse_extension_log(sections.get("EXT_LOG", ""), vm_id)
     ext_events, ext_findings = parse_patch_extension_status(
         sections.get("EXT_STATUS", ""), vm_id, Source.GUEST_WINDOWS,

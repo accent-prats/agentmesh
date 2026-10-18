@@ -7,6 +7,7 @@ from culprit.collectors.guest_windows import (
     parse_disk_usage,
     parse_extension_log,
     parse_pending_reboot,
+    parse_system_eventlog,
     parse_vmagent_status,
     parse_windows_output,
     parse_wsus_connectivity,
@@ -166,6 +167,31 @@ def test_parse_vmagent_status_caps_at_the_shared_max():
     assert len(events) == MAX_ANOMALY_EVENTS_PER_SECTION
 
 
+def test_parse_system_eventlog_flags_an_anomaly_line():
+    text = "2026-10-18 16:37:29 [Warning] Id=196 USB device draining system power - removal action failed\n"
+    events = parse_system_eventlog(text, vm_id="vm-1")
+    assert len(events) == 1
+    assert "removal action failed" in events[0].summary
+    assert events[0].kind == "system_eventlog"
+    assert events[0].raw_ref == "guest:system_eventlog:vm-1:0"
+
+
+def test_parse_system_eventlog_uses_the_real_line_timestamp():
+    text = "2026-10-18 16:37:29 [Error] Id=41 The system rebooted without cleanly shutting down first\n"
+    events = parse_system_eventlog(text, vm_id="vm-1")
+    assert events[0].ts == datetime(2026, 10, 18, 16, 37, 29, tzinfo=timezone.utc)
+
+
+def test_parse_system_eventlog_quiet_log_is_silent():
+    assert parse_system_eventlog("2026-10-18 16:37:29 [Information] Id=1 Service started successfully\n", vm_id="vm-1") == []
+
+
+def test_parse_system_eventlog_caps_at_the_shared_max():
+    text = "\n".join(f"2026-10-18 16:3{i}:00 [Error] Id={i} Failed attempt {i}" for i in range(MAX_ANOMALY_EVENTS_PER_SECTION + 5))
+    events = parse_system_eventlog(text, vm_id="vm-1")
+    assert len(events) == MAX_ANOMALY_EVENTS_PER_SECTION
+
+
 def test_full_windows_output_sectioning():
     stdout = (
         "---WU_LOG---\n" + _WU_LOG + "\n"
@@ -175,16 +201,20 @@ def test_full_windows_output_sectioning():
         "---DISK_USAGE---\nC 104857600 500000000000\n\n"
         "---WSUS_CONNECTIVITY---\nwsus_server=\ndns_resolved=no\ntcp_reachable=no\n\n"
         "---VMAGENT_STATUS---\nERROR Failed to launch extension process\n\n"
+        "---SYSTEM_EVENTLOG---\n2026-10-18 16:37:29 [Error] Id=41 The system rebooted without cleanly shutting down first\n\n"
         "---EXT_VERSION---\n\n"
         "---EXT_LOG---\n2026-10-16 03:04:00 ERROR Failed to reach Windows Update endpoint\n\n"
         "---EXT_STATUS---\nNo status file found\n"
     )
     events, findings = parse_windows_output(stdout, vm_id="vm-1")
     kinds = {e.kind for e in events}
+    raw_refs = {e.raw_ref for e in events}
     assert "wu_log" in kinds
     assert "cbs_log" in kinds
     assert "pending_reboot" in kinds
     assert "disk_usage" in kinds
+    assert "system_eventlog" in kinds
+    assert any(ref.startswith("guest:system_eventlog:") for ref in raw_refs)
     assert "extension_log" in kinds
     assert "wsus_connectivity" in kinds
     assert "vmagent_status" in kinds

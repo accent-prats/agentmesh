@@ -70,8 +70,11 @@ distinguishes real from fixture:
   Azure VM Agent logs (`waagent.log` / Windows `AggregateStatus`), the
   patch extension's detailed core log and wrapper/invocation log on both
   OSes, yum/dnf package-manager logs (fetched since before 2026-10-18 but
-  silently never parsed until then), and Linux kernel/journal reboot
-  evidence - plus real connectivity diagnostics against the *actually
+  silently never parsed until then), and reboot/system-event evidence on
+  both OSes (Linux kernel/journal via `journalctl`, Windows System Event
+  Log via `Get-WinEvent` on a fixed lookback - scripts are static/
+  non-parameterized by design, so the real window can't be interpolated
+  in) - plus real connectivity diagnostics against the *actually
   configured* repo/WSUS target (DNS + reachability, not just a hardcoded
   `archive.ubuntu.com` probe or an unparsed registry read) and - the
   single richest signal either script reads - the guest's own Azure patch
