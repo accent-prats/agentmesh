@@ -18,6 +18,7 @@ from culprit.collectors.azure_control_plane import (
     _ASSESSMENT_RESULT_QUERY,
     _INSTALL_RESULT_QUERY,
     _MAX_ACTIVITY_LOG_EVENTS,
+    _MAX_PATCH_ERROR_EVENTS,
     AzureControlPlaneCollector,
     _outcome_from_install_result,
     _parse_error_details,
@@ -498,3 +499,51 @@ def test_a_successful_assessment_result_produces_no_assessment_error_events():
     result = collector.collect(_request())
 
     assert not [e for e in result.events if e.kind == "azure_assessment_error"]
+
+
+def test_azure_patch_error_events_are_capped_defensively():
+    """Defense-in-depth found by review: _INSTALL_RESULT_QUERY/
+    _ASSESSMENT_RESULT_QUERY both `limit 1`, but error.details[] itself has
+    no enforced length limit from Azure's API/schema - the 600-char-per-
+    event cap's safety argument rests on an observed real-world UI showing
+    "the latest 3 errors are shared in details," not a guarantee. Mirrors
+    _MAX_ACTIVITY_LOG_EVENTS rather than trusting that observation to hold
+    for every tenant/error shape."""
+    many_details = [{"code": "Error", "message": f"error number {i}"} for i in range(_MAX_PATCH_ERROR_EVENTS + 5)]
+    response = _FakeGraphResult([{
+        "id": "/subscriptions/s/.../patchinstallationresults/x",
+        "properties": {
+            "status": "Failed",
+            "errorCode": "PatchInstallFailed",
+            "lastModifiedDateTime": "2026-10-18T08:05:00Z",
+            "error": {"message": "many errors reported.", "details": many_details},
+        },
+    }])
+    collector = _collector_with(install_response=response)
+
+    result = collector.collect(_request())
+
+    error_events = [e for e in result.events if e.kind == "azure_patch_error"]
+    assert len(error_events) == _MAX_PATCH_ERROR_EVENTS
+
+
+def test_azure_assessment_error_events_are_capped_defensively():
+    many_messages = [f"error number {i}" for i in range(_MAX_PATCH_ERROR_EVENTS + 5)]
+    response = _FakeGraphResult([{
+        "id": "/subscriptions/s/.../patchassessmentresults/x",
+        "properties": {
+            "status": "Failed",
+            "rebootPending": False,
+            "lastModifiedDateTime": "2026-10-18T08:05:00Z",
+            "error": {
+                "message": "assessment failed",
+                "details": [{"code": "Error", "message": m} for m in many_messages],
+            },
+        },
+    }])
+    collector = _collector_with(assessment_response=response)
+
+    result = collector.collect(_request())
+
+    error_events = [e for e in result.events if e.kind == "azure_assessment_error"]
+    assert len(error_events) == _MAX_PATCH_ERROR_EVENTS

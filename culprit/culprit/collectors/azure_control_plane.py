@@ -46,6 +46,18 @@ log = logging.getLogger(__name__)
 # session (azure_control_plane.py::_activity_log_events's own 20-event cap).
 _PATCH_ERROR_SUMMARY_MAX_CHARS = 600
 
+# Defense-in-depth found by review: both _INSTALL_RESULT_QUERY and
+# _ASSESSMENT_RESULT_QUERY already `limit 1` (at most one install row and
+# one assessment row per machine), but `_parse_error_details()`/
+# `error_detail_messages` impose no length limit on `error.details[]`
+# itself - the 600-char-per-event safety argument above rests on a real
+# production UI screenshot showing Azure's own self-imposed "latest 3
+# errors are shared in details" behavior, not an enforced API/schema
+# limit. Mirrors `_MAX_ACTIVITY_LOG_EVENTS` (added this same session after
+# a real 262-event/41K-char-prompt incident) rather than trusting observed
+# behavior to hold for every tenant/error shape.
+_MAX_PATCH_ERROR_EVENTS = 10
+
 try:  # pragma: no cover - exercised only when the optional Azure SDKs are installed
     from azure.identity import DefaultAzureCredential
     from azure.mgmt.monitor import MonitorManagementClient
@@ -178,7 +190,7 @@ class AzureControlPlaneCollector(Collector):
                 # Culprit's own RCA had no visibility into. Reaches the
                 # model for free via render_timeline_text() - no prompt
                 # change needed, same as patch_extension_status.py.
-                for i, detail in enumerate(outcome.error_details):
+                for i, detail in enumerate(outcome.error_details[:_MAX_PATCH_ERROR_EVENTS]):
                     events.append(
                         TimelineEvent(
                             ts=_parse_ts(props.get("lastModifiedDateTime") or props.get("startDateTime")),
@@ -241,12 +253,12 @@ class AzureControlPlaneCollector(Collector):
                 # invisible to the RCA even though they were already being
                 # collected. Found 2026-10-18 alongside the truncation fix
                 # for the install-result side of this exact gap.
-                for i, message in enumerate(summary_detail["error_detail_messages"]):
+                for i, message in enumerate(summary_detail["error_detail_messages"][:_MAX_PATCH_ERROR_EVENTS]):
                     events.append(
                         TimelineEvent(
                             ts=_parse_ts(assessment_props.get("lastModifiedDateTime") or assessment_props.get("startDateTime")),
                             source=Source.AZURE_CONTROL_PLANE,
-                            kind="patch_assessment",
+                            kind="azure_assessment_error",
                             summary=f"Azure-reported assessment error: {message}"[:_PATCH_ERROR_SUMMARY_MAX_CHARS],
                             raw_ref=f"resourcegraph:{assessment_rows[0]['id']}:error:{i}",
                         )
