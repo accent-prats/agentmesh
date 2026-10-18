@@ -273,3 +273,30 @@ def test_tool_schema_satisfies_openai_strict_mode_everywhere():
     assert _RCA_TOOL_SCHEMA["strict"] is True
     assert _RCA_TOOL_SCHEMA["input_schema"]["type"] == "object"
     _assert_object_schema_satisfies_strict_mode(_RCA_TOOL_SCHEMA["input_schema"])
+
+
+def test_a_non_strict_providers_model_may_still_omit_the_newly_required_fields():
+    """The 2026-10-18 schema fix added `evidence_refs`/`expected_result` to
+    `required` purely to satisfy OpenAI's strict mode
+    (shared/src/llm/openai_compatible.py::OpenAICompatibleClient only
+    forwards "strict": true to the wire when the provider's
+    `supports_strict_tool_schema` is True - false for DeepSeek and Qwen,
+    see shared/tests/test_llm_adapters.py's own catalog test pinning
+    that). Neither of those providers' APIs actually enforces `required`
+    server-side, so their model is still free to omit these fields exactly
+    as before the fix - this must still parse cleanly via
+    models/rca.py::RuledOutCause/RemediationStep's own defaults, not
+    raise, to prove the fix is a no-op for them rather than a regression."""
+    non_strict_input = dict(_VALID_INPUT)
+    non_strict_input["ruled_out"] = [{"candidate": "disk full", "reason": "disk had headroom"}]  # no evidence_refs
+    non_strict_input["immediate_fix_steps"] = [{"order": 1, "instruction": "Run an extended window"}]  # no expected_result
+
+    response = FakeResponse(content=[FakeBlock(type="tool_use", name=_TOOL_NAME, input=non_strict_input)])
+    agent = DeepRCAAgent(client=FakeAnthropicClient(response))
+    bundle = _bundle()
+
+    result = agent.diagnose(_cluster(bundle), bundle)
+
+    assert result.ruled_out[0].candidate == "disk full"
+    assert result.ruled_out[0].evidence_refs == []  # RuledOutCause's own default, unaffected by the schema change
+    assert result.remediation.immediate_fix[0].expected_result == ""  # RemediationStep's own default

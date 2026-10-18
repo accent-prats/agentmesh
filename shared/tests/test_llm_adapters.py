@@ -147,6 +147,21 @@ class TestCatalog:
         for whatever the admin actually has loaded."""
         assert PROVIDER_CATALOG["lmstudio"].model_options == ()
 
+    def test_deepseek_and_qwen_do_not_opt_into_strict_tool_schema(self):
+        """Pins the exact boundary the user's 2026-10-18 strict-mode schema
+        fix (rca_agent.py's `_RCA_TOOL_SCHEMA`, "required" now covers every
+        "properties" key) depends on for being a no-op on these two
+        providers: OpenAICompatibleClient only forwards "strict": true to
+        the wire when `supports_strict_tool_schema` is True (see its own
+        `_create()`), so DeepSeek/Qwen never get the schema's "strict" flag
+        and are never held to OpenAI's rigid required-matches-properties
+        rule - the newly-required fields are advisory metadata only for
+        them, exactly as before the fix. If this ever flips to True for
+        either without their APIs genuinely supporting strict mode, that's
+        a live regression risk this test is meant to catch first."""
+        assert PROVIDER_CATALOG["deepseek"].supports_strict_tool_schema is False
+        assert PROVIDER_CATALOG["qwen"].supports_strict_tool_schema is False
+
 
 # ── factory ────────────────────────────────────────────────────────────────
 
