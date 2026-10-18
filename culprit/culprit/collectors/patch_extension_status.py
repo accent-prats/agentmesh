@@ -31,7 +31,7 @@ from __future__ import annotations
 
 import json
 import re
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 from culprit.models.evidence import Source, TimelineEvent
 
@@ -124,10 +124,21 @@ def has_extension_log_anomaly(line: str) -> bool:
 # falls back to collection time (the caller's job, not this function's),
 # the same graceful-degradation shape parse_dpkg_log already uses in
 # guest_linux.py rather than this module inventing a different contract.
+#
+# Order matters: the two 23-char formats must come BEFORE the 19-char plain
+# format - found 2026-10-18 while adding the WindowsUpdate.log entry, a
+# real bug caught by its own new test: `line[:19]` of a WindowsUpdate.log
+# line ("2026-10-16 03:04:00:456...") already parses cleanly as the plain
+# 19-char format, so trying that one first would silently discard the
+# fractional-second precision rather than ever reaching the more specific
+# 23-char entry below it.
 _LEADING_TIMESTAMP_FORMATS = (
     (19, "%Y/%m/%d %H:%M:%S"),      # waagent.log, e.g. "2026/10/16 03:04:00"
     (23, "%Y-%m-%d %H:%M:%S,%f"),   # core.log (Python logging default), e.g. "2026-10-16 03:04:00,000"
-    (19, "%Y-%m-%d %H:%M:%S"),      # WindowsPatchExtension.log / a plain ISO-ish prefix
+    (23, "%Y-%m-%d %H:%M:%S:%f"),   # WindowsUpdate.log (ETW-decoded), e.g. "2026-10-16 03:04:00:456"
+    (19, "%Y-%m-%d %H:%M:%S"),      # WindowsPatchExtension.log / a plain ISO-ish prefix / CBS.log (the
+                                     # comma+level text after the 19-char timestamp is just a separator,
+                                     # not part of the format, so this same entry covers both)
 )
 
 
@@ -140,6 +151,41 @@ def parse_leading_timestamp(line: str) -> datetime | None:
         except ValueError:
             continue
     return None
+
+
+# Found 2026-10-18 from a real user-shared RCA: a VM's actual failure (Oct
+# 16) produced zero guest-side evidence in a scan run two days later (Oct
+# 18), despite the guest Run Command completing successfully. Every guest
+# log parser in guest_windows.py/guest_linux.py scans whatever text the
+# fixed `-Tail 200`/`tail -n 200` happened to return, with no regard for
+# whether those specific lines actually fall inside the collection window
+# (`CollectionRequest.window_start`/`window_end`) the RCA is investigating -
+# on a VM busy enough (this one had 7 deployment attempts in 30 days), two
+# days of subsequent log volume can push the relevant lines out of the
+# tail entirely, and conversely an unrelated OLD line still sitting in the
+# tail can get wrongly flagged as relevant to a totally different, more
+# recent window. `within_window()` is the shared filter every time-series
+# log parser below now applies to each candidate event before keeping it.
+def within_window(
+    ts: datetime | None, window_start: datetime | None, window_end: datetime | None,
+    end_buffer: timedelta = timedelta(hours=1),
+) -> bool:
+    """True when `ts` falls inside `[window_start, window_end + end_buffer]`.
+
+    `window_start`/`window_end` being None means "no window given" (e.g. a
+    caller/test that doesn't care about windowing) - always True in that
+    case, preserving every parser's existing behavior when called without
+    window arguments. `ts=None` (a line whose own timestamp couldn't be
+    extracted) is also always True - fail OPEN rather than silently
+    dropping a real anomaly because of an unfamiliar timestamp format,
+    which would be worse than occasionally keeping an unrelated line the
+    anomaly-keyword scan would otherwise have caught anyway. `end_buffer`
+    accounts for collection happening slightly after `window_end` was
+    computed (clock skew between the pipeline and the guest VM, plus the
+    time the Run Command itself takes to execute and the script to run)."""
+    if window_start is None or window_end is None or ts is None:
+        return True
+    return window_start <= ts <= window_end + end_buffer
 
 
 def _message(status_obj: dict) -> str:

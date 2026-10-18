@@ -394,3 +394,77 @@ def test_allowed_linux_script_runs_cleanly_through_a_real_shell(tmp_path):
 
     events, _ = parse_linux_output(stdout, vm_id="vm-1")
     assert not any(e.kind == "repo_check" for e in events), "a healthy repo check must not synthesize a finding"
+
+
+# ── Window filtering (found 2026-10-18, same real-world gap as
+# guest_windows.py's identical tests - see that file's own comment) ───────
+
+_DPKG_LOG_TIMESTAMPED_ONLY = (
+    "2026-06-19 02:14:07 status half-installed linux-image-5.15.0-91-generic:amd64 5.15.0-91.101\n"
+)
+
+
+def test_parse_dpkg_log_drops_an_anomaly_outside_the_given_window():
+    old_window_start = datetime(2026, 6, 18, 0, 0, tzinfo=timezone.utc)
+    old_window_end = datetime(2026, 6, 18, 6, 0, tzinfo=timezone.utc)
+    events = parse_dpkg_log(_DPKG_LOG_TIMESTAMPED_ONLY, vm_id="vm-1", window_start=old_window_start, window_end=old_window_end)
+    assert events == []
+
+
+def test_parse_dpkg_log_keeps_an_anomaly_inside_the_given_window():
+    window_start = datetime(2026, 6, 19, 2, 0, tzinfo=timezone.utc)
+    window_end = datetime(2026, 6, 19, 2, 30, tzinfo=timezone.utc)
+    events = parse_dpkg_log(_DPKG_LOG_TIMESTAMPED_ONLY, vm_id="vm-1", window_start=window_start, window_end=window_end)
+    assert len(events) == 1
+
+
+def test_parse_dpkg_log_without_window_args_is_unfiltered():
+    """Backward compatibility - existing callers/tests that don't pass a
+    window get the exact prior, unfiltered behavior."""
+    events = parse_dpkg_log(_DPKG_LOG_TIMESTAMPED_ONLY, vm_id="vm-1")
+    assert len(events) == 1
+
+
+def test_parse_dpkg_log_keeps_a_line_it_cannot_timestamp_regardless_of_window():
+    """The gzip "No space left on device" line has no leading timestamp
+    _DPKG_LINE_RE can match - it must stay in-window (fail-open) even
+    against a window nowhere near collection time, since excluding it
+    would risk silently dropping a real anomaly over an unfamiliar format."""
+    old_window_start = datetime(2020, 1, 1, tzinfo=timezone.utc)
+    old_window_end = datetime(2020, 1, 1, 1, 0, tzinfo=timezone.utc)
+    events = parse_dpkg_log("gzip: stdout: No space left on device\n", vm_id="vm-1", window_start=old_window_start, window_end=old_window_end)
+    assert len(events) == 1
+
+
+def test_parse_waagent_log_window_filtering_via_the_shared_anomaly_scan():
+    """parse_waagent_log is one of the four parsers built on the shared
+    _anomaly_scan helper - proving window filtering here is representative
+    of parse_extension_core_log/parse_extension_wrapper_log/
+    parse_journal_reboot too, since they all call the identical
+    implementation."""
+    text = "2026-10-16 03:04:00 ERROR Failed to reach Windows Update endpoint: timed out\n"
+    in_window = parse_waagent_log(
+        text, vm_id="vm-1",
+        window_start=datetime(2026, 10, 16, 3, 0, tzinfo=timezone.utc),
+        window_end=datetime(2026, 10, 16, 3, 30, tzinfo=timezone.utc),
+    )
+    assert len(in_window) == 1
+
+    out_of_window = parse_waagent_log(
+        text, vm_id="vm-1",
+        window_start=datetime(2026, 10, 18, 0, 0, tzinfo=timezone.utc),
+        window_end=datetime(2026, 10, 18, 6, 0, tzinfo=timezone.utc),
+    )
+    assert out_of_window == []
+
+
+def test_parse_linux_output_threads_the_window_into_its_parsers():
+    """An integration-level check that parse_linux_output actually
+    forwards window_start/window_end to the parsers that accept them."""
+    stdout = "---DPKG_LOG---\n" + _DPKG_LOG_TIMESTAMPED_ONLY
+    events, _ = parse_linux_output(
+        stdout, vm_id="vm-1",
+        window_start=datetime(2020, 1, 1, tzinfo=timezone.utc),
+        window_end=datetime(2020, 1, 1, 1, 0, tzinfo=timezone.utc),
+    )
+    assert not any(e.kind == "package_manager_log" for e in events)

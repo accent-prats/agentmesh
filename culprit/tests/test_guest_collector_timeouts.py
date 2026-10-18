@@ -262,3 +262,102 @@ def test_a_different_exception_type_is_not_retried_as_a_conflict(monkeypatch):
 
     result = collector.collect(request)
     assert result.error == "Run Command failed: WinRM unreachable"
+
+
+# ── Window filtering wiring (found 2026-10-18): collect() must actually
+# forward CollectionRequest's own window_start/window_end to the output
+# parser, not just compute them for nothing - the real bug this guards
+# against is a future refactor accidentally dropping the kwargs on the
+# way from request to parser call. ─────────────────────────────────────
+
+class _FakeWuLogPoller:
+    """Returns a fixed stdout containing one WU_LOG anomaly timestamped
+    2026-01-01 - whether collect() reports it depends entirely on whether
+    the CollectionRequest's own window actually reaches the parser."""
+
+    def result(self, timeout):
+        return _FakeRunCommandResult(
+            "---WU_LOG---\n"
+            "2026-01-01 00:00:00:000  1  1 WU  WARNING: WU client failed Searching for updates with error 0x80244022\n"
+        )
+
+
+class _FakeWuLogComputeClient:
+    def __init__(self):
+        self.virtual_machines = self
+
+    def begin_run_command(self, resource_group, vm_name, run_command_input):
+        return _FakeWuLogPoller()
+
+
+def test_collect_forwards_the_requests_own_window_to_the_parser(monkeypatch):
+    collector = GuestWindowsCollector(credential=object())
+    monkeypatch.setattr(collector, "_client_for", lambda sub_id: _FakeWuLogComputeClient())
+    monkeypatch.setattr(
+        __import__(GuestWindowsCollector.__module__, fromlist=["RunCommandInput"]), "RunCommandInput", lambda **kw: kw, raising=False
+    )
+
+    # A window nowhere near the fixture's 2026-01-01 timestamp - if collect()
+    # actually threads request.window_start/window_end through to
+    # parse_windows_output, the anomaly must be filtered out.
+    out_of_window_request = CollectionRequest(
+        machine=_machine(OSFamily.WINDOWS),
+        window_start=datetime(2026, 10, 16, 0, 0, tzinfo=timezone.utc),
+        window_end=datetime(2026, 10, 16, 6, 0, tzinfo=timezone.utc),
+        run_id="run-1", only=[],
+    )
+    result = collector.collect(out_of_window_request)
+    assert not any(e.kind == "wu_log" for e in result.events)
+
+    in_window_request = CollectionRequest(
+        machine=_machine(OSFamily.WINDOWS),
+        window_start=datetime(2025, 12, 31, 0, 0, tzinfo=timezone.utc),
+        window_end=datetime(2026, 1, 1, 6, 0, tzinfo=timezone.utc),
+        run_id="run-1", only=[],
+    )
+    result = collector.collect(in_window_request)
+    assert any(e.kind == "wu_log" for e in result.events)
+
+
+class _FakeDpkgLogPoller:
+    """The Linux-side equivalent of _FakeWuLogPoller above - one dpkg.log
+    anomaly timestamped 2026-01-01."""
+
+    def result(self, timeout):
+        return _FakeRunCommandResult(
+            "---DPKG_LOG---\n2026-01-01 00:00:00 status half-installed linux-image-5.15.0-91-generic:amd64 5.15.0-91.101\n"
+        )
+
+
+class _FakeDpkgLogComputeClient:
+    def __init__(self):
+        self.virtual_machines = self
+
+    def begin_run_command(self, resource_group, vm_name, run_command_input):
+        return _FakeDpkgLogPoller()
+
+
+def test_collect_forwards_the_requests_own_window_to_the_parser_linux(monkeypatch):
+    collector = GuestLinuxCollector(credential=object())
+    monkeypatch.setattr(collector, "_client_for", lambda sub_id: _FakeDpkgLogComputeClient())
+    monkeypatch.setattr(
+        __import__(GuestLinuxCollector.__module__, fromlist=["RunCommandInput"]), "RunCommandInput", lambda **kw: kw, raising=False
+    )
+
+    out_of_window_request = CollectionRequest(
+        machine=_machine(OSFamily.LINUX),
+        window_start=datetime(2026, 10, 16, 0, 0, tzinfo=timezone.utc),
+        window_end=datetime(2026, 10, 16, 6, 0, tzinfo=timezone.utc),
+        run_id="run-1", only=[],
+    )
+    result = collector.collect(out_of_window_request)
+    assert not any(e.kind == "package_manager_log" for e in result.events)
+
+    in_window_request = CollectionRequest(
+        machine=_machine(OSFamily.LINUX),
+        window_start=datetime(2025, 12, 31, 0, 0, tzinfo=timezone.utc),
+        window_end=datetime(2026, 1, 1, 6, 0, tzinfo=timezone.utc),
+        run_id="run-1", only=[],
+    )
+    result = collector.collect(in_window_request)
+    assert any(e.kind == "package_manager_log" for e in result.events)

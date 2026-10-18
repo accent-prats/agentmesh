@@ -349,3 +349,96 @@ def test_every_script_section_is_consumed_and_vice_versa():
 
     assert consumed - produced == set(), f"parse_windows_output reads section(s) the script never writes: {consumed - produced}"
     assert produced - consumed == set(), f"the script writes section(s) nothing ever reads: {produced - consumed}"
+
+
+# ── Window filtering (found 2026-10-18 from a real user-shared RCA: a VM's
+# genuine failure produced zero guest evidence two days later because
+# every parser here scanned whatever a fixed -Tail 200 happened to return,
+# with no regard for whether those lines actually fell inside the
+# collection window being investigated) ──────────────────────────────────
+
+_WINDOW_START = datetime(2026, 6, 19, 2, 0, tzinfo=timezone.utc)
+
+
+def test_parse_wu_log_drops_an_anomaly_outside_the_given_window():
+    # The fixture's anomaly line is timestamped 2026-06-19 02:10:03 - an
+    # entirely different day's window (clear of within_window()'s own
+    # 1-hour end buffer) must exclude it.
+    old_window_start = datetime(2026, 6, 18, 0, 0, tzinfo=timezone.utc)
+    old_window_end = datetime(2026, 6, 18, 6, 0, tzinfo=timezone.utc)
+    events = parse_wu_log(_WU_LOG, vm_id="vm-1", window_start=old_window_start, window_end=old_window_end)
+    assert events == []
+
+
+def test_parse_wu_log_keeps_an_anomaly_inside_the_given_window():
+    wide_window_end = datetime(2026, 6, 19, 2, 20, tzinfo=timezone.utc)
+    events = parse_wu_log(_WU_LOG, vm_id="vm-1", window_start=_WINDOW_START, window_end=wide_window_end)
+    assert len(events) == 1
+
+
+def test_parse_cbs_log_drops_an_anomaly_outside_the_given_window():
+    old_window_start = datetime(2026, 6, 18, 0, 0, tzinfo=timezone.utc)
+    old_window_end = datetime(2026, 6, 18, 6, 0, tzinfo=timezone.utc)
+    events = parse_cbs_log(_CBS_LOG, vm_id="vm-1", window_start=old_window_start, window_end=old_window_end)
+    assert events == []
+
+
+def test_parse_cbs_log_keeps_an_anomaly_inside_the_given_window():
+    wide_window_end = datetime(2026, 6, 19, 2, 20, tzinfo=timezone.utc)
+    events = parse_cbs_log(_CBS_LOG, vm_id="vm-1", window_start=_WINDOW_START, window_end=wide_window_end)
+    assert len(events) == 1
+
+
+def test_parse_extension_log_window_filtering_via_the_shared_anomaly_scan():
+    """parse_extension_log is one of the four parsers built on the shared
+    _anomaly_scan helper - proving window filtering here is representative
+    of parse_vmagent_status/parse_system_eventlog/parse_command_execution_log
+    too, since they all call the identical implementation."""
+    text = "2026-10-16 03:04:00 ERROR Failed to reach Windows Update endpoint: timed out\n"
+    in_window = parse_extension_log(
+        text, vm_id="vm-1",
+        window_start=datetime(2026, 10, 16, 3, 0, tzinfo=timezone.utc),
+        window_end=datetime(2026, 10, 16, 3, 30, tzinfo=timezone.utc),
+    )
+    assert len(in_window) == 1
+
+    out_of_window = parse_extension_log(
+        text, vm_id="vm-1",
+        window_start=datetime(2026, 10, 18, 0, 0, tzinfo=timezone.utc),
+        window_end=datetime(2026, 10, 18, 6, 0, tzinfo=timezone.utc),
+    )
+    assert out_of_window == []
+
+
+def test_parse_extension_log_without_window_args_is_unfiltered():
+    """Backward compatibility: every existing call site (and every
+    pre-existing test above) that doesn't pass window_start/window_end
+    gets the exact prior, unfiltered behavior."""
+    text = "2026-01-01 00:00:00 ERROR Failed to reach Windows Update endpoint: timed out\n"
+    assert len(parse_extension_log(text, vm_id="vm-1")) == 1
+
+
+def test_parse_wu_history_drops_an_entry_outside_the_given_window():
+    text = "2026-10-10 03:04:00 ResultCode=4 Title=An old failed update\n"
+    events = parse_wu_history(
+        text, vm_id="vm-1",
+        window_start=datetime(2026, 10, 16, 0, 0, tzinfo=timezone.utc),
+        window_end=datetime(2026, 10, 16, 6, 0, tzinfo=timezone.utc),
+    )
+    assert events == []
+
+
+def test_parse_windows_output_threads_the_window_into_its_parsers():
+    """An integration-level check that parse_windows_output actually
+    forwards window_start/window_end to the parsers that accept them,
+    rather than each one silently defaulting to unfiltered."""
+    stdout = (
+        "---WU_LOG---\n"
+        "2026-01-01 00:00:00:000  1  1 WU  WARNING: WU client failed Searching for updates with error 0x80244022\n"
+    )
+    events, _ = parse_windows_output(
+        stdout, vm_id="vm-1",
+        window_start=datetime(2026, 10, 16, 0, 0, tzinfo=timezone.utc),
+        window_end=datetime(2026, 10, 16, 6, 0, tzinfo=timezone.utc),
+    )
+    assert not any(e.kind == "wu_log" for e in events)

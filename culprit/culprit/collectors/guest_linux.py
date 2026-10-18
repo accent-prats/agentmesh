@@ -24,6 +24,7 @@ from culprit.collectors.patch_extension_status import (
     has_extension_log_anomaly,
     parse_leading_timestamp,
     parse_patch_extension_status,
+    within_window,
 )
 from culprit.models.evidence import Source, TimelineEvent
 from culprit.observability import safe_exc_summary
@@ -205,7 +206,9 @@ class GuestLinuxCollector(Collector):
                 return CollectionResult(events=[], error=f"Run Command failed: {exc}")
         log.info("guest_linux: Run Command on %s completed after %.1fs", request.machine.vm_name, time.monotonic() - started)
 
-        events, patch_extension_status = parse_linux_output(stdout, vm_id=request.machine.vm_id)
+        events, patch_extension_status = parse_linux_output(
+            stdout, vm_id=request.machine.vm_id, window_start=request.window_start, window_end=request.window_end,
+        )
         return CollectionResult(events=events, patch_extension_status=patch_extension_status)
 
 
@@ -232,13 +235,22 @@ _NO_SPACE_RE = re.compile(r"no space left on device", re.IGNORECASE)
 _GZIP_FAIL_RE = re.compile(r"gzip:.*stdout", re.IGNORECASE)
 
 
-def parse_dpkg_log(text: str, vm_id: str) -> list[TimelineEvent]:
+def parse_dpkg_log(
+    text: str, vm_id: str, window_start: datetime | None = None, window_end: datetime | None = None,
+) -> list[TimelineEvent]:
     events: list[TimelineEvent] = []
     for i, line in enumerate(text.splitlines()):
         if not line.strip():
             continue
         m = _DPKG_LINE_RE.match(line)
-        ts = datetime.strptime(m.group("ts"), "%Y-%m-%d %H:%M:%S").replace(tzinfo=timezone.utc) if m else datetime.now(timezone.utc)
+        # Window check uses the raw parsed value (None when the line
+        # doesn't match dpkg.log's own format at all) so a line we can't
+        # date stays in-window rather than being wrongly rejected - see
+        # within_window()'s own fail-open design.
+        parsed_ts = datetime.strptime(m.group("ts"), "%Y-%m-%d %H:%M:%S").replace(tzinfo=timezone.utc) if m else None
+        if not within_window(parsed_ts, window_start, window_end):
+            continue
+        ts = parsed_ts or datetime.now(timezone.utc)
         is_space_failure = bool(_NO_SPACE_RE.search(line) or _GZIP_FAIL_RE.search(line))
         if is_space_failure or (m and m.group("action") in ("status",) and "half-installed" in line):
             events.append(
@@ -262,6 +274,13 @@ _APT_ERROR_RE = re.compile(r"^Error:\s*(?P<msg>.+)$", re.MULTILINE)
 
 
 def parse_apt_history(text: str, vm_id: str) -> list[TimelineEvent]:
+    """Deliberately NOT given the window_start/window_end filtering the
+    other time-series parsers got 2026-10-18: this regex only captures the
+    "Error: ..." line itself, with no reliable way to associate it with
+    the enclosing block's own "Start-Date:"/"End-Date:" timestamp without
+    a deeper restructure - same "no live-verified sample" caveat already
+    applied elsewhere in this file, now extended to "no reliable per-match
+    timestamp to filter by" rather than guessing one."""
     events: list[TimelineEvent] = []
     for i, m in enumerate(_APT_ERROR_RE.finditer(text)):
         msg = m.group("msg")
@@ -338,30 +357,50 @@ def parse_repo_check(text: str, vm_id: str) -> list[TimelineEvent]:
     ]
 
 
-def parse_waagent_log(text: str, vm_id: str) -> list[TimelineEvent]:
-    """Azure Linux Agent's own log - a generic anomaly-keyword scan, see
-    has_extension_log_anomaly's own comment for why this isn't an
-    exact-format parse like parse_dpkg_log above, and for why a healthy
-    "0 packages failed"/"no errors" phrase is suppressed without also
-    dropping a real, separate failure that happens to share the line."""
+# Shared by the anomaly-keyword-scan parsers below (parse_waagent_log,
+# parse_extension_core_log, parse_extension_wrapper_log, parse_journal_reboot) -
+# see the matching _anomaly_scan in guest_windows.py for why this is one
+# shared implementation rather than four near-identical copies.
+def _anomaly_scan(
+    text: str, vm_id: str, kind: str, raw_ref_prefix: str,
+    window_start: datetime | None, window_end: datetime | None,
+) -> list[TimelineEvent]:
     events: list[TimelineEvent] = []
     for i, line in enumerate(text.splitlines()):
         if not line.strip() or not has_extension_log_anomaly(line):
             continue
+        # Window check uses the raw parsed value (can be None -> stays
+        # in-window per within_window()'s own fail-open design) - checking
+        # the `or now()` fallback instead would wrongly reject a line just
+        # because its timestamp format wasn't recognized.
+        parsed_ts = parse_leading_timestamp(line)
+        if not within_window(parsed_ts, window_start, window_end):
+            continue
+        ts = parsed_ts or datetime.now(timezone.utc)
         events.append(
             TimelineEvent(
-                ts=parse_leading_timestamp(line) or datetime.now(timezone.utc),
-                source=Source.GUEST_LINUX,
-                kind="waagent_log",
-                summary=line.strip()[:240],
-                detail={},
-                raw_ref=f"guest:waagent.log:{vm_id}:{i}",
+                ts=ts, source=Source.GUEST_LINUX, kind=kind,
+                summary=line.strip()[:240], detail={},
+                raw_ref=f"{raw_ref_prefix}:{vm_id}:{i}",
             )
         )
     return events[:MAX_ANOMALY_EVENTS_PER_SECTION]
 
 
-def parse_extension_core_log(text: str, vm_id: str) -> list[TimelineEvent]:
+def parse_waagent_log(
+    text: str, vm_id: str, window_start: datetime | None = None, window_end: datetime | None = None,
+) -> list[TimelineEvent]:
+    """Azure Linux Agent's own log - a generic anomaly-keyword scan, see
+    has_extension_log_anomaly's own comment for why this isn't an
+    exact-format parse like parse_dpkg_log above, and for why a healthy
+    "0 packages failed"/"no errors" phrase is suppressed without also
+    dropping a real, separate failure that happens to share the line."""
+    return _anomaly_scan(text, vm_id, "waagent_log", "guest:waagent.log", window_start, window_end)
+
+
+def parse_extension_core_log(
+    text: str, vm_id: str, window_start: datetime | None = None, window_end: datetime | None = None,
+) -> list[TimelineEvent]:
     """The Linux patch extension's own detailed operational log
     (/var/log/azure/Microsoft.CPlat.Core.LinuxPatchExtension/<seq>.core.log)
     - Microsoft's own docs describe this as containing "information about
@@ -369,45 +408,19 @@ def parse_extension_core_log(text: str, vm_id: str) -> list[TimelineEvent]:
     process", distinct from the terse .status summary
     patch_extension_status.py already parses. Same generic anomaly scan
     as parse_waagent_log above - see has_extension_log_anomaly."""
-    events: list[TimelineEvent] = []
-    for i, line in enumerate(text.splitlines()):
-        if not line.strip() or not has_extension_log_anomaly(line):
-            continue
-        events.append(
-            TimelineEvent(
-                ts=parse_leading_timestamp(line) or datetime.now(timezone.utc),
-                source=Source.GUEST_LINUX,
-                kind="extension_core_log",
-                summary=line.strip()[:240],
-                detail={},
-                raw_ref=f"guest:core.log:{vm_id}:{i}",
-            )
-        )
-    return events[:MAX_ANOMALY_EVENTS_PER_SECTION]
+    return _anomaly_scan(text, vm_id, "extension_core_log", "guest:core.log", window_start, window_end)
 
 
-def parse_extension_wrapper_log(text: str, vm_id: str) -> list[TimelineEvent]:
+def parse_extension_wrapper_log(
+    text: str, vm_id: str, window_start: datetime | None = None, window_end: datetime | None = None,
+) -> list[TimelineEvent]:
     """The extension *wrapper's* log (`*_Enable.ext.log`/`*.ext.log`) -
     whether Azure actually invoked the patch operation at all, distinct
     from parse_extension_core_log's "what happened once it ran." Same
     generic anomaly scan and the same honesty caveat as every other new
     guest-log parser added 2026-10-18 - no live-verified real sample of
     this file's line format."""
-    events: list[TimelineEvent] = []
-    for i, line in enumerate(text.splitlines()):
-        if not line.strip() or not has_extension_log_anomaly(line):
-            continue
-        events.append(
-            TimelineEvent(
-                ts=parse_leading_timestamp(line) or datetime.now(timezone.utc),
-                source=Source.GUEST_LINUX,
-                kind="extension_wrapper_log",
-                summary=line.strip()[:240],
-                detail={},
-                raw_ref=f"guest:ext_wrapper.log:{vm_id}:{i}",
-            )
-        )
-    return events[:MAX_ANOMALY_EVENTS_PER_SECTION]
+    return _anomaly_scan(text, vm_id, "extension_wrapper_log", "guest:ext_wrapper.log", window_start, window_end)
 
 
 def parse_yum_log(text: str, vm_id: str) -> list[TimelineEvent]:
@@ -416,7 +429,11 @@ def parse_yum_log(text: str, vm_id: str) -> list[TimelineEvent]:
     arrived and was silently dropped on every RHEL/CentOS/Fedora machine.
     Generic anomaly scan, not an exact-format parse like parse_dpkg_log -
     same reasoning as parse_waagent_log: no live-verified sample of a real
-    yum.log's line format to build an exact regex against."""
+    yum.log's line format to build an exact regex against. Deliberately NOT
+    given the window_start/window_end filtering the other time-series
+    parsers got the same day, for the same reason: no confirmed timestamp
+    format to extract here either, so there's nothing reliable to filter
+    by without guessing."""
     events: list[TimelineEvent] = []
     for i, line in enumerate(text.splitlines()):
         if not line.strip() or not has_extension_log_anomaly(line):
@@ -435,7 +452,8 @@ def parse_yum_log(text: str, vm_id: str) -> list[TimelineEvent]:
 
 
 def parse_dnf_log(text: str, vm_id: str) -> list[TimelineEvent]:
-    """Same bug and same fix as parse_yum_log above, for DNF_LOG."""
+    """Same bug and same fix as parse_yum_log above, for DNF_LOG - including
+    the same deliberate exclusion from window filtering."""
     events: list[TimelineEvent] = []
     for i, line in enumerate(text.splitlines()):
         if not line.strip() or not has_extension_log_anomaly(line):
@@ -491,26 +509,14 @@ def parse_repo_diagnostics(text: str, vm_id: str) -> list[TimelineEvent]:
     ]
 
 
-def parse_journal_reboot(text: str, vm_id: str) -> list[TimelineEvent]:
+def parse_journal_reboot(
+    text: str, vm_id: str, window_start: datetime | None = None, window_end: datetime | None = None,
+) -> list[TimelineEvent]:
     """journalctl --list-boots (surfaces a mid-window reboot) + recent
     kernel errors (-k -p err) - same generic anomaly-keyword scan as
     parse_waagent_log/parse_extension_core_log, for the same reason: no
     live-verified sample of a real VM's journal line formats."""
-    events: list[TimelineEvent] = []
-    for i, line in enumerate(text.splitlines()):
-        if not line.strip() or not has_extension_log_anomaly(line):
-            continue
-        events.append(
-            TimelineEvent(
-                ts=parse_leading_timestamp(line) or datetime.now(timezone.utc),
-                source=Source.GUEST_LINUX,
-                kind="journal_reboot",
-                summary=line.strip()[:240],
-                detail={},
-                raw_ref=f"guest:journal:{vm_id}:{i}",
-            )
-        )
-    return events[:MAX_ANOMALY_EVENTS_PER_SECTION]
+    return _anomaly_scan(text, vm_id, "journal_reboot", "guest:journal", window_start, window_end)
 
 
 def parse_subscription_manager(text: str, vm_id: str) -> list[TimelineEvent]:
@@ -542,10 +548,12 @@ def _log_if_found(parser_name: str, events: list[TimelineEvent], vm_id: str) -> 
     return events
 
 
-def parse_linux_output(stdout: str, vm_id: str) -> tuple[list[TimelineEvent], list[dict]]:
+def parse_linux_output(
+    stdout: str, vm_id: str, window_start: datetime | None = None, window_end: datetime | None = None,
+) -> tuple[list[TimelineEvent], list[dict]]:
     sections = _split_sections(stdout)
     events: list[TimelineEvent] = []
-    events += parse_dpkg_log(sections.get("DPKG_LOG", ""), vm_id)
+    events += parse_dpkg_log(sections.get("DPKG_LOG", ""), vm_id, window_start, window_end)
     events += parse_apt_history(sections.get("APT_HISTORY", ""), vm_id)
     events += _log_if_found("parse_yum_log", parse_yum_log(sections.get("YUM_LOG", ""), vm_id), vm_id)
     events += _log_if_found("parse_dnf_log", parse_dnf_log(sections.get("DNF_LOG", ""), vm_id), vm_id)
@@ -554,10 +562,16 @@ def parse_linux_output(stdout: str, vm_id: str) -> tuple[list[TimelineEvent], li
     events += parse_repo_check(sections.get("REPO_CHECK", ""), vm_id)
     events += _log_if_found("parse_repo_diagnostics", parse_repo_diagnostics(sections.get("REPO_DIAGNOSTICS", ""), vm_id), vm_id)
     events += parse_subscription_manager(sections.get("SUBMAN", ""), vm_id)
-    events += parse_waagent_log(sections.get("WAAGENT_LOG", ""), vm_id)
-    events += parse_extension_core_log(sections.get("EXT_CORE_LOG", ""), vm_id)
-    events += _log_if_found("parse_extension_wrapper_log", parse_extension_wrapper_log(sections.get("EXT_WRAPPER_LOG", ""), vm_id), vm_id)
-    events += _log_if_found("parse_journal_reboot", parse_journal_reboot(sections.get("JOURNAL_REBOOT", ""), vm_id), vm_id)
+    events += parse_waagent_log(sections.get("WAAGENT_LOG", ""), vm_id, window_start, window_end)
+    events += parse_extension_core_log(sections.get("EXT_CORE_LOG", ""), vm_id, window_start, window_end)
+    events += _log_if_found(
+        "parse_extension_wrapper_log",
+        parse_extension_wrapper_log(sections.get("EXT_WRAPPER_LOG", ""), vm_id, window_start, window_end),
+        vm_id,
+    )
+    events += _log_if_found(
+        "parse_journal_reboot", parse_journal_reboot(sections.get("JOURNAL_REBOOT", ""), vm_id, window_start, window_end), vm_id
+    )
     ext_events, ext_findings = parse_patch_extension_status(
         sections.get("EXT_STATUS", ""), vm_id, Source.GUEST_LINUX,
         extension_version=sections.get("EXT_VERSION", "").strip() or None,

@@ -19,6 +19,7 @@ from culprit.collectors.patch_extension_status import (
     has_extension_log_anomaly,
     parse_leading_timestamp,
     parse_patch_extension_status,
+    within_window,
 )
 from culprit.models.evidence import Source, TimelineEvent
 from culprit.observability import safe_exc_summary
@@ -231,7 +232,9 @@ class GuestWindowsCollector(Collector):
                 return CollectionResult(events=[], error=f"Run Command failed: {exc}")
         log.info("guest_windows: Run Command on %s completed after %.1fs", request.machine.vm_name, time.monotonic() - started)
 
-        events, patch_extension_status = parse_windows_output(stdout, vm_id=request.machine.vm_id)
+        events, patch_extension_status = parse_windows_output(
+            stdout, vm_id=request.machine.vm_id, window_start=request.window_start, window_end=request.window_end,
+        )
         return CollectionResult(events=events, patch_extension_status=patch_extension_status)
 
 
@@ -260,16 +263,33 @@ _WU_ERROR_RE = re.compile(r"error (0x[0-9a-fA-F]{8})")
 _CBS_FAIL_RE = re.compile(r"(CBS_E_\w+|Failed to (?:CSI Transaction|resolve).*|corrupt)", re.IGNORECASE)
 
 
-def parse_wu_log(text: str, vm_id: str) -> list[TimelineEvent]:
+def parse_wu_log(
+    text: str, vm_id: str, window_start: datetime | None = None, window_end: datetime | None = None,
+) -> list[TimelineEvent]:
     events: list[TimelineEvent] = []
     for i, line in enumerate(text.splitlines()):
         m = _WU_ERROR_RE.search(line)
         if not m:
             continue
+        # Found 2026-10-18 alongside the window-filtering fix below: this
+        # always stamped `datetime.now()` instead of the line's own real
+        # timestamp (WindowsUpdate.log's ETW-decoded format, e.g.
+        # "2026-10-16 03:04:00:456 ..." - now in parse_leading_timestamp's
+        # format list) - harmless on its own, but it would have made
+        # window filtering here meaningless (every line would always look
+        # "now", i.e. always in-window). The window check below uses the
+        # RAW parsed value (which can be None), never the `or now()`
+        # fallback - checking the fallback would wrongly reject a line
+        # just because its format wasn't recognized, defeating
+        # within_window()'s own "ts=None stays in-window" design.
+        parsed_ts = parse_leading_timestamp(line)
+        if not within_window(parsed_ts, window_start, window_end):
+            continue
+        ts = parsed_ts or datetime.now(timezone.utc)
         code = m.group(1).lower()
         events.append(
             TimelineEvent(
-                ts=datetime.now(timezone.utc),
+                ts=ts,
                 source=Source.GUEST_WINDOWS,
                 kind="wu_log",
                 summary=line.strip()[:240],
@@ -284,20 +304,33 @@ def parse_wu_log(text: str, vm_id: str) -> list[TimelineEvent]:
     return events
 
 
-def parse_cbs_log(text: str, vm_id: str) -> list[TimelineEvent]:
+def parse_cbs_log(
+    text: str, vm_id: str, window_start: datetime | None = None, window_end: datetime | None = None,
+) -> list[TimelineEvent]:
     events: list[TimelineEvent] = []
     for i, line in enumerate(text.splitlines()):
-        if _CBS_FAIL_RE.search(line):
-            events.append(
-                TimelineEvent(
-                    ts=datetime.now(timezone.utc),
-                    source=Source.GUEST_WINDOWS,
-                    kind="cbs_log",
-                    summary=line.strip()[:240],
-                    detail={"write_failure": "space" in line.lower()},
-                    raw_ref=f"guest:CBS.log:{vm_id}:{i}",
-                )
+        if not _CBS_FAIL_RE.search(line):
+            continue
+        # Same fix as parse_wu_log above - CBS.log's own leading timestamp
+        # ("2026-10-16 03:04:00, Error CBS ...") already matches an
+        # existing parse_leading_timestamp format; this just wasn't using
+        # it, always falling back to collection time. Window check uses the
+        # raw parsed value (can be None -> stays in-window), not the
+        # `or now()` fallback - see parse_wu_log's identical comment.
+        parsed_ts = parse_leading_timestamp(line)
+        if not within_window(parsed_ts, window_start, window_end):
+            continue
+        ts = parsed_ts or datetime.now(timezone.utc)
+        events.append(
+            TimelineEvent(
+                ts=ts,
+                source=Source.GUEST_WINDOWS,
+                kind="cbs_log",
+                summary=line.strip()[:240],
+                detail={"write_failure": "space" in line.lower()},
+                raw_ref=f"guest:CBS.log:{vm_id}:{i}",
             )
+        )
     return events
 
 
@@ -340,7 +373,9 @@ _WU_HISTORY_LINE_RE = re.compile(r"^(?P<date>\S+ \S+) ResultCode=(?P<code>\d+) T
 _WU_HISTORY_FAILURE_CODES = {"3", "4", "5"}
 
 
-def parse_wu_history(text: str, vm_id: str) -> list[TimelineEvent]:
+def parse_wu_history(
+    text: str, vm_id: str, window_start: datetime | None = None, window_end: datetime | None = None,
+) -> list[TimelineEvent]:
     """The local Windows Update Agent's own install-history record
     (`(New-Object -ComObject Microsoft.Update.Session).CreateUpdateSearcher().
     QueryHistory()`) - found 2026-10-18 auditing against the user-supplied
@@ -359,9 +394,13 @@ def parse_wu_history(text: str, vm_id: str) -> list[TimelineEvent]:
         m = _WU_HISTORY_LINE_RE.match(line.strip())
         if not m or m.group("code") not in _WU_HISTORY_FAILURE_CODES:
             continue
+        parsed_ts = parse_leading_timestamp(m.group("date"))
+        if not within_window(parsed_ts, window_start, window_end):
+            continue
+        ts = parsed_ts or datetime.now(timezone.utc)
         events.append(
             TimelineEvent(
-                ts=parse_leading_timestamp(m.group("date")) or datetime.now(timezone.utc),
+                ts=ts,
                 source=Source.GUEST_WINDOWS,
                 kind="wu_history",
                 summary=f"Windows Update history: ResultCode={m.group('code')} for {m.group('title').strip()}"[:600],
@@ -440,7 +479,41 @@ def parse_wsus_connectivity(text: str, vm_id: str) -> list[TimelineEvent]:
     ]
 
 
-def parse_vmagent_status(text: str, vm_id: str) -> list[TimelineEvent]:
+# Shared by the four anomaly-keyword-scan parsers below (parse_vmagent_status,
+# parse_system_eventlog, parse_extension_log, parse_command_execution_log) -
+# they were identical except for `kind`/`raw_ref` prefix, which made it easy
+# for one to drift out of sync with the others (e.g. only some of them
+# getting the window-filter fix). One shared implementation, one place to
+# keep correct.
+def _anomaly_scan(
+    text: str, vm_id: str, kind: str, raw_ref_prefix: str,
+    window_start: datetime | None, window_end: datetime | None,
+) -> list[TimelineEvent]:
+    events: list[TimelineEvent] = []
+    for i, line in enumerate(text.splitlines()):
+        if not line.strip() or not has_extension_log_anomaly(line):
+            continue
+        # Window check uses the raw parsed value (can be None -> stays
+        # in-window per within_window()'s own fail-open design) - checking
+        # the `or now()` fallback instead would wrongly reject a line just
+        # because its timestamp format wasn't recognized.
+        parsed_ts = parse_leading_timestamp(line)
+        if not within_window(parsed_ts, window_start, window_end):
+            continue
+        ts = parsed_ts or datetime.now(timezone.utc)
+        events.append(
+            TimelineEvent(
+                ts=ts, source=Source.GUEST_WINDOWS, kind=kind,
+                summary=line.strip()[:240], detail={},
+                raw_ref=f"{raw_ref_prefix}:{vm_id}:{i}",
+            )
+        )
+    return events[:MAX_ANOMALY_EVENTS_PER_SECTION]
+
+
+def parse_vmagent_status(
+    text: str, vm_id: str, window_start: datetime | None = None, window_end: datetime | None = None,
+) -> list[TimelineEvent]:
     """The Azure VM Agent's own aggregate status
     (C:\\WindowsAzure\\Logs\\AggregateStatus) - Windows' counterpart to
     guest_linux.py's waagent.log, surfacing whether the agent itself
@@ -450,52 +523,29 @@ def parse_vmagent_status(text: str, vm_id: str) -> list[TimelineEvent]:
     2026-10-18. Same generic anomaly-keyword scan, applied to the raw text
     regardless of whether it's JSON - a defensible-confidence choice over
     parsing specific JSON fields never confirmed against a real box."""
-    events: list[TimelineEvent] = []
-    for i, line in enumerate(text.splitlines()):
-        if not line.strip() or not has_extension_log_anomaly(line):
-            continue
-        events.append(
-            TimelineEvent(
-                ts=parse_leading_timestamp(line) or datetime.now(timezone.utc),
-                source=Source.GUEST_WINDOWS,
-                kind="vmagent_status",
-                summary=line.strip()[:240],
-                detail={},
-                raw_ref=f"guest:vmagent_status:{vm_id}:{i}",
-            )
-        )
-    return events[:MAX_ANOMALY_EVENTS_PER_SECTION]
+    return _anomaly_scan(text, vm_id, "vmagent_status", "guest:vmagent_status", window_start, window_end)
 
 
-def parse_system_eventlog(text: str, vm_id: str) -> list[TimelineEvent]:
+def parse_system_eventlog(
+    text: str, vm_id: str, window_start: datetime | None = None, window_end: datetime | None = None,
+) -> list[TimelineEvent]:
     """Windows System Event Log, Critical/Error/Warning levels, a fixed
     6-hour lookback (ALLOWED_WINDOWS_SCRIPT is static/non-parameterized by
     design - same constraint as every other section's fixed `-Tail 200`,
-    no real window_start can be interpolated in) - Windows' counterpart to
-    guest_linux.py's parse_journal_reboot. Same generic anomaly-keyword
-    scan and the same honesty caveat as every other new guest-log parser
-    added 2026-10-18. Each line is independently scanned (a multi-line
-    event's continuation lines carry no timestamp prefix and fall back to
-    collection time, the same graceful degradation every other parser
-    here already uses for a line it can't timestamp)."""
-    events: list[TimelineEvent] = []
-    for i, line in enumerate(text.splitlines()):
-        if not line.strip() or not has_extension_log_anomaly(line):
-            continue
-        events.append(
-            TimelineEvent(
-                ts=parse_leading_timestamp(line) or datetime.now(timezone.utc),
-                source=Source.GUEST_WINDOWS,
-                kind="system_eventlog",
-                summary=line.strip()[:240],
-                detail={},
-                raw_ref=f"guest:system_eventlog:{vm_id}:{i}",
-            )
-        )
-    return events[:MAX_ANOMALY_EVENTS_PER_SECTION]
+    no real window_start can be interpolated into the script itself) -
+    Windows' counterpart to guest_linux.py's parse_journal_reboot. Same
+    generic anomaly-keyword scan and the same honesty caveat as every
+    other new guest-log parser added 2026-10-18. Each line is
+    independently scanned (a multi-line event's continuation lines carry
+    no timestamp prefix and fall back to collection time, the same
+    graceful degradation every other parser here already uses for a line
+    it can't timestamp)."""
+    return _anomaly_scan(text, vm_id, "system_eventlog", "guest:system_eventlog", window_start, window_end)
 
 
-def parse_extension_log(text: str, vm_id: str) -> list[TimelineEvent]:
+def parse_extension_log(
+    text: str, vm_id: str, window_start: datetime | None = None, window_end: datetime | None = None,
+) -> list[TimelineEvent]:
     """The Windows patch extension's own detailed operational log
     (C:\\WindowsAzure\\Logs\\Plugins\\Microsoft.CPlat.Core.
     WindowsPatchExtension\\<version>\\WindowsPatchExtension.log) -
@@ -507,24 +557,12 @@ def parse_extension_log(text: str, vm_id: str) -> list[TimelineEvent]:
     exact-format parse, and for why a healthy "0 packages failed"/"no
     errors" phrase is suppressed without also dropping a real, separate
     failure that happens to share the line."""
-    events: list[TimelineEvent] = []
-    for i, line in enumerate(text.splitlines()):
-        if not line.strip() or not has_extension_log_anomaly(line):
-            continue
-        events.append(
-            TimelineEvent(
-                ts=parse_leading_timestamp(line) or datetime.now(timezone.utc),
-                source=Source.GUEST_WINDOWS,
-                kind="extension_log",
-                summary=line.strip()[:240],
-                detail={},
-                raw_ref=f"guest:WindowsPatchExtension.log:{vm_id}:{i}",
-            )
-        )
-    return events[:MAX_ANOMALY_EVENTS_PER_SECTION]
+    return _anomaly_scan(text, vm_id, "extension_log", "guest:WindowsPatchExtension.log", window_start, window_end)
 
 
-def parse_command_execution_log(text: str, vm_id: str) -> list[TimelineEvent]:
+def parse_command_execution_log(
+    text: str, vm_id: str, window_start: datetime | None = None, window_end: datetime | None = None,
+) -> list[TimelineEvent]:
     """The VM extension HANDLER's own wrapper log
     (C:\\WindowsAzure\\Logs\\Plugins\\Microsoft.CPlat.Core.
     WindowsPatchExtension\\<version>\\CommandExecution.log) - whether Azure
@@ -536,21 +574,7 @@ def parse_command_execution_log(text: str, vm_id: str) -> list[TimelineEvent]:
     didn't. Same generic anomaly scan and the same honesty caveat as every
     other new guest-log parser added that day - no live-verified real
     sample of this file's line format."""
-    events: list[TimelineEvent] = []
-    for i, line in enumerate(text.splitlines()):
-        if not line.strip() or not has_extension_log_anomaly(line):
-            continue
-        events.append(
-            TimelineEvent(
-                ts=parse_leading_timestamp(line) or datetime.now(timezone.utc),
-                source=Source.GUEST_WINDOWS,
-                kind="extension_wrapper_log",
-                summary=line.strip()[:240],
-                detail={},
-                raw_ref=f"guest:CommandExecution.log:{vm_id}:{i}",
-            )
-        )
-    return events[:MAX_ANOMALY_EVENTS_PER_SECTION]
+    return _anomaly_scan(text, vm_id, "extension_wrapper_log", "guest:CommandExecution.log", window_start, window_end)
 
 
 def _log_if_found(parser_name: str, events: list[TimelineEvent], vm_id: str) -> list[TimelineEvent]:
@@ -561,21 +585,31 @@ def _log_if_found(parser_name: str, events: list[TimelineEvent], vm_id: str) -> 
     return events
 
 
-def parse_windows_output(stdout: str, vm_id: str) -> tuple[list[TimelineEvent], list[dict]]:
+def parse_windows_output(
+    stdout: str, vm_id: str, window_start: datetime | None = None, window_end: datetime | None = None,
+) -> tuple[list[TimelineEvent], list[dict]]:
     sections = _split_sections(stdout)
     events: list[TimelineEvent] = []
-    events += parse_wu_log(sections.get("WU_LOG", ""), vm_id)
-    events += parse_cbs_log(sections.get("CBS_LOG", ""), vm_id)
+    events += parse_wu_log(sections.get("WU_LOG", ""), vm_id, window_start, window_end)
+    events += parse_cbs_log(sections.get("CBS_LOG", ""), vm_id, window_start, window_end)
     events += parse_pending_reboot(sections.get("PENDING_REBOOT", ""), vm_id)
     events += parse_wuauserv_state(sections.get("WUAUSERV", ""), vm_id)
-    events += _log_if_found("parse_wu_history", parse_wu_history(sections.get("WU_HISTORY", ""), vm_id), vm_id)
+    events += _log_if_found(
+        "parse_wu_history", parse_wu_history(sections.get("WU_HISTORY", ""), vm_id, window_start, window_end), vm_id
+    )
     events += parse_disk_usage(sections.get("DISK_USAGE", ""), vm_id)
     events += _log_if_found("parse_wsus_connectivity", parse_wsus_connectivity(sections.get("WSUS_CONNECTIVITY", ""), vm_id), vm_id)
-    events += _log_if_found("parse_vmagent_status", parse_vmagent_status(sections.get("VMAGENT_STATUS", ""), vm_id), vm_id)
-    events += _log_if_found("parse_system_eventlog", parse_system_eventlog(sections.get("SYSTEM_EVENTLOG", ""), vm_id), vm_id)
-    events += parse_extension_log(sections.get("EXT_LOG", ""), vm_id)
     events += _log_if_found(
-        "parse_command_execution_log", parse_command_execution_log(sections.get("COMMAND_EXECUTION_LOG", ""), vm_id), vm_id
+        "parse_vmagent_status", parse_vmagent_status(sections.get("VMAGENT_STATUS", ""), vm_id, window_start, window_end), vm_id
+    )
+    events += _log_if_found(
+        "parse_system_eventlog", parse_system_eventlog(sections.get("SYSTEM_EVENTLOG", ""), vm_id, window_start, window_end), vm_id
+    )
+    events += parse_extension_log(sections.get("EXT_LOG", ""), vm_id, window_start, window_end)
+    events += _log_if_found(
+        "parse_command_execution_log",
+        parse_command_execution_log(sections.get("COMMAND_EXECUTION_LOG", ""), vm_id, window_start, window_end),
+        vm_id,
     )
     ext_events, ext_findings = parse_patch_extension_status(
         sections.get("EXT_STATUS", ""), vm_id, Source.GUEST_WINDOWS,
