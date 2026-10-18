@@ -4,6 +4,7 @@ from datetime import datetime, timezone
 
 from culprit.collectors.guest_windows import (
     parse_cbs_log,
+    parse_command_execution_log,
     parse_disk_usage,
     parse_extension_log,
     parse_pending_reboot,
@@ -116,6 +117,41 @@ def test_parse_extension_log_caps_at_the_shared_max():
     text = "\n".join(f"2026-10-16 03:0{i}:00 ERROR Failed attempt {i}" for i in range(MAX_ANOMALY_EVENTS_PER_SECTION + 5))
     events = parse_extension_log(text, vm_id="vm-1")
     assert len(events) == MAX_ANOMALY_EVENTS_PER_SECTION
+
+
+# ── CommandExecution.log (found 2026-10-18 auditing against the user's
+# "recommended evidence" spreadsheet row 7 - the Windows column names this
+# exact file, the handler's own wrapper log, as a distinct Essential
+# evidence source from WindowsPatchExtension.log; the Linux side's
+# equivalent (parse_extension_wrapper_log) already existed, this didn't) ──
+
+def test_parse_command_execution_log_flags_an_anomaly_line():
+    text = "2026-10-18 03:03:00 INFO Invoking extension\n2026-10-18 03:04:00 ERROR Failed to launch patch extension: timed out\n"
+    events = parse_command_execution_log(text, vm_id="vm-1")
+    assert len(events) == 1
+    assert "timed out" in events[0].summary
+    assert events[0].kind == "extension_wrapper_log"
+    assert events[0].raw_ref == "guest:CommandExecution.log:vm-1:1"
+
+
+def test_parse_command_execution_log_quiet_log_is_silent():
+    text = "2026-10-18 03:03:00 INFO Invoking extension\n2026-10-18 03:03:30 INFO Extension completed successfully\n"
+    assert parse_command_execution_log(text, vm_id="vm-1") == []
+
+
+def test_parse_command_execution_log_caps_at_the_shared_max():
+    text = "\n".join(f"2026-10-18 03:0{i}:00 ERROR Failed attempt {i}" for i in range(MAX_ANOMALY_EVENTS_PER_SECTION + 5))
+    events = parse_command_execution_log(text, vm_id="vm-1")
+    assert len(events) == MAX_ANOMALY_EVENTS_PER_SECTION
+
+
+def test_parse_windows_output_wires_in_command_execution_log():
+    stdout = (
+        "---COMMAND_EXECUTION_LOG---\n"
+        "2026-10-18 03:04:00 ERROR Failed to launch patch extension: timed out\n"
+    )
+    events, _ = parse_windows_output(stdout, vm_id="vm-1")
+    assert any(e.kind == "extension_wrapper_log" for e in events)
 
 
 def test_parse_wsus_connectivity_is_silent_when_the_probe_never_ran():

@@ -102,6 +102,11 @@ if ($latestVersionDir) {
     $extLogPath = "C:\WindowsAzure\Logs\Plugins\Microsoft.CPlat.Core.WindowsPatchExtension\$($latestVersionDir.Name)\WindowsPatchExtension.log"
     Get-Content $extLogPath -Tail 200 -ErrorAction SilentlyContinue
 }
+Write-Output "---COMMAND_EXECUTION_LOG---"
+if ($latestVersionDir) {
+    $cmdExecLogPath = "C:\WindowsAzure\Logs\Plugins\Microsoft.CPlat.Core.WindowsPatchExtension\$($latestVersionDir.Name)\CommandExecution.log"
+    Get-Content $cmdExecLogPath -Tail 200 -ErrorAction SilentlyContinue
+}
 Write-Output "---EXT_STATUS---"
 $latestStatusFile = $null
 if ($latestVersionDir) {
@@ -468,6 +473,35 @@ def parse_extension_log(text: str, vm_id: str) -> list[TimelineEvent]:
     return events[:MAX_ANOMALY_EVENTS_PER_SECTION]
 
 
+def parse_command_execution_log(text: str, vm_id: str) -> list[TimelineEvent]:
+    """The VM extension HANDLER's own wrapper log
+    (C:\\WindowsAzure\\Logs\\Plugins\\Microsoft.CPlat.Core.
+    WindowsPatchExtension\\<version>\\CommandExecution.log) - whether Azure
+    actually invoked the patch operation at all, distinct from
+    parse_extension_log's "what happened once it ran." Found 2026-10-18
+    auditing against the user-supplied "recommended evidence" spreadsheet's
+    row 7 (Windows column names this file specifically) - the Linux side's
+    equivalent (parse_extension_wrapper_log) already existed, this one
+    didn't. Same generic anomaly scan and the same honesty caveat as every
+    other new guest-log parser added that day - no live-verified real
+    sample of this file's line format."""
+    events: list[TimelineEvent] = []
+    for i, line in enumerate(text.splitlines()):
+        if not line.strip() or not has_extension_log_anomaly(line):
+            continue
+        events.append(
+            TimelineEvent(
+                ts=parse_leading_timestamp(line) or datetime.now(timezone.utc),
+                source=Source.GUEST_WINDOWS,
+                kind="extension_wrapper_log",
+                summary=line.strip()[:240],
+                detail={},
+                raw_ref=f"guest:CommandExecution.log:{vm_id}:{i}",
+            )
+        )
+    return events[:MAX_ANOMALY_EVENTS_PER_SECTION]
+
+
 def _log_if_found(parser_name: str, events: list[TimelineEvent], vm_id: str) -> list[TimelineEvent]:
     """See guest_linux.py's identical helper for why this exists and why
     it only logs on a non-empty result."""
@@ -488,6 +522,9 @@ def parse_windows_output(stdout: str, vm_id: str) -> tuple[list[TimelineEvent], 
     events += _log_if_found("parse_vmagent_status", parse_vmagent_status(sections.get("VMAGENT_STATUS", ""), vm_id), vm_id)
     events += _log_if_found("parse_system_eventlog", parse_system_eventlog(sections.get("SYSTEM_EVENTLOG", ""), vm_id), vm_id)
     events += parse_extension_log(sections.get("EXT_LOG", ""), vm_id)
+    events += _log_if_found(
+        "parse_command_execution_log", parse_command_execution_log(sections.get("COMMAND_EXECUTION_LOG", ""), vm_id), vm_id
+    )
     ext_events, ext_findings = parse_patch_extension_status(
         sections.get("EXT_STATUS", ""), vm_id, Source.GUEST_WINDOWS,
         extension_version=sections.get("EXT_VERSION", "").strip() or None,
