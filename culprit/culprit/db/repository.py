@@ -424,13 +424,23 @@ def compliance_trend(session: Session, scope_name: str, limit: int = 10):
     return points
 
 
-def top_causes(session: Session, run_id: str, limit: int = len(CauseFamily)):
-    """Which cause families account for the most failed machines in one
-    run, ranked - the Console dashboard's "what's actually breaking
-    things" list. A cheap aggregate over RCAResultRecord.cause_family
-    (its own indexed column) and ClusterRecord.size - no
-    RCAResult.model_validate, no title/remediation/evidence read at all,
-    since only the label and a count are needed here.
+def top_causes(session: Session, run_id: str | list[str], limit: int = len(CauseFamily)):
+    """Which cause families account for the most failed machines, ranked -
+    the Console dashboard's "what's actually breaking things" list. A
+    cheap aggregate over RCAResultRecord.cause_family (its own indexed
+    column) and ClusterRecord.size - no RCAResult.model_validate, no
+    title/remediation/evidence read at all, since only the label and a
+    count are needed here.
+
+    `run_id` accepts either one run (the original, still-used-by-tests
+    shape) or a list of them - found 2026-10-18 reviewing a real
+    screenshot: scoping this to only the single latest run meant a
+    healthy cycle with zero failures showed "No diagnosed causes this
+    cycle" right next to a Compliance Trend chart confidently showing 10
+    cycles of history, an inconsistent and often-empty pairing. Summing
+    over the same multi-run window the trend chart already fetched (see
+    build_dashboard_summary) makes the two cards tell one coherent story
+    instead of two different timeframes sitting side by side.
 
     `limit` defaults to every possible CauseFamily value (11, as of this
     writing) - there is no pathological case to truncate against (a run
@@ -441,10 +451,11 @@ def top_causes(session: Session, run_id: str, limit: int = len(CauseFamily)):
     6-cause run showing only 5 rows)."""
     from culprit.models.dashboard import CauseBreakdownEntry
 
+    run_ids = [run_id] if isinstance(run_id, str) else run_id
     stmt = (
         select(RCAResultRecord.cause_family, func.sum(ClusterRecord.size))
         .join(ClusterRecord, ClusterRecord.cluster_id == RCAResultRecord.cluster_id)
-        .where(ClusterRecord.run_id == run_id)
+        .where(ClusterRecord.run_id.in_(run_ids))
         .group_by(RCAResultRecord.cause_family)
         .order_by(func.sum(ClusterRecord.size).desc())
         .limit(limit)
@@ -472,7 +483,12 @@ def build_dashboard_summary(session: Session):
 
     latest_run = _load_fleet_report_core(session, run_id)
     trend = compliance_trend(session, latest_run.run.scope_name)
-    causes = top_causes(session, run_id)
+    # Same run set the trend chart already fetched (last N completed runs
+    # for this scope_name), not just the single latest one - see
+    # top_causes' own docstring for why. Reusing trend's own run_ids means
+    # no second query to re-derive which runs count as "the last N
+    # cycles", and the two cards can never silently disagree on scope.
+    causes = top_causes(session, [p.run_id for p in trend] or run_id)
 
     failed_delta = compliance_delta_pct = None
     if len(trend) >= 2:

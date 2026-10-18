@@ -32,11 +32,14 @@ class ComplianceTrendPoint(BaseModel):
 
 
 class CauseBreakdownEntry(BaseModel):
-    """One cause family's share of a run's failures, ranked by machine
-    count - the Console dashboard's "what's actually breaking things"
-    list. `cause_family` is RCAResultRecord's own indexed column; no
-    RCAResult.model_validate (title/remediation/evidence) is needed to
-    build this."""
+    """One cause family's share of failures across the same run window
+    `compliance_trend` charts (not just the single latest run - found
+    2026-10-18 from a real screenshot: a healthy latest cycle with zero
+    failures made this card empty right next to a trend chart confidently
+    showing 10 cycles of history), ranked by machine count - the Console
+    dashboard's "what's actually breaking things" list. `cause_family` is
+    RCAResultRecord's own indexed column; no RCAResult.model_validate
+    (title/remediation/evidence) is needed to build this."""
 
     cause_family: CauseFamily
     machines: int

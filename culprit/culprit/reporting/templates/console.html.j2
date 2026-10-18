@@ -54,7 +54,7 @@
   <div class="grid grid-cols-1 sm:grid-cols-2 gap-5 mb-6">
     <div class="bg-white rounded-2xl shadow-sm border border-gray-100 p-6">
       <h6 class="text-[10px] font-semibold uppercase tracking-wide text-gray-400 mb-3">
-        Compliance trend &middot; last {{ dashboard.compliance_trend|length }} cycles
+        Compliance trend &middot; last {{ dashboard.compliance_trend|length }} cycle{{ 's' if dashboard.compliance_trend|length != 1 else '' }}
       </h6>
       {% if trend_chart %}
       <div class="relative">
@@ -80,7 +80,9 @@
     </div>
 
     <div class="bg-white rounded-2xl shadow-sm border border-gray-100 p-6">
-      <h6 class="text-[10px] font-semibold uppercase tracking-wide text-gray-400 mb-3">Cause breakdown &middot; this cycle</h6>
+      <h6 class="text-[10px] font-semibold uppercase tracking-wide text-gray-400 mb-3">
+        Cause breakdown &middot; last {{ dashboard.compliance_trend|length }} cycle{{ 's' if dashboard.compliance_trend|length != 1 else '' }}
+      </h6>
       {% if dashboard.top_causes %}
       <div class="space-y-2.5">
         {% for entry in dashboard.top_causes %}
@@ -96,7 +98,7 @@
         {% endfor %}
       </div>
       {% else %}
-      <p class="text-sm text-gray-400 py-7 text-center">No diagnosed causes this cycle.</p>
+      <p class="text-sm text-gray-400 py-7 text-center">No diagnosed causes in the last {{ dashboard.compliance_trend|length }} cycle{{ 's' if dashboard.compliance_trend|length != 1 else '' }}.</p>
       {% endif %}
     </div>
   </div>

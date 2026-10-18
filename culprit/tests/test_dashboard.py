@@ -12,6 +12,7 @@ from fastapi.testclient import TestClient
 from culprit.db import repository
 from culprit.db.engine import make_engine, make_session_factory
 from culprit.db.models import RunStage
+from culprit.models.dashboard import CauseBreakdownEntry
 from culprit.models.patch_run import PatchRun
 from culprit.models.taxonomy import CauseFamily
 
@@ -117,6 +118,70 @@ def test_top_causes_ranks_by_machine_count(session_factory):
     assert CauseFamily.UNRESOLVED in [c.cause_family for c in causes]
 
 
+def _add_cause(session, run_id: str, cause_family: CauseFamily, machines: int, cluster_id: str):
+    """Minimal Cluster + RCAResult row for one run, for tests that only
+    care about top_causes' aggregation - not a full pipeline run like
+    _run_demo_scenario (which is realistic but only ever produces one
+    run_id per call, not the multi-run fixture these tests need)."""
+    from culprit.models.cluster import Cluster, ClusterMember, Fingerprint
+    from culprit.models.rca import CausalStep, RCAResult, ResultOrigin
+    from culprit.models.taxonomy import CauseFamily as CF
+    from culprit.models.evidence import OSFamily
+
+    members = [ClusterMember(vm_id=f"vm-{cluster_id}-{i}", vm_name=f"vm-{cluster_id}-{i}") for i in range(machines)]
+    cluster = Cluster(
+        cluster_id=cluster_id, run_id=run_id, cluster_key=cluster_id,
+        fingerprint=Fingerprint(error_code_normalized="x", os_family=OSFamily.LINUX, failing_target=""),
+        members=members, representative_vm_id=members[0].vm_id,
+    )
+    repository.save_cluster(session, cluster)
+    repository.save_rca_result(session, RCAResult(
+        cluster_id=cluster_id, origin=ResultOrigin.RULE_ENGINE, cause_family=cause_family,
+        title="t", causal_chain=[CausalStep(order=1, statement="s", evidence_refs=["e1"])], confidence=0.9,
+    ))
+
+
+def test_top_causes_accepts_a_list_of_run_ids_and_sums_across_them():
+    """Found 2026-10-18 from a real screenshot: Cause Breakdown used to be
+    scoped to a single run_id, making it empty whenever the latest cycle
+    alone had zero failures, right next to a Compliance Trend chart
+    confidently showing 10 cycles of history. top_causes must be able to
+    sum the same cause across multiple runs, not just report per-run."""
+    engine = make_engine("sqlite:///:memory:")
+    session_factory = make_session_factory(engine)
+    with session_factory() as session:
+        _make_run(session, "run-1", "scope-a", datetime(2026, 1, 1, tzinfo=timezone.utc), 100, 10)
+        _make_run(session, "run-2", "scope-a", datetime(2026, 1, 2, tzinfo=timezone.utc), 100, 15)
+        _add_cause(session, "run-1", CauseFamily.CAPACITY, 10, "c1")
+        _add_cause(session, "run-2", CauseFamily.CAPACITY, 5, "c2")
+        _add_cause(session, "run-2", CauseFamily.CONFIGURATION, 10, "c3")
+
+        single = repository.top_causes(session, "run-1")
+        combined = repository.top_causes(session, ["run-1", "run-2"])
+
+    assert single == [CauseBreakdownEntry(cause_family=CauseFamily.CAPACITY, machines=10)]
+    # capacity summed across both runs (10 + 5 = 15), configuration only in run-2
+    assert {(c.cause_family, c.machines) for c in combined} == {
+        (CauseFamily.CAPACITY, 15), (CauseFamily.CONFIGURATION, 10),
+    }
+
+
+def test_build_dashboard_summary_shows_causes_from_a_healthy_latest_run_too(session_factory):
+    """The actual bug this round fixes: a healthy latest cycle (zero
+    failures, so no clusters/RCAResult of its own) must not empty out the
+    whole card when earlier cycles in the same trend window had real
+    diagnosed causes."""
+    with session_factory() as session:
+        _make_run(session, "run-1", "scope-a", datetime(2026, 1, 1, tzinfo=timezone.utc), 100, 20)
+        _add_cause(session, "run-1", CauseFamily.CAPACITY, 20, "c1")
+        _make_run(session, "run-2", "scope-a", datetime(2026, 1, 2, tzinfo=timezone.utc), 100, 0)  # healthy, no clusters
+
+        summary = repository.build_dashboard_summary(session)
+
+    assert summary.latest_run.run.run_id == "run-2"
+    assert summary.top_causes == [CauseBreakdownEntry(cause_family=CauseFamily.CAPACITY, machines=20)]
+
+
 def test_build_dashboard_summary_is_empty_with_no_completed_runs(session_factory):
     with session_factory() as session:
         summary = repository.build_dashboard_summary(session)
@@ -202,6 +267,15 @@ def test_console_page_shows_dashboard_sections_after_a_run(client):
     # Only one completed run exists - no trend chart yet, same as a
     # single-point FleetTrend being absent rather than drawn broken.
     assert "Not enough completed cycles yet" in html
+    # Found 2026-10-18: Cause breakdown's own header must track the same
+    # window Compliance trend charts, not say "this cycle" - with exactly
+    # one completed run so far, both cards agree on "last 1 cycle" -
+    # singular, not the "last 1 cycles" grammar slip the Compliance trend
+    # header already had before this round touched the same expression.
+    assert html.count("last 1 cycle") == 2  # both cards, singular
+    assert "1 cycles" not in html
+    assert "this cycle" not in html
+    assert "this cycle" not in html
 
 
 def test_console_page_empty_state_unaffected(client):
