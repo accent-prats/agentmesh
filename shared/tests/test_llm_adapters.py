@@ -779,3 +779,27 @@ class TestGeminiClient:
         assert any("blocked url with key" in m for m in messages)
         assert not any(real_key in m for m in messages)
         assert any("[REDACTED]" in m for m in messages)
+
+    def test_a_trivially_short_api_key_does_not_mangle_unrelated_text(self, monkeypatch, caplog):
+        """Mirrors OpenAICompatibleClient's own version of this test -
+        gemini.py's _safe_exc_summary carries the identical short-secret-
+        collision risk (a one-letter "secret" like the "k" placeholder
+        this file's other tests use also matches the "k" inside
+        "blocked"), so it needs the same regression coverage."""
+        def fake_stream(method, url, *, json, timeout):
+            request = httpx.Request("POST", url)
+            response = httpx.Response(403, request=request, json={"error": "request blocked by policy"})
+            return FakeStream(response)
+
+        monkeypatch.setattr("shared.src.llm.gemini.httpx.stream", fake_stream)
+        client = GeminiClient(api_key="k", base_url="https://generativelanguage.googleapis.com/v1beta")
+
+        with caplog.at_level("WARNING"):
+            try:
+                client.messages.create(model="gemini-2.5-pro", max_tokens=10, thinking=None, system="s", tools=[_TOOL_SCHEMA], messages=[])
+            except httpx.HTTPStatusError:
+                pass
+
+        messages = [r.message for r in caplog.records]
+        assert any("request blocked by policy" in m for m in messages)
+        assert not any("[REDACTED]" in m for m in messages)
