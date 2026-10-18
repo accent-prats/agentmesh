@@ -412,3 +412,89 @@ def test_activity_log_logs_nothing_extra_when_nothing_was_filtered(caplog):
         collector.collect(_request())
 
     assert not any("kept" in r.message and "after filtering" in r.message for r in caplog.records)
+
+
+# A real production message (2026-10-18): Azure's own install-error detail
+# routinely runs past the app-wide 240-char summary convention, and the part
+# it cuts off is exactly the diagnostic signal worth giving the RCA - the
+# hResult code and the troubleshooting link.
+_REAL_LONG_INSTALL_ERROR_MESSAGE = (
+    "Failed to assess and install update [2026-10 Cumulative Update for Microsoft server operating "
+    "system version 21H2 for x64-based Systems (KB5126655)]. Reason: [Failed to install Update 2026-10 "
+    "Cumulative Update for Microsoft server operating system version 21H2 for x64-based Systems "
+    "(KB5126655), result code=Failed, hResult:0x80070002. For information on diagnosing this error, "
+    "see https://aka.ms/TroubleshootVMGuestPatching.]"
+)
+
+
+def test_azure_patch_error_summary_keeps_the_full_message_including_the_troubleshooting_link():
+    """2026-10-18: the previous 240-char cap silently truncated this real
+    message before the hResult code and before Azure's own troubleshooting
+    link - exactly the kind of corrective guidance the user asked Culprit
+    to feed into RCA. The raised cap (_PATCH_ERROR_SUMMARY_MAX_CHARS) must
+    comfortably fit it."""
+    assert len(_REAL_LONG_INSTALL_ERROR_MESSAGE) > 240  # pin the premise: this message really did exceed the old cap
+
+    response = _FakeGraphResult([{
+        "id": "/subscriptions/s/.../patchinstallationresults/x",
+        "properties": {
+            "status": "Failed",
+            "errorCode": "PatchInstallFailed",
+            "lastModifiedDateTime": "2026-10-18T08:05:00Z",
+            "error": {
+                "message": "1 errors reported.",
+                "details": [{"code": "Error", "message": _REAL_LONG_INSTALL_ERROR_MESSAGE}],
+            },
+        },
+    }])
+    collector = _collector_with(install_response=response)
+
+    result = collector.collect(_request())
+
+    error_events = [e for e in result.events if e.kind == "azure_patch_error"]
+    assert len(error_events) == 1
+    assert "hResult:0x80070002" in error_events[0].summary
+    assert "https://aka.ms/TroubleshootVMGuestPatching" in error_events[0].summary
+
+
+def test_a_failed_assessment_result_produces_its_own_error_events():
+    """Before this fix, a FAILED assessment's own Azure-reported reasons
+    (error.details[]) only ever landed in the patch_assessment event's
+    `detail` dict, which render_timeline_text() never sends to the model -
+    so this evidence was collected but silently never reached the RCA."""
+    response = _FakeGraphResult([{
+        "id": "/subscriptions/s/.../patchassessmentresults/x",
+        "properties": {
+            "status": "Failed",
+            "rebootPending": False,
+            "lastModifiedDateTime": "2026-10-18T08:05:00Z",
+            "error": {
+                "message": "assessment failed",
+                "details": [{"code": "Error", "message": "Could not reach Windows Update service"}],
+            },
+        },
+    }])
+    collector = _collector_with(assessment_response=response)
+
+    result = collector.collect(_request())
+
+    error_events = [e for e in result.events if e.kind == "azure_assessment_error"]
+    assert len(error_events) == 1
+    assert "Could not reach Windows Update service" in error_events[0].summary
+
+
+def test_a_successful_assessment_result_produces_no_assessment_error_events():
+    response = _FakeGraphResult([{
+        "id": "/subscriptions/s/.../patchassessmentresults/x",
+        "properties": {
+            "status": "Succeeded",
+            "rebootPending": False,
+            "availablePatchCountByClassification": {"security": 2},
+            "lastModifiedDateTime": "2026-10-18T08:05:00Z",
+        },
+    }])
+    collector = _collector_with(assessment_response=response)
+
+    result = collector.collect(_request())
+
+    assert not [e for e in result.events if e.kind == "azure_assessment_error"]

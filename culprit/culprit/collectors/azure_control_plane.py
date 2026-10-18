@@ -28,6 +28,24 @@ from culprit.observability import safe_exc_summary
 
 log = logging.getLogger(__name__)
 
+# Deliberately higher than the 240-char convention every other TimelineEvent
+# summary in this codebase uses (collectors/guest_linux.py, guest_windows.py,
+# azure_monitor.py, datadog_collector.py) - found 2026-10-18 from a real
+# production message that measured 456 chars: "Failed to assess and install
+# update [...]. Reason: [..., result code=Failed, hResult:0x80070002. For
+# information on diagnosing this error, see
+# https://aka.ms/TroubleshootVMGuestPatching.]" - the 240-char cap was
+# silently cutting this off mid-sentence, before the hResult code and before
+# Azure's own troubleshooting-link/diagnostic guidance, which is exactly the
+# kind of "does Update Manager suggest a fix" signal worth giving the RCA
+# model (user-requested 2026-10-18). Safe to raise only for this one event
+# type: `error.details[]` is itself a short, Azure-capped array (the real
+# production UI showed "The latest 3 errors are shared in details") - a
+# handful of long entries per machine, not hundreds of short ones, so this
+# doesn't reopen the Activity Log token-bloat problem fixed earlier this
+# session (azure_control_plane.py::_activity_log_events's own 20-event cap).
+_PATCH_ERROR_SUMMARY_MAX_CHARS = 600
+
 try:  # pragma: no cover - exercised only when the optional Azure SDKs are installed
     from azure.identity import DefaultAzureCredential
     from azure.mgmt.monitor import MonitorManagementClient
@@ -166,7 +184,9 @@ class AzureControlPlaneCollector(Collector):
                             ts=_parse_ts(props.get("lastModifiedDateTime") or props.get("startDateTime")),
                             source=Source.AZURE_CONTROL_PLANE,
                             kind="azure_patch_error",
-                            summary=(f"Azure-reported install error: {detail.message or detail.code or '(no message)'}")[:240],
+                            summary=(f"Azure-reported install error: {detail.message or detail.code or '(no message)'}")[
+                                :_PATCH_ERROR_SUMMARY_MAX_CHARS
+                            ],
                             detail={"code": detail.code, "target": detail.target},
                             raw_ref=f"resourcegraph:{rows[0]['id']}:error:{i}",
                         )
@@ -214,6 +234,23 @@ class AzureControlPlaneCollector(Collector):
                         raw_ref=f"resourcegraph:{assessment_rows[0]['id']}",
                     )
                 )
+                # Mirrors the azure_patch_error events above - until this,
+                # `error_detail_messages` only ever landed in `detail`
+                # (never sent to the LLM, see render_timeline_text()), so a
+                # FAILED assessment's own Azure-reported reasons were
+                # invisible to the RCA even though they were already being
+                # collected. Found 2026-10-18 alongside the truncation fix
+                # for the install-result side of this exact gap.
+                for i, message in enumerate(summary_detail["error_detail_messages"]):
+                    events.append(
+                        TimelineEvent(
+                            ts=_parse_ts(assessment_props.get("lastModifiedDateTime") or assessment_props.get("startDateTime")),
+                            source=Source.AZURE_CONTROL_PLANE,
+                            kind="patch_assessment",
+                            summary=f"Azure-reported assessment error: {message}"[:_PATCH_ERROR_SUMMARY_MAX_CHARS],
+                            raw_ref=f"resourcegraph:{assessment_rows[0]['id']}:error:{i}",
+                        )
+                    )
         except Exception as exc:  # noqa: BLE001
             log.warning(
                 "azure_control_plane: assessment-result query for %s failed after %.1fs (%s)",
