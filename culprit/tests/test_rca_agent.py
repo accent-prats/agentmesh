@@ -5,6 +5,7 @@ from datetime import datetime, timezone
 from typing import Any
 
 from culprit.models.evidence import EvidenceBundle, MachineIdentity, OSFamily, PatchOutcome, Source, TimelineEvent
+from culprit.models.rca import split_unverifiable_reason
 from culprit.models.taxonomy import CauseFamily
 from culprit.pipeline.fingerprint import cluster_run
 from culprit.pipeline.rca_agent import _RCA_TOOL_SCHEMA, DeepRCAAgent, _TOOL_NAME
@@ -197,6 +198,60 @@ def test_a_mix_of_real_and_fabricated_refs_still_gets_rejected():
     bundle = _bundle()
     result = agent.diagnose(_cluster(bundle), bundle)
     assert result.cause_family == CauseFamily.UNRESOLVED
+
+
+# ── Every rejection path's missing_evidence entry must be in the
+# "unverifiable" format (found 2026-10-18 from a real user complaint: a
+# raw fabricated ref like "vendor_doc" was shown verbatim under a "what
+# the RCA agent said it would need" heading) - a clean, non-technical
+# summary as the user-facing headline, with the raw technical reason kept
+# separately for an engineer to expand. See models/rca.py's
+# format_unverifiable_reason/split_unverifiable_reason. ──────────────────
+
+def test_missing_tool_call_produces_an_unverifiable_not_a_genuine_missing_evidence_reason():
+    response = FakeResponse(content=[FakeBlock(type="text", text="I'm not sure.")])
+    agent = DeepRCAAgent(client=FakeAnthropicClient(response))
+    bundle = _bundle()
+    result = agent.diagnose(_cluster(bundle), bundle)
+    parsed = split_unverifiable_reason(result.missing_evidence[0])
+    assert parsed is not None
+    summary, detail = parsed
+    assert "submit_rca_finding" not in summary  # the internal tool name never reaches the user-facing text
+    assert "submit_rca_finding" in detail
+
+
+def test_schema_validation_failure_produces_an_unverifiable_reason():
+    bad_input = dict(_VALID_INPUT)
+    bad_input["causal_chain"] = []
+    bad_input["confidence"] = 0.8
+    response = FakeResponse(content=[FakeBlock(type="tool_use", name=_TOOL_NAME, input=bad_input)])
+    agent = DeepRCAAgent(client=FakeAnthropicClient(response))
+    bundle = _bundle()
+    result = agent.diagnose(_cluster(bundle), bundle)
+    parsed = split_unverifiable_reason(result.missing_evidence[0])
+    assert parsed is not None
+    summary, detail = parsed
+    assert "validation" not in summary.lower()  # clean, plain-English summary
+    assert "validation" in detail.lower()  # raw Pydantic error kept for an engineer
+
+
+def test_fabricated_evidence_ref_produces_a_clean_summary_without_the_confusing_token():
+    """The exact real-world case: the model cited a plausible-sounding but
+    nonexistent evidence_ref. The user-facing summary must never contain
+    that raw token (e.g. "vendor_doc") - it belongs only in the detail."""
+    bad_input = dict(_VALID_INPUT)
+    bad_input["causal_chain"] = [
+        {"order": 1, "statement": "Plausible-sounding but invented", "evidence_refs": ["vendor_doc"]}
+    ]
+    response = FakeResponse(content=[FakeBlock(type="tool_use", name=_TOOL_NAME, input=bad_input)])
+    agent = DeepRCAAgent(client=FakeAnthropicClient(response))
+    bundle = _bundle()
+    result = agent.diagnose(_cluster(bundle), bundle)
+    parsed = split_unverifiable_reason(result.missing_evidence[0])
+    assert parsed is not None
+    summary, detail = parsed
+    assert "vendor_doc" not in summary
+    assert "vendor_doc" in detail
 
 
 def test_request_includes_model_and_tool_schema():

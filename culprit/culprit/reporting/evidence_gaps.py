@@ -20,6 +20,7 @@ import re
 from dataclasses import dataclass
 
 from culprit.models.evidence import Source
+from culprit.models.rca import split_unverifiable_reason
 
 _SOURCE_PREFIX_RE = re.compile(r"^(" + "|".join(re.escape(s.value) for s in Source) + r"):\s*(.*)$", re.DOTALL)
 _CORRELATION_ID_RE = re.compile(r"correlationId\s*=\s*([^\s,;]+)", re.IGNORECASE)
@@ -39,6 +40,11 @@ _SOURCE_DISPLAY: dict[Source, tuple[str, str]] = {
     Source.DATADOG_EVENT: ("Datadog events", "radio"),
 }
 _GENERIC_LABEL, _GENERIC_ICON = "Evidence gap", "alert-triangle"
+# Distinct from a genuine "couldn't collect this source" gap - this is the
+# pipeline itself rejecting the model's output (see models/rca.py's
+# format_unverifiable_reason). A different icon/label makes clear this
+# isn't a missing log file, it's an analysis that didn't hold up.
+_UNVERIFIABLE_LABEL, _UNVERIFIABLE_ICON = "Unverified analysis", "shield-alert"
 
 
 @dataclass(frozen=True)
@@ -70,6 +76,21 @@ def _summarize(message: str) -> tuple[str, str | None]:
 def parse_evidence_gaps(items: list[str]) -> list[EvidenceGap]:
     gaps = []
     for item in items:
+        unverifiable = split_unverifiable_reason(item)
+        if unverifiable is not None:
+            # Always keep the raw technical reason behind the expand
+            # toggle, even when it's short enough to fit as the headline
+            # on its own merits - unlike _summarize() below, this one is
+            # deliberately never shown as the primary text, since it's an
+            # internal rejection reason, not a human-authored summary.
+            summary, raw_detail = unverifiable
+            gaps.append(EvidenceGap(
+                label=_UNVERIFIABLE_LABEL, icon=_UNVERIFIABLE_ICON,
+                summary=summary.strip(), detail=raw_detail.strip() or None,
+                correlation_id=None,
+            ))
+            continue
+
         match = _SOURCE_PREFIX_RE.match(item)
         if match:
             label, icon = _SOURCE_DISPLAY[Source(match.group(1))]

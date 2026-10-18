@@ -9,6 +9,7 @@ from __future__ import annotations
 
 from datetime import datetime, timezone
 
+from culprit.models.rca import format_unverifiable_reason
 from culprit.reporting.evidence_gaps import parse_evidence_gaps
 from culprit.reporting.render import render_fleet_report_html
 
@@ -66,6 +67,44 @@ def test_a_long_message_is_truncated_for_the_summary_with_the_full_text_kept_as_
 def test_a_correlation_id_is_extracted_and_trailing_punctuation_is_stripped():
     gaps = parse_evidence_gaps([f"azure_control_plane: {_LONG_AZURE_ERROR}"])
     assert gaps[0].correlation_id == "4705c7ea-a7f8-4fdc-ba42-4e28c494172d"
+
+
+# ── A pipeline-rejected model output (found 2026-10-18 from a real user
+# complaint: a hallucinated evidence_ref like "vendor_doc" was shown
+# verbatim under a "what the RCA agent said it would need for more
+# confidence" heading - both wrong, since nothing was missing, and
+# meaningless to a non-technical reader) must render as something
+# genuinely different from a real "we couldn't collect this source" gap ──
+
+def test_an_unverifiable_reason_gets_its_own_label_and_keeps_the_summary_clean():
+    reason = format_unverifiable_reason(
+        "The analysis assistant proposed an explanation but cited evidence that doesn't exist.",
+        "Fabricated evidence_refs: ['vendor_doc']",
+    )
+    gaps = parse_evidence_gaps([reason])
+    assert len(gaps) == 1
+    gap = gaps[0]
+    assert gap.label == "Unverified analysis"
+    assert gap.icon == "shield-alert"
+    assert gap.summary == "The analysis assistant proposed an explanation but cited evidence that doesn't exist."
+    assert "vendor_doc" not in gap.summary  # the confusing internal token never reaches the headline text
+
+
+def test_an_unverifiable_reasons_raw_detail_is_kept_behind_the_toggle_even_when_short():
+    """Unlike the generic _summarize() path (which only creates a `detail`
+    once the message exceeds 140 chars), an unverifiable reason's raw
+    technical detail is always tucked away, even when short - it's never
+    meant to be read as the primary text."""
+    reason = format_unverifiable_reason("Clean summary.", "short raw detail")
+    gap = parse_evidence_gaps([reason])[0]
+    assert gap.summary == "Clean summary."
+    assert gap.detail == "short raw detail"
+
+
+def test_an_unverifiable_reason_has_no_correlation_id():
+    reason = format_unverifiable_reason("Clean summary.", "correlationId=abc-123")
+    gap = parse_evidence_gaps([reason])[0]
+    assert gap.correlation_id is None  # the raw detail isn't scanned - it's not meant to be a support-ticket id here
 
 
 def test_a_message_with_no_correlation_id_leaves_it_none():

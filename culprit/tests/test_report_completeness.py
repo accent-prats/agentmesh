@@ -412,7 +412,7 @@ def test_machine_drill_down_shows_missing_evidence_for_a_thin_cluster(client):
 
     html = test_client.get(f"/runs/{run_id}/machines/vm-prd-legacy-0601.html").text
     assert "Low confidence" in html
-    assert "Missing evidence" in html
+    assert "Analysis notes" in html  # header renamed 2026-10-18 - see evidence_gaps.py
     assert "Other machines with this cause" not in html
 
 

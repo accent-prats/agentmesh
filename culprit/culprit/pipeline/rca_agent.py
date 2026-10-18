@@ -31,7 +31,7 @@ from pydantic import ValidationError
 
 from culprit.models.cluster import Cluster
 from culprit.models.evidence import EvidenceBundle
-from culprit.models.rca import RCAResult, ResultOrigin
+from culprit.models.rca import RCAResult, ResultOrigin, format_unverifiable_reason
 from culprit.models.taxonomy import CauseFamily
 
 log = logging.getLogger(__name__)
@@ -281,20 +281,29 @@ class DeepRCAAgent:
 
         tool_call = next((b for b in response.content if getattr(b, "type", None) == "tool_use" and getattr(b, "name", None) == _TOOL_NAME), None)
         if tool_call is None:
-            return _unresolved_result(cluster, reason="Model did not call submit_rca_finding")
+            return _unresolved_result(cluster, reason=format_unverifiable_reason(
+                "The analysis assistant didn't return a structured finding for this cluster.",
+                "Model did not call submit_rca_finding",
+            ))
 
         raw_input = tool_call.input
         if isinstance(raw_input, str):  # defensive: some transports hand back a JSON string
             try:
                 raw_input = json.loads(raw_input)
             except json.JSONDecodeError as exc:
-                return _unresolved_result(cluster, reason=f"Tool input was not valid JSON: {exc}")
+                return _unresolved_result(cluster, reason=format_unverifiable_reason(
+                    "The analysis assistant's response couldn't be read.",
+                    f"Tool input was not valid JSON: {exc}",
+                ))
 
         try:
             result = _to_rca_result(cluster.cluster_id, raw_input)
         except ValidationError as exc:
             log.warning("RCA result failed schema validation for cluster %s: %s", cluster.cluster_id, exc)
-            return _unresolved_result(cluster, reason=f"Model output failed validation: {exc}")
+            return _unresolved_result(cluster, reason=format_unverifiable_reason(
+                "The analysis assistant's response didn't match the expected format.",
+                f"Model output failed validation: {exc}",
+            ))
 
         # Found in review 2026-09-27: the Pydantic validator on CausalStep
         # only checks evidence_refs is non-empty, never that a ref actually
@@ -306,10 +315,18 @@ class DeepRCAAgent:
                 "RCA result for cluster %s cited evidence_refs absent from the collected timeline: %s",
                 cluster.cluster_id, bad_refs,
             )
-            return _unresolved_result(
-                cluster,
-                reason=f"Model cited evidence that doesn't exist in the collected timeline: {bad_refs[:3]}",
-            )
+            # Found 2026-10-18 from a real user complaint: showing the raw
+            # fabricated ref (e.g. "vendor_doc") under a "what the RCA
+            # agent said it would need for more confidence" heading is
+            # both wrong (nothing is missing - the model's answer was
+            # discarded) and meaningless to a non-technical reader. See
+            # format_unverifiable_reason's own comment in models/rca.py.
+            return _unresolved_result(cluster, reason=format_unverifiable_reason(
+                "The analysis assistant proposed an explanation but cited evidence that doesn't "
+                "actually exist in what was collected for this machine, so the result was discarded "
+                "rather than shown as a confirmed finding.",
+                f"Fabricated evidence_refs: {bad_refs}",
+            ))
 
         return result
 

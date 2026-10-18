@@ -157,8 +157,8 @@
   {% if rca_missing_evidence %}
   <div class="bg-white rounded-2xl shadow-sm border border-gray-100 p-6 mb-4">
     <h6 class="text-[10px] font-semibold uppercase tracking-wide text-amber-600 mb-2 flex items-center gap-1.5">
-      <i data-lucide="alert-triangle" class="w-3.5 h-3.5"></i> Missing evidence
-      <span class="normal-case font-normal text-gray-400">&middot; what the RCA agent said it would need for more confidence</span>
+      <i data-lucide="alert-triangle" class="w-3.5 h-3.5"></i> Analysis notes
+      <span class="normal-case font-normal text-gray-400">&middot; evidence gaps and anything that limited this diagnosis</span>
     </h6>
     <div class="space-y-2">
       {% for gap in rca_missing_evidence %}{{ eg.evidence_gap_card(gap) }}{% endfor %}

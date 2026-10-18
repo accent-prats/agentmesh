@@ -89,6 +89,48 @@ class RemediationPlaybook(BaseModel):
     automation_params: dict[str, str] = Field(default_factory=dict)
 
 
+# `missing_evidence` entries come from two genuinely different places that
+# both end up as plain strings in the same list: the model's own "here's
+# what I'd need for more confidence" statements, and the pipeline's own
+# rejection of an untrustworthy model output (failed schema validation, no
+# tool call, or - found 2026-10-18 from a real user complaint - a
+# hallucinated evidence_ref like "vendor_doc" that doesn't exist in the
+# collected timeline). Showing the latter under a "what the RCA agent said
+# it would need for more confidence" heading (reporting/templates/
+# machine.html.j2, fleet_report.html.j2) is actively wrong - nothing is
+# missing, the model's answer was discarded - and the raw text (a Pydantic
+# ValidationError, a list of fabricated ref strings) means nothing to a
+# non-technical reader either way. This prefix lets
+# pipeline/rca_agent.py mark an entry as "rejected", carrying a clean
+# user-facing summary plus the raw technical detail (shown behind an
+# expand toggle rather than as the headline text) - reporting/
+# evidence_gaps.py renders it as a visually distinct "Unverified analysis"
+# card instead of a generic "Missing evidence" one. Lives here, not in
+# pipeline/rca_agent.py or reporting/evidence_gaps.py, so both can import
+# it without either depending on the other.
+UNVERIFIABLE_PREFIX = "unverifiable:"
+_UNVERIFIABLE_SEP = "\x1f"
+
+
+def format_unverifiable_reason(summary: str, detail: str) -> str:
+    """Builds a `missing_evidence` entry marking the model's own output as
+    rejected (not a genuine "I need more evidence" statement) - `summary`
+    is the clean, user-facing explanation; `detail` is the raw technical
+    reason (an exception message, a list of fabricated refs), kept for an
+    engineer to expand rather than shown as the headline."""
+    return f"{UNVERIFIABLE_PREFIX}{summary}{_UNVERIFIABLE_SEP}{detail}"
+
+
+def split_unverifiable_reason(reason: str) -> tuple[str, str] | None:
+    """The inverse of format_unverifiable_reason() - None if `reason` isn't
+    in that format (a genuine model-authored missing-evidence statement)."""
+    if not reason.startswith(UNVERIFIABLE_PREFIX):
+        return None
+    body = reason[len(UNVERIFIABLE_PREFIX):]
+    summary, _, detail = body.partition(_UNVERIFIABLE_SEP)
+    return summary, detail
+
+
 class RCAResult(BaseModel):
     """The full diagnosis for one Cluster."""
 

@@ -230,7 +230,7 @@
       {% set gaps = missing_evidence_by_cluster.get(entry.cluster.cluster_id, []) %}
       {% if gaps %}
       <h6 class="text-[10px] font-semibold uppercase tracking-wide text-gray-400 mb-2">
-        Missing evidence <span class="normal-case font-normal text-gray-400">&middot; {{ gaps|length }} source{{ 's' if gaps|length != 1 else '' }} couldn't be collected</span>
+        Analysis notes <span class="normal-case font-normal text-gray-400">&middot; evidence gaps and anything that limited this diagnosis</span>
       </h6>
       <div class="space-y-2 mb-4">
         {% for gap in gaps %}{{ eg.evidence_gap_card(gap) }}{% endfor %}
