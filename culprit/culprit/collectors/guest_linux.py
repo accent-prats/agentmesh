@@ -18,7 +18,7 @@ import threading
 import time
 from datetime import datetime, timezone
 
-from culprit.collectors.base import CollectionRequest, CollectionResult, Collector
+from culprit.collectors.base import CollectionRequest, CollectionResult, Collector, GuestLogSource
 from culprit.collectors.patch_extension_status import (
     MAX_ANOMALY_EVENTS_PER_SECTION,
     has_extension_log_anomaly,
@@ -206,10 +206,14 @@ class GuestLinuxCollector(Collector):
                 return CollectionResult(events=[], error=f"Run Command failed: {exc}")
         log.info("guest_linux: Run Command on %s completed after %.1fs", request.machine.vm_name, time.monotonic() - started)
 
-        events, patch_extension_status, checks_performed = parse_linux_output(
+        events, patch_extension_status, checks_performed, checks_unavailable, checks_finding_counts = parse_linux_output(
             stdout, vm_id=request.machine.vm_id, window_start=request.window_start, window_end=request.window_end,
         )
-        return CollectionResult(events=events, patch_extension_status=patch_extension_status, checks_performed=checks_performed)
+        return CollectionResult(
+            events=events, patch_extension_status=patch_extension_status,
+            checks_performed=checks_performed, checks_unavailable=checks_unavailable,
+            checks_finding_counts=checks_finding_counts,
+        )
 
 
 _SECTION_RE = re.compile(r"^---(\w+)---$")
@@ -577,29 +581,43 @@ def _log_if_found(parser_name: str, events: list[TimelineEvent], vm_id: str) -> 
 # CollectionResult.checks_performed (collectors/base.py) for the full
 # rationale (a real RCA cited a vague "evidence gap" about
 # subscription-manager even though SUBMAN runs unconditionally every scan).
-# Keyed by the exact ---SECTION--- marker _split_sections() slices stdout on,
-# so "did this section's marker actually get printed this run" (genuinely
-# attempted, regardless of what it found) is the single source of truth -
-# not a second, independently-maintained list that could drift out of sync
-# with ALLOWED_LINUX_SCRIPT. EXT_VERSION/KERNELS/EXT_STATUS are deliberately
-# left out: they're context strings or already surfaced via
-# patch_extension_status's own structured findings, not a "check" a user
-# would plausibly wonder "was this looked at?" about.
-_SECTION_CHECK_LABELS: dict[str, str] = {
-    "DPKG_LOG": "dpkg package manager log",
-    "APT_HISTORY": "apt install/upgrade history",
-    "YUM_LOG": "yum package manager log",
-    "DNF_LOG": "dnf package manager log",
-    "DISK_USAGE": "disk usage",
-    "LOCK_HOLDER": "dpkg lock holder",
-    "REPO_CHECK": "package repository reachability (archive.ubuntu.com)",
-    "REPO_DIAGNOSTICS": "configured package repository DNS/HTTP reachability",
-    "SUBMAN": "subscription-manager (entitlement) status",
-    "WAAGENT_LOG": "Azure Linux Agent log",
-    "EXT_CORE_LOG": "patch extension core log",
-    "EXT_WRAPPER_LOG": "patch extension wrapper log",
-    "JOURNAL_REBOOT": "system journal / reboot and kernel error history",
-}
+# Extended 2026-10-19 (user follow-up: "show all logs used AND not used,
+# for each VM") into the single source of truth reporting/log_usage_view.py
+# reconciles against: each entry's `section` is the exact ---SECTION---
+# marker _split_sections() slices stdout on, and `raw_ref_prefix` is the
+# exact prefix every TimelineEvent this section's own parser produces uses
+# - both already existed as separate, duplicated pieces of knowledge
+# (ALLOWED_LINUX_SCRIPT's markers and each parse_*'s own raw_ref= string);
+# bundling them here means the reporting layer can determine "used this
+# run" by checking the timeline for this prefix, without a second,
+# independently-maintained list that could drift out of sync with either.
+# EXT_VERSION/KERNELS/EXT_STATUS are deliberately left out: they're context
+# strings or already surfaced via patch_extension_status's own structured
+# findings, not a "check" a user would plausibly wonder "was this looked
+# at?" about.
+GUEST_LOG_SOURCES: tuple[GuestLogSource, ...] = (
+    GuestLogSource("DPKG_LOG", "dpkg package manager log", "guest:dpkg.log:"),
+    GuestLogSource("APT_HISTORY", "apt install/upgrade history", "guest:apt/history.log:"),
+    GuestLogSource("YUM_LOG", "yum package manager log", "guest:yum.log:"),
+    GuestLogSource("DNF_LOG", "dnf package manager log", "guest:dnf.log:"),
+    GuestLogSource("DISK_USAGE", "disk usage", "guest:df:"),
+    GuestLogSource("LOCK_HOLDER", "dpkg lock holder", "guest:fuser:"),
+    GuestLogSource("REPO_CHECK", "package repository reachability (archive.ubuntu.com)", "guest:repo_check:"),
+    GuestLogSource("REPO_DIAGNOSTICS", "configured package repository DNS/HTTP reachability", "guest:repo_diagnostics:"),
+    GuestLogSource("SUBMAN", "subscription-manager (entitlement) status", "guest:subman:"),
+    GuestLogSource("WAAGENT_LOG", "Azure Linux Agent log", "guest:waagent.log:"),
+    GuestLogSource("EXT_CORE_LOG", "patch extension core log", "guest:core.log:"),
+    GuestLogSource("EXT_WRAPPER_LOG", "patch extension wrapper log", "guest:ext_wrapper.log:"),
+    GuestLogSource("JOURNAL_REBOOT", "system journal / reboot and kernel error history", "guest:journal:"),
+)
+
+
+def _checks_performed(sections: dict[str, str]) -> list[str]:
+    return [
+        src.label for src in GUEST_LOG_SOURCES
+        if src.section in sections and not _COMMAND_UNAVAILABLE_RE.search(sections[src.section])
+    ]
+
 
 # Found by review 2026-10-19 - a real, demonstrated gap in the fix above:
 # marker presence alone isn't "genuinely attempted." LOCK_HOLDER (`fuser ...
@@ -617,43 +635,79 @@ _SECTION_CHECK_LABELS: dict[str, str] = {
 # as "checked, nothing found" - a softer, already-accepted ambiguity, not
 # a false *positive* claim) or explicitly branches with `&&`/`||` so a
 # failure reports as a real, correctly-labeled negative (REPO_DIAGNOSTICS).
-# See `_COMMAND_UNAVAILABLE_RE` (module-level, shared with parse_lock_holder).
-
-
-def _checks_performed(sections: dict[str, str]) -> list[str]:
+# Rather than silently dropping these (the original fix), they're now kept
+# as their own list so the "logs not used" view can honestly show them
+# as "not available" with a real reason, instead of making them vanish.
+def _checks_unavailable(sections: dict[str, str]) -> list[str]:
     return [
-        label for key, label in _SECTION_CHECK_LABELS.items()
-        if key in sections and not _COMMAND_UNAVAILABLE_RE.search(sections[key])
+        src.label for src in GUEST_LOG_SOURCES
+        if src.section in sections and _COMMAND_UNAVAILABLE_RE.search(sections[src.section])
     ]
+
+
+# Found by review 2026-10-19 (same day as the "logs used/not used" feature
+# itself): a label's "used" status must never be derived from the
+# PERSISTED timeline (db/repository.py::save_machine_outcomes caps it at
+# _MAX_PERSISTED_TIMELINE_EVENTS=50, keeping only the most recent events
+# across the WHOLE machine, not per section) - a VM stuck in a retry loop
+# producing >50 dpkg/journal/etc. events can silently evict an uncapped
+# section's own (e.g. SUBMAN's single "entitlement expired") finding from
+# that persisted slice, which would make the reconciliation wrongly report
+# "checked, no issues found" for a log that genuinely found something the
+# RCA may be citing elsewhere on the same page. `_track` records each
+# section's own event COUNT right here, before any cross-collector merge
+# or persistence truncation ever happens - this is the one place the true,
+# uncapped count is still known.
+def _track(counts: dict[str, int], section: str, events: list[TimelineEvent]) -> list[TimelineEvent]:
+    counts[section] = counts.get(section, 0) + len(events)
+    return events
 
 
 def parse_linux_output(
     stdout: str, vm_id: str, window_start: datetime | None = None, window_end: datetime | None = None,
-) -> tuple[list[TimelineEvent], list[dict], list[str]]:
+) -> tuple[list[TimelineEvent], list[dict], list[str], list[str], dict[str, int]]:
     sections = _split_sections(stdout)
+    section_counts: dict[str, int] = {}
     events: list[TimelineEvent] = []
-    events += parse_dpkg_log(sections.get("DPKG_LOG", ""), vm_id, window_start, window_end)
-    events += parse_apt_history(sections.get("APT_HISTORY", ""), vm_id)
-    events += _log_if_found("parse_yum_log", parse_yum_log(sections.get("YUM_LOG", ""), vm_id), vm_id)
-    events += _log_if_found("parse_dnf_log", parse_dnf_log(sections.get("DNF_LOG", ""), vm_id), vm_id)
-    events += parse_disk_usage(sections.get("DISK_USAGE", ""), vm_id)
-    events += parse_lock_holder(sections.get("LOCK_HOLDER", ""), vm_id)
-    events += parse_repo_check(sections.get("REPO_CHECK", ""), vm_id)
-    events += _log_if_found("parse_repo_diagnostics", parse_repo_diagnostics(sections.get("REPO_DIAGNOSTICS", ""), vm_id), vm_id)
-    events += parse_subscription_manager(sections.get("SUBMAN", ""), vm_id)
-    events += parse_waagent_log(sections.get("WAAGENT_LOG", ""), vm_id, window_start, window_end)
-    events += parse_extension_core_log(sections.get("EXT_CORE_LOG", ""), vm_id, window_start, window_end)
-    events += _log_if_found(
-        "parse_extension_wrapper_log",
-        parse_extension_wrapper_log(sections.get("EXT_WRAPPER_LOG", ""), vm_id, window_start, window_end),
-        vm_id,
+    events += _track(section_counts, "DPKG_LOG", parse_dpkg_log(sections.get("DPKG_LOG", ""), vm_id, window_start, window_end))
+    events += _track(section_counts, "APT_HISTORY", parse_apt_history(sections.get("APT_HISTORY", ""), vm_id))
+    events += _track(section_counts, "YUM_LOG", _log_if_found("parse_yum_log", parse_yum_log(sections.get("YUM_LOG", ""), vm_id), vm_id))
+    events += _track(section_counts, "DNF_LOG", _log_if_found("parse_dnf_log", parse_dnf_log(sections.get("DNF_LOG", ""), vm_id), vm_id))
+    events += _track(section_counts, "DISK_USAGE", parse_disk_usage(sections.get("DISK_USAGE", ""), vm_id))
+    events += _track(section_counts, "LOCK_HOLDER", parse_lock_holder(sections.get("LOCK_HOLDER", ""), vm_id))
+    events += _track(section_counts, "REPO_CHECK", parse_repo_check(sections.get("REPO_CHECK", ""), vm_id))
+    events += _track(
+        section_counts, "REPO_DIAGNOSTICS",
+        _log_if_found("parse_repo_diagnostics", parse_repo_diagnostics(sections.get("REPO_DIAGNOSTICS", ""), vm_id), vm_id),
     )
-    events += _log_if_found(
-        "parse_journal_reboot", parse_journal_reboot(sections.get("JOURNAL_REBOOT", ""), vm_id, window_start, window_end), vm_id
+    events += _track(section_counts, "SUBMAN", parse_subscription_manager(sections.get("SUBMAN", ""), vm_id))
+    events += _track(
+        section_counts, "WAAGENT_LOG", parse_waagent_log(sections.get("WAAGENT_LOG", ""), vm_id, window_start, window_end)
+    )
+    events += _track(
+        section_counts, "EXT_CORE_LOG",
+        parse_extension_core_log(sections.get("EXT_CORE_LOG", ""), vm_id, window_start, window_end),
+    )
+    events += _track(
+        section_counts, "EXT_WRAPPER_LOG",
+        _log_if_found(
+            "parse_extension_wrapper_log",
+            parse_extension_wrapper_log(sections.get("EXT_WRAPPER_LOG", ""), vm_id, window_start, window_end),
+            vm_id,
+        ),
+    )
+    events += _track(
+        section_counts, "JOURNAL_REBOOT",
+        _log_if_found(
+            "parse_journal_reboot", parse_journal_reboot(sections.get("JOURNAL_REBOOT", ""), vm_id, window_start, window_end), vm_id
+        ),
     )
     ext_events, ext_findings = parse_patch_extension_status(
         sections.get("EXT_STATUS", ""), vm_id, Source.GUEST_LINUX,
         extension_version=sections.get("EXT_VERSION", "").strip() or None,
     )
     events += ext_events
-    return events, ext_findings, _checks_performed(sections)
+    finding_counts = {
+        src.label: section_counts[src.section] for src in GUEST_LOG_SOURCES if section_counts.get(src.section)
+    }
+    return events, ext_findings, _checks_performed(sections), _checks_unavailable(sections), finding_counts

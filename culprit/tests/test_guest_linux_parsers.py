@@ -111,7 +111,7 @@ def test_full_output_sectioning_and_parsing():
         "---KERNELS---\nii  linux-image-5.15.0-91-generic\n5.15.0-91-generic\n\n"
         "---SUBMAN---\nOverall Status: Current\n"
     )
-    events, findings, checks_performed = parse_linux_output(stdout, vm_id="vm-1")
+    events, findings, checks_performed, _, _ = parse_linux_output(stdout, vm_id="vm-1")
     kinds = {e.kind for e in events}
     assert "package_manager_log" in kinds
     assert "disk_usage" in kinds
@@ -152,7 +152,7 @@ def test_ext_status_section_is_sliced_out_and_handed_to_the_shared_parser():
         "---EXT_VERSION---\n1.6.71\n\n"
         "---EXT_STATUS---\n" + status_json + "\n"
     )
-    events, findings, _ = parse_linux_output(stdout, vm_id="vm-1")
+    events, findings, _, _, _ = parse_linux_output(stdout, vm_id="vm-1")
     assert any(e.kind == "patch_extension_status" for e in events)
     assert len(findings) == 1
     assert findings[0]["source"] == "guest_linux"
@@ -353,7 +353,7 @@ def test_full_output_sectioning_includes_the_new_log_sections():
         "---EXT_VERSION---\n\n"
         "---EXT_STATUS---\nNo status file found\n"
     )
-    events, _, checks_performed = parse_linux_output(stdout, vm_id="vm-1")
+    events, _, checks_performed, _, _ = parse_linux_output(stdout, vm_id="vm-1")
     kinds = {e.kind for e in events}
     raw_refs = {e.raw_ref for e in events}
     assert "waagent_log" in kinds
@@ -405,7 +405,7 @@ def test_allowed_linux_script_runs_cleanly_through_a_real_shell(tmp_path):
     ):
         assert f"---{marker}---" in stdout.splitlines(), f"{marker} marker missing or merged onto another line"
 
-    events, _, _ = parse_linux_output(stdout, vm_id="vm-1")
+    events, _, _, _, _ = parse_linux_output(stdout, vm_id="vm-1")
     assert not any(e.kind == "repo_check" for e in events), "a healthy repo check must not synthesize a finding"
 
 
@@ -475,7 +475,7 @@ def test_parse_linux_output_threads_the_window_into_its_parsers():
     """An integration-level check that parse_linux_output actually
     forwards window_start/window_end to the parsers that accept them."""
     stdout = "---DPKG_LOG---\n" + _DPKG_LOG_TIMESTAMPED_ONLY
-    events, _, _ = parse_linux_output(
+    events, _, _, _, _ = parse_linux_output(
         stdout, vm_id="vm-1",
         window_start=datetime(2020, 1, 1, tzinfo=timezone.utc),
         window_end=datetime(2020, 1, 1, 1, 0, tzinfo=timezone.utc),
@@ -489,7 +489,10 @@ def test_parse_linux_output_threads_the_window_into_its_parsers():
 # subscription-manager or fuser gets a literal "command not found" string
 # in that section - neither parser recognizes that as anything but "no
 # anomaly," so checks_performed was silently claiming "checked, healthy"
-# for a tool that was never actually available) ──────────────────────────
+# for a tool that was never actually available). checks_unavailable (added
+# the same day the "show all logs used/not used" UI feature was requested)
+# is the honest home for those excluded labels instead of silently
+# dropping them. ───────────────────────────────────────────────────────────
 
 def test_checks_performed_excludes_subman_when_the_binary_is_missing():
     """The exact real-world shape on any non-RHEL box (this script already
@@ -500,9 +503,10 @@ def test_checks_performed_excludes_subman_when_the_binary_is_missing():
         "---DPKG_LOG---\n\n"
         "---SUBMAN---\nbash: subscription-manager: command not found\n"
     )
-    events, _, checks_performed = parse_linux_output(stdout, vm_id="vm-1")
+    events, _, checks_performed, checks_unavailable, _ = parse_linux_output(stdout, vm_id="vm-1")
     assert not any(e.kind == "entitlement_state" for e in events)
     assert "subscription-manager (entitlement) status" not in checks_performed
+    assert "subscription-manager (entitlement) status" in checks_unavailable
 
 
 def test_checks_performed_excludes_lock_holder_when_fuser_is_missing():
@@ -510,9 +514,10 @@ def test_checks_performed_excludes_lock_holder_when_fuser_is_missing():
     installed on a minimal/container Linux image, and LOCK_HOLDER also
     merges stderr via `2>&1`."""
     stdout = "---LOCK_HOLDER---\nsh: 1: fuser: not found\n"
-    events, _, checks_performed = parse_linux_output(stdout, vm_id="vm-1")
+    events, _, checks_performed, checks_unavailable, _ = parse_linux_output(stdout, vm_id="vm-1")
     assert not any(e.kind == "lock_state" for e in events)
     assert "dpkg lock holder" not in checks_performed
+    assert "dpkg lock holder" in checks_unavailable
 
 
 def test_checks_performed_still_includes_subman_when_it_genuinely_ran():
@@ -520,5 +525,30 @@ def test_checks_performed_still_includes_subman_when_it_genuinely_ran():
     must still be reported as performed - the fix must only exclude actual
     command-not-found text, not legitimate output."""
     stdout = "---SUBMAN---\nOverall Status: Current\n"
-    _, _, checks_performed = parse_linux_output(stdout, vm_id="vm-1")
+    _, _, checks_performed, checks_unavailable, _ = parse_linux_output(stdout, vm_id="vm-1")
     assert "subscription-manager (entitlement) status" in checks_performed
+
+
+# ── checks_finding_counts must reflect the TRUE, uncapped per-section
+# count (found by review 2026-10-19: the reporting layer must never
+# re-derive "used" from the persisted timeline, which is capped to the
+# machine's most recent events overall and could silently evict a
+# section's own finding) ───────────────────────────────────────────────
+
+def test_checks_finding_counts_reflects_the_true_uncapped_count():
+    stdout = (
+        "---DPKG_LOG---\n" + _DPKG_LOG + "\n"
+        "---SUBMAN---\nOverall Status: Invalid\n"
+    )
+    _, _, _, _, finding_counts = parse_linux_output(stdout, vm_id="vm-1")
+    # _DPKG_LOG carries two distinct anomalies (the space failure and the
+    # half-installed status line) - the count must be the real, uncapped
+    # total, not just "at least one."
+    assert finding_counts.get("dpkg package manager log") == 2
+    assert finding_counts.get("subscription-manager (entitlement) status") == 1
+
+
+def test_checks_finding_counts_omits_a_label_with_zero_events():
+    stdout = "---SUBMAN---\nOverall Status: Current\n"
+    _, _, _, _, finding_counts = parse_linux_output(stdout, vm_id="vm-1")
+    assert "subscription-manager (entitlement) status" not in finding_counts

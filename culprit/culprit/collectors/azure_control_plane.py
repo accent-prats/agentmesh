@@ -22,7 +22,7 @@ from datetime import datetime, timezone
 
 from pydantic import ValidationError
 
-from culprit.collectors.base import CollectionRequest, CollectionResult, Collector
+from culprit.collectors.base import CollectionRequest, CollectionResult, Collector, non_guest_finding_counts
 from culprit.models.evidence import AzureApiErrorDetail, PatchOutcome, Source, TimelineEvent
 from culprit.observability import safe_exc_summary
 
@@ -341,7 +341,10 @@ class AzureControlPlaneCollector(Collector):
             )
             error = (error + "; " if error else "") + f"Activity Log query failed: {exc}"
 
-        return CollectionResult(events=events, outcome=outcome, error=error)
+        return CollectionResult(
+            events=events, outcome=outcome, error=error,
+            checks_finding_counts=non_guest_finding_counts(Source.AZURE_CONTROL_PLANE, events),
+        )
 
     def _activity_log_events(self, request: CollectionRequest) -> list[TimelineEvent]:
         from culprit.security.kql import escape_kql_string

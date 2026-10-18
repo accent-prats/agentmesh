@@ -127,45 +127,46 @@
     {% endif %}
   </div>
 
-  {% if evidence_timeline %}
+  {% if evidence_timeline or log_usage %}
   <div class="bg-white rounded-2xl shadow-sm border border-gray-100 p-6 mb-4">
     <h6 class="text-[10px] font-semibold uppercase tracking-wide text-gray-400 mb-2 flex items-center gap-1.5">
       <i data-lucide="history" class="w-3.5 h-3.5 text-gray-400"></i> Evidence timeline
-      <span class="normal-case font-normal text-gray-400">&middot; {{ evidence_timeline|length }} event{{ 's' if evidence_timeline|length != 1 else '' }} the diagnosis above was reasoned from</span>
+      <span class="normal-case font-normal text-gray-400">&middot; every log reviewed this run, what it found, and what didn't contribute</span>
     </h6>
     <button type="button" class="eg-detail-toggle text-[11px] text-brand hover:text-brand-dark inline-flex items-center gap-1">
       <i data-lucide="chevron-right" class="eg-detail-chevron w-3 h-3 transition-transform"></i> Show full timeline
     </button>
-    <div class="eg-detail-panel hidden mt-2">
-      <ol class="space-y-1.5 max-h-96 overflow-y-auto pr-1">
-        {% for event in evidence_timeline %}
-        <li class="flex items-start gap-2 pl-2 border-l-2 border-gray-200 text-xs">
-          <i data-lucide="{{ event.icon }}" class="w-3.5 h-3.5 text-gray-400 shrink-0 mt-0.5"></i>
-          <div class="min-w-0">
-            <span class="text-gray-400 font-mono text-[10.5px]">{{ event.ts | localtime }}</span>
-            <span class="text-gray-400">&middot; {{ event.source_label }}</span>
-            <p class="text-gray-700">{{ event.summary }}</p>
-            <span class="block text-[10.5px] text-gray-400">{{ event.raw_ref }}</span>
-          </div>
-        </li>
-        {% endfor %}
-      </ol>
-    </div>
-  </div>
-  {% endif %}
-
-  {% if checks_performed %}
-  <div class="bg-white rounded-2xl shadow-sm border border-gray-100 p-6 mb-4">
-    <h6 class="text-[10px] font-semibold uppercase tracking-wide text-gray-400 mb-2 flex items-center gap-1.5">
-      <i data-lucide="check-circle-2" class="w-3.5 h-3.5 text-gray-400"></i> Checks performed, no issues found
-      <span class="normal-case font-normal text-gray-400">&middot; {{ checks_performed|length }} check{{ 's' if checks_performed|length != 1 else '' }} this run genuinely attempted - cross-check against any gap below</span>
-    </h6>
-    <div class="flex flex-wrap gap-1.5">
-      {% for check in checks_performed %}
-      <span class="inline-flex items-center gap-1 text-[11px] text-gray-600 bg-gray-50 border border-gray-200 rounded-full px-2 py-0.5">
-        <i data-lucide="check" class="w-3 h-3 text-emerald-500"></i> {{ check }}
-      </span>
-      {% endfor %}
+    <div class="eg-detail-panel hidden mt-3 space-y-4">
+      {% if log_usage %}
+      <div>
+        <h6 class="text-[10px] font-semibold uppercase tracking-wide text-gray-400 mb-1">
+          Logs reviewed this run
+          <span class="normal-case font-normal text-gray-400">&middot; {{ log_usage|length }} log/source, used or not, each with why</span>
+        </h6>
+        <ul>{% for entry in log_usage %}{{ eg.log_usage_row(entry) }}{% endfor %}</ul>
+      </div>
+      {% endif %}
+      {% if evidence_timeline %}
+      <div>
+        <h6 class="text-[10px] font-semibold uppercase tracking-wide text-gray-400 mb-1">
+          Full event-by-event timeline
+          <span class="normal-case font-normal text-gray-400">&middot; {{ evidence_timeline|length }} event{{ 's' if evidence_timeline|length != 1 else '' }} the diagnosis above was reasoned from</span>
+        </h6>
+        <ol class="space-y-1.5 max-h-96 overflow-y-auto pr-1">
+          {% for event in evidence_timeline %}
+          <li class="flex items-start gap-2 pl-2 border-l-2 border-gray-200 text-xs">
+            <i data-lucide="{{ event.icon }}" class="w-3.5 h-3.5 text-gray-400 shrink-0 mt-0.5"></i>
+            <div class="min-w-0">
+              <span class="text-gray-400 font-mono text-[10.5px]">{{ event.ts | localtime }}</span>
+              <span class="text-gray-400">&middot; {{ event.source_label }}</span>
+              <p class="text-gray-700">{{ event.summary }}</p>
+              <span class="block text-[10.5px] text-gray-400">{{ event.raw_ref }}</span>
+            </div>
+          </li>
+          {% endfor %}
+        </ol>
+      </div>
+      {% endif %}
     </div>
   </div>
   {% endif %}

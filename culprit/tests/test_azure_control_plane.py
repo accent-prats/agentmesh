@@ -317,6 +317,15 @@ def test_a_successful_assessment_result_produces_a_patch_assessment_event():
     assert "Succeeded" in assessment_events[0].summary
     assert "3 patch(es) pending" in assessment_events[0].summary
     assert assessment_events[0].detail["available_patch_counts"] == {"security": 2, "other": 1}
+    # Found by review 2026-10-19: even though this collector's own events
+    # are already capped at the source (Activity Log, patch-error events),
+    # the shared machine-wide persisted-timeline cap could still evict one
+    # of its events - checks_finding_counts records the TRUE count here,
+    # at collection time, for the same "logs used/not used" reconciliation
+    # guest collectors already use it for.
+    assert result.checks_finding_counts == {
+        "Azure Resource Graph (patch install/assessment results, Activity Log)": len(result.events)
+    }
 
 
 def test_a_failed_assessment_result_query_is_traced_but_still_returns_a_collection_gap(caplog):

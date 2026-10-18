@@ -14,7 +14,7 @@ from __future__ import annotations
 
 from datetime import datetime, timedelta, timezone
 
-from culprit.collectors.base import CollectionRequest, CollectionResult, Collector
+from culprit.collectors.base import CollectionRequest, CollectionResult, Collector, non_guest_finding_counts
 from culprit.models.evidence import Source, TimelineEvent
 
 try:  # pragma: no cover
@@ -131,7 +131,7 @@ class DatadogCollector(Collector):
         except Exception as exc:  # noqa: BLE001
             error = (error + "; " if error else "") + f"Datadog logs query failed: {exc}"
 
-        return CollectionResult(events=events, error=error)
+        return CollectionResult(events=events, error=error, checks_finding_counts=non_guest_finding_counts(Source.DATADOG_METRIC, events))
 
 
 def _events_from_metric_series(response, label: str, request: CollectionRequest) -> list[TimelineEvent]:

@@ -127,3 +127,22 @@ def test_a_successful_query_is_traced_too(caplog):
 
     messages = [r.message for r in caplog.records]
     assert any("azure_monitor: heartbeat query for vm-1 returned" in m for m in messages)
+
+
+def test_checks_finding_counts_reflects_the_true_event_count():
+    """Found by review 2026-10-19: this collector's own Syslog/Event query
+    is entirely uncapped at the source, so it's just as exposed as the
+    guest collectors were to having a finding silently evicted from the
+    persisted (capped) timeline - checks_finding_counts records the TRUE,
+    uncapped total right here, at collection time."""
+    collector = _collector(heartbeat_response=_FakeResponse(status=LogsQueryStatus.SUCCESS, tables=[_FakeTable(rows=[])]))
+    result = collector.collect(_request())
+
+    assert result.checks_finding_counts == {"Azure Monitor (Log Analytics heartbeat & events)": 1}
+
+
+def test_checks_finding_counts_is_empty_when_nothing_was_found():
+    collector = _collector()  # healthy heartbeat, empty event tables
+    result = collector.collect(_request())
+
+    assert result.checks_finding_counts == {}

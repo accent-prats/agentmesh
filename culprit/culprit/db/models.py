@@ -171,6 +171,32 @@ class MachineOutcomeRecord(Base):
     # Added 2026-10-19, same already-deployed-DB treatment via db/engine.py
     # ::_ensure_columns as patch_extension_status_json/timeline_json above.
     checks_performed_json: Mapped[list] = mapped_column(JSON, default=list)
+    # The counterpart to checks_performed_json - checks whose section
+    # marker printed but whose command wasn't actually available on this
+    # VM (models/evidence.py::EvidenceBundle.checks_unavailable). Added the
+    # same day as the "show all logs used/not used, for each VM" UI
+    # feature request, same already-deployed-DB treatment.
+    checks_unavailable_json: Mapped[list] = mapped_column(JSON, default=list)
+    # Plain Source.value strings for every evidence source this run's
+    # collection fan-out actually dispatched a collector for (models/
+    # evidence.py::EvidenceBundle.sources_attempted) - added for the same
+    # "logs used/not used" feature. Needed specifically to tell "Datadog
+    # was attempted and found nothing" apart from "Datadog isn't configured
+    # for this environment at all" - collection_gaps alone can't: neither
+    # case ever adds a gap entry (a gap is only written for a collector
+    # that WAS dispatched and then failed), so without this, both looked
+    # identical to a human reading this machine's page.
+    sources_attempted_json: Mapped[list] = mapped_column(JSON, default=list)
+    # Each guest check's TRUE, uncapped event count from this run, keyed by
+    # the same label as checks_performed_json (models/evidence.py::
+    # EvidenceBundle.checks_finding_counts) - added by review 2026-10-19,
+    # same day as the other two columns above, specifically because
+    # timeline_json is capped (_MAX_PERSISTED_TIMELINE_EVENTS below) to the
+    # machine's most recent events overall, not per section: without this,
+    # a section's own finding evicted by that cap read back as "checked,
+    # no issues found" instead of "used" - the reconciliation now checks
+    # this uncapped count first, never the capped persisted timeline.
+    checks_finding_counts_json: Mapped[dict] = mapped_column(JSON, default=dict)
 
     run: Mapped[RunRecord] = relationship(back_populates="machine_outcomes")
 

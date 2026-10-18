@@ -4,7 +4,9 @@ place that knows how domain models (Cluster, RCAResult, Verdict) map to
 rows."""
 from __future__ import annotations
 
+from dataclasses import dataclass
 from datetime import datetime, timezone
+from typing import Any
 
 from sqlalchemy import delete, func, select
 from sqlalchemy.orm import Session
@@ -172,6 +174,9 @@ def save_machine_outcomes(session: Session, run_id: str, cluster_key: str, bundl
             e.model_dump(mode="json") for e in bundle.timeline_sorted()[-_MAX_PERSISTED_TIMELINE_EVENTS:]
         ]
         record.checks_performed_json = bundle.checks_performed
+        record.checks_unavailable_json = bundle.checks_unavailable
+        record.sources_attempted_json = [s.value for s in bundle.sources_attempted]
+        record.checks_finding_counts_json = bundle.checks_finding_counts
     session.commit()
 
 
@@ -555,7 +560,52 @@ def build_dashboard_summary(session: Session):
     )
 
 
-def get_machine_detail(session: Session, run_id: str, vm_name: str):
+@dataclass
+class MachineDetail:
+    """get_machine_detail()'s return shape - a dataclass rather than a bare
+    tuple since 2026-10-19, specifically because that tuple's arity had
+    already silently grown twice (6->7->8 fields across three separate
+    rounds this app has been through) and each growth broke every existing
+    positional-unpacking call site in a way a reviewer had to catch by
+    hand. A new field is now a new named attribute, not a new blind
+    position every caller has to count out - see the fields' own
+    docstrings below (mirroring each one's original tuple-position
+    comment) for what each one means and when it's empty vs. populated."""
+
+    cluster: Any
+    member: Any
+    result: Any
+    # None for runs diagnosed before MachineOutcomeRecord existed - not an error.
+    outcome: Any
+    collection_gaps: list[str]
+    patch_extension_status: list[dict]
+    # The capped, chronological slice of raw TimelineEvent dicts
+    # save_machine_outcomes persisted (see _MAX_PERSISTED_TIMELINE_EVENTS) -
+    # left as raw dicts, not reconstructed into TimelineEvent objects,
+    # matching collection_gaps/patch_extension_status's own untyped-dict
+    # convention; reporting/evidence_timeline_view.py interprets their shape.
+    timeline: list[dict]
+    # Plain human-readable check names from EvidenceBundle.checks_performed
+    # (added 2026-10-19) - see its own docstring.
+    checks_performed: list[str]
+    # The counterpart to checks_performed - checks whose command wasn't
+    # available on this VM (EvidenceBundle.checks_unavailable).
+    checks_unavailable: list[str]
+    # Plain Source.value strings for every source this run's collection
+    # fan-out actually dispatched a collector for (EvidenceBundle.
+    # sources_attempted) - lets the reporting layer tell "attempted,
+    # nothing found" apart from "never configured" for optional sources
+    # like Datadog/Azure Monitor.
+    sources_attempted: list[str]
+    # Each guest check's TRUE, uncapped event count from this run, keyed by
+    # the same label as checks_performed (EvidenceBundle.
+    # checks_finding_counts) - added by review 2026-10-19 specifically
+    # because `timeline` above is capped and could otherwise make a
+    # genuine finding silently read as "no issues found."
+    checks_finding_counts: dict[str, int]
+
+
+def get_machine_detail(session: Session, run_id: str, vm_name: str) -> MachineDetail | None:
     """One machine's own record within a run - its cluster, its deviation
     from that cluster's representative member (proposal Section 8: the
     third, "Machine" altitude, "for the awkward machine that didn't fit
@@ -563,17 +613,8 @@ def get_machine_detail(session: Session, run_id: str, vm_name: str):
     `PatchOutcome`/collection gaps/patch extension status if this run saved
     one (see MachineOutcomeRecord - runs diagnosed before that table
     existed won't have one; `outcome` is None in that case, not an error).
-    Returns an 8-tuple (cluster, member, result, outcome, collection_gaps,
-    patch_extension_status, timeline, checks_performed), or None if the
-    run, or a member with this vm_name inside it, doesn't exist. `timeline`
-    is the capped, chronological slice of raw TimelineEvent dicts
-    save_machine_outcomes persisted (see MAX_PERSISTED_TIMELINE_EVENTS
-    there) - left as raw dicts, not reconstructed into TimelineEvent
-    objects, matching collection_gaps/patch_extension_status's own
-    untyped-dict convention; reporting/evidence_timeline_view.py is the one
-    place that interprets their shape for display. `checks_performed`
-    (added 2026-10-19) is the plain list of human-readable check names from
-    EvidenceBundle.checks_performed - see its own docstring.
+    Returns a `MachineDetail`, or None if the run, or a member with this
+    vm_name inside it, doesn't exist.
 
     Keyed by vm_name rather than vm_id (a full Azure resource ID, which
     contains slashes and can't be a clean URL path segment) - the same
@@ -601,7 +642,14 @@ def get_machine_detail(session: Session, run_id: str, vm_name: str):
         result = RCAResult.model_validate(cr.rca_result.result_json) if cr.rca_result else None
 
         outcome_record = session.get(MachineOutcomeRecord, (run_id, member["vm_id"]))
-        outcome, collection_gaps, patch_extension_status, timeline, checks_performed = None, [], [], [], []
+        outcome = None
+        collection_gaps: list[str] = []
+        patch_extension_status: list[dict] = []
+        timeline: list[dict] = []
+        checks_performed: list[str] = []
+        checks_unavailable: list[str] = []
+        sources_attempted: list[str] = []
+        checks_finding_counts: dict[str, int] = {}
         if outcome_record is not None:
             outcome = PatchOutcome(
                 status=outcome_record.status,
@@ -626,8 +674,16 @@ def get_machine_detail(session: Session, run_id: str, vm_name: str):
             patch_extension_status = outcome_record.patch_extension_status_json or []
             timeline = outcome_record.timeline_json or []
             checks_performed = outcome_record.checks_performed_json or []
+            checks_unavailable = outcome_record.checks_unavailable_json or []
+            sources_attempted = outcome_record.sources_attempted_json or []
+            checks_finding_counts = outcome_record.checks_finding_counts_json or {}
 
-        return cluster, ClusterMember(**member), result, outcome, collection_gaps, patch_extension_status, timeline, checks_performed
+        return MachineDetail(
+            cluster=cluster, member=ClusterMember(**member), result=result, outcome=outcome,
+            collection_gaps=collection_gaps, patch_extension_status=patch_extension_status,
+            timeline=timeline, checks_performed=checks_performed, checks_unavailable=checks_unavailable,
+            sources_attempted=sources_attempted, checks_finding_counts=checks_finding_counts,
+        )
 
     return None
 

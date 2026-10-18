@@ -13,7 +13,7 @@ import threading
 import time
 from datetime import datetime, timezone
 
-from culprit.collectors.base import CollectionRequest, CollectionResult, Collector
+from culprit.collectors.base import CollectionRequest, CollectionResult, Collector, GuestLogSource
 from culprit.collectors.patch_extension_status import (
     MAX_ANOMALY_EVENTS_PER_SECTION,
     has_extension_log_anomaly,
@@ -232,10 +232,14 @@ class GuestWindowsCollector(Collector):
                 return CollectionResult(events=[], error=f"Run Command failed: {exc}")
         log.info("guest_windows: Run Command on %s completed after %.1fs", request.machine.vm_name, time.monotonic() - started)
 
-        events, patch_extension_status, checks_performed = parse_windows_output(
+        events, patch_extension_status, checks_performed, checks_unavailable, checks_finding_counts = parse_windows_output(
             stdout, vm_id=request.machine.vm_id, window_start=request.window_start, window_end=request.window_end,
         )
-        return CollectionResult(events=events, patch_extension_status=patch_extension_status, checks_performed=checks_performed)
+        return CollectionResult(
+            events=events, patch_extension_status=patch_extension_status,
+            checks_performed=checks_performed, checks_unavailable=checks_unavailable,
+            checks_finding_counts=checks_finding_counts,
+        )
 
 
 _SECTION_RE = re.compile(r"^---(\w+)---$")
@@ -585,56 +589,99 @@ def _log_if_found(parser_name: str, events: list[TimelineEvent], vm_id: str) -> 
     return events
 
 
-# See guest_linux.py's identical constant/helper for the full rationale.
-# EXT_VERSION/EXT_STATUS are left out for the same reason as the Linux side.
-_SECTION_CHECK_LABELS: dict[str, str] = {
-    "WU_LOG": "Windows Update log",
-    "CBS_LOG": "CBS (servicing) log",
-    "PENDING_REBOOT": "pending reboot registry key",
-    "WUAUSERV": "Windows Update service (wuauserv) state",
-    "WU_HISTORY": "Windows Update install history",
-    "DISK_USAGE": "disk usage",
-    "WSUS_CONNECTIVITY": "WSUS/Windows Update connectivity",
-    "VMAGENT_STATUS": "Azure VM Agent aggregate status",
-    "SYSTEM_EVENTLOG": "Windows System Event Log",
-    "EXT_LOG": "patch extension log",
-    "COMMAND_EXECUTION_LOG": "patch extension command execution log",
-}
+# See guest_linux.py's identical GUEST_LOG_SOURCES for the full rationale
+# and what each field means - one shared source of truth for the section
+# label AND the raw_ref prefix the reporting layer's "logs used/not used"
+# reconciliation (reporting/log_usage_view.py) keys off of. EXT_VERSION/
+# EXT_STATUS are left out for the same reason as the Linux side.
+GUEST_LOG_SOURCES: tuple[GuestLogSource, ...] = (
+    GuestLogSource("WU_LOG", "Windows Update log", "guest:WindowsUpdate.log:"),
+    GuestLogSource("CBS_LOG", "CBS (servicing) log", "guest:CBS.log:"),
+    GuestLogSource("PENDING_REBOOT", "pending reboot registry key", "guest:reboot_pending:"),
+    GuestLogSource("WUAUSERV", "Windows Update service (wuauserv) state", "guest:wuauserv:"),
+    GuestLogSource("WU_HISTORY", "Windows Update install history", "guest:wu_history:"),
+    GuestLogSource("DISK_USAGE", "disk usage", "guest:psdrive:"),
+    GuestLogSource("WSUS_CONNECTIVITY", "WSUS/Windows Update connectivity", "guest:wsus_connectivity:"),
+    GuestLogSource("VMAGENT_STATUS", "Azure VM Agent aggregate status", "guest:vmagent_status:"),
+    GuestLogSource("SYSTEM_EVENTLOG", "Windows System Event Log", "guest:system_eventlog:"),
+    GuestLogSource("EXT_LOG", "patch extension log", "guest:WindowsPatchExtension.log:"),
+    GuestLogSource("COMMAND_EXECUTION_LOG", "patch extension command execution log", "guest:CommandExecution.log:"),
+)
 
 
 def _checks_performed(sections: dict[str, str]) -> list[str]:
-    return [label for key, label in _SECTION_CHECK_LABELS.items() if key in sections]
+    return [src.label for src in GUEST_LOG_SOURCES if src.section in sections]
+
+
+# Every PowerShell cmdlet in ALLOWED_WINDOWS_SCRIPT already uses
+# -ErrorAction SilentlyContinue (unlike guest_linux.py's ad hoc `2>&1`
+# merges) - confirmed by review 2026-10-19 specifically for this reason -
+# so no raw "cmdlet not found"-style text ever leaks into a section's own
+# content here. This always returns [] today; kept as its own function
+# (not just a bare `[]` at the call site) so a future Windows section that
+# DOES need this guard has an obvious, matching place to add it, and so
+# parse_windows_output's return shape stays structurally identical to
+# parse_linux_output's.
+def _checks_unavailable(sections: dict[str, str]) -> list[str]:
+    return []
+
+
+# See guest_linux.py's identical _track/finding_counts for why this exists:
+# a label's "used" status must come from the true, uncapped per-section
+# count recorded right here, never re-derived later from the persisted
+# timeline (capped at _MAX_PERSISTED_TIMELINE_EVENTS - db/repository.py::
+# save_machine_outcomes), which could silently evict a genuine finding.
+def _track(counts: dict[str, int], section: str, events: list[TimelineEvent]) -> list[TimelineEvent]:
+    counts[section] = counts.get(section, 0) + len(events)
+    return events
 
 
 def parse_windows_output(
     stdout: str, vm_id: str, window_start: datetime | None = None, window_end: datetime | None = None,
-) -> tuple[list[TimelineEvent], list[dict], list[str]]:
+) -> tuple[list[TimelineEvent], list[dict], list[str], list[str], dict[str, int]]:
     sections = _split_sections(stdout)
+    section_counts: dict[str, int] = {}
     events: list[TimelineEvent] = []
-    events += parse_wu_log(sections.get("WU_LOG", ""), vm_id, window_start, window_end)
-    events += parse_cbs_log(sections.get("CBS_LOG", ""), vm_id, window_start, window_end)
-    events += parse_pending_reboot(sections.get("PENDING_REBOOT", ""), vm_id)
-    events += parse_wuauserv_state(sections.get("WUAUSERV", ""), vm_id)
-    events += _log_if_found(
-        "parse_wu_history", parse_wu_history(sections.get("WU_HISTORY", ""), vm_id, window_start, window_end), vm_id
+    events += _track(section_counts, "WU_LOG", parse_wu_log(sections.get("WU_LOG", ""), vm_id, window_start, window_end))
+    events += _track(section_counts, "CBS_LOG", parse_cbs_log(sections.get("CBS_LOG", ""), vm_id, window_start, window_end))
+    events += _track(section_counts, "PENDING_REBOOT", parse_pending_reboot(sections.get("PENDING_REBOOT", ""), vm_id))
+    events += _track(section_counts, "WUAUSERV", parse_wuauserv_state(sections.get("WUAUSERV", ""), vm_id))
+    events += _track(
+        section_counts, "WU_HISTORY",
+        _log_if_found("parse_wu_history", parse_wu_history(sections.get("WU_HISTORY", ""), vm_id, window_start, window_end), vm_id),
     )
-    events += parse_disk_usage(sections.get("DISK_USAGE", ""), vm_id)
-    events += _log_if_found("parse_wsus_connectivity", parse_wsus_connectivity(sections.get("WSUS_CONNECTIVITY", ""), vm_id), vm_id)
-    events += _log_if_found(
-        "parse_vmagent_status", parse_vmagent_status(sections.get("VMAGENT_STATUS", ""), vm_id, window_start, window_end), vm_id
+    events += _track(section_counts, "DISK_USAGE", parse_disk_usage(sections.get("DISK_USAGE", ""), vm_id))
+    events += _track(
+        section_counts, "WSUS_CONNECTIVITY",
+        _log_if_found("parse_wsus_connectivity", parse_wsus_connectivity(sections.get("WSUS_CONNECTIVITY", ""), vm_id), vm_id),
     )
-    events += _log_if_found(
-        "parse_system_eventlog", parse_system_eventlog(sections.get("SYSTEM_EVENTLOG", ""), vm_id, window_start, window_end), vm_id
+    events += _track(
+        section_counts, "VMAGENT_STATUS",
+        _log_if_found(
+            "parse_vmagent_status", parse_vmagent_status(sections.get("VMAGENT_STATUS", ""), vm_id, window_start, window_end), vm_id
+        ),
     )
-    events += parse_extension_log(sections.get("EXT_LOG", ""), vm_id, window_start, window_end)
-    events += _log_if_found(
-        "parse_command_execution_log",
-        parse_command_execution_log(sections.get("COMMAND_EXECUTION_LOG", ""), vm_id, window_start, window_end),
-        vm_id,
+    events += _track(
+        section_counts, "SYSTEM_EVENTLOG",
+        _log_if_found(
+            "parse_system_eventlog", parse_system_eventlog(sections.get("SYSTEM_EVENTLOG", ""), vm_id, window_start, window_end), vm_id
+        ),
+    )
+    events += _track(section_counts, "EXT_LOG", parse_extension_log(sections.get("EXT_LOG", ""), vm_id, window_start, window_end))
+    events += _track(
+        section_counts, "COMMAND_EXECUTION_LOG",
+        _log_if_found(
+            "parse_command_execution_log",
+            parse_command_execution_log(sections.get("COMMAND_EXECUTION_LOG", ""), vm_id, window_start, window_end),
+            vm_id,
+        ),
     )
     ext_events, ext_findings = parse_patch_extension_status(
         sections.get("EXT_STATUS", ""), vm_id, Source.GUEST_WINDOWS,
         extension_version=sections.get("EXT_VERSION", "").strip() or None,
     )
     events += ext_events
-    return events, ext_findings, _checks_performed(sections)
+    finding_counts = {
+        src.label: section_counts[src.section] for src in GUEST_LOG_SOURCES if section_counts.get(src.section)
+    }
+    return events, ext_findings, _checks_performed(sections), _checks_unavailable(sections), finding_counts

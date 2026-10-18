@@ -60,8 +60,95 @@ def test_checks_performed_round_trips_through_save_and_load():
         detail = repository.get_machine_detail(session, "run-1", "vm-1")
 
     assert detail is not None
-    _, _, _, _, _, _, _, checks_performed = detail
+    checks_performed = detail.checks_performed
     assert checks_performed == checks
+
+
+def test_checks_unavailable_and_sources_attempted_round_trip_through_save_and_load():
+    """checks_unavailable (collectors/guest_linux.py's own tool-missing
+    exclusion) and sources_attempted (which Source the fan-out actually
+    dispatched a collector for) - both added the same day for the "show
+    all logs used/not used" feature, same round-trip proof as
+    checks_performed above."""
+    from culprit.db import repository
+    from culprit.models.cluster import Cluster, ClusterMember, Fingerprint
+    from culprit.models.evidence import EvidenceBundle, OSFamily, PatchOutcome, Source
+    from culprit.models.patch_run import PatchRun, TriggerMode
+
+    engine = make_engine("sqlite:///:memory:")
+    session_factory = make_session_factory(engine)
+
+    machine = _machine_identity()
+    bundle = EvidenceBundle(
+        run_id="run-1", machine=machine, outcome=PatchOutcome(status="Failed"),
+        collection_started_at=datetime.now(timezone.utc),
+        checks_unavailable=["subscription-manager (entitlement) status"],
+        sources_attempted=[Source.AZURE_CONTROL_PLANE, Source.GUEST_LINUX],
+    )
+    cluster = Cluster(
+        cluster_id="cluster-1", run_id="run-1", cluster_key="key-1",
+        fingerprint=Fingerprint(error_code_normalized="x", os_family=OSFamily.LINUX, failing_target=""),
+        members=[ClusterMember(vm_id=machine.vm_id, vm_name=machine.vm_name)],
+        representative_vm_id=machine.vm_id,
+    )
+
+    with session_factory() as session:
+        repository.save_run(session, PatchRun(
+            run_id="run-1", maintenance_configuration_id="cfg", subscription_id="s",
+            scope_name="test", started_at=datetime.now(timezone.utc), total_machines=1,
+            trigger_mode=TriggerMode.AD_HOC,
+        ))
+        repository.save_cluster(session, cluster)
+        repository.save_machine_outcomes(session, "run-1", "key-1", [bundle])
+
+    with session_factory() as session:
+        detail = repository.get_machine_detail(session, "run-1", "vm-1")
+
+    assert detail is not None
+    assert detail.checks_unavailable == ["subscription-manager (entitlement) status"]
+    assert detail.sources_attempted == ["azure_control_plane", "guest_linux"]
+
+
+def test_checks_finding_counts_round_trips_through_save_and_load():
+    """checks_finding_counts (added by review 2026-10-19) - each guest
+    check's TRUE, uncapped event count, needed because timeline_json is
+    capped and could otherwise make a genuine finding read back as "no
+    issues found." Same round-trip proof as the other fields above."""
+    from culprit.db import repository
+    from culprit.models.cluster import Cluster, ClusterMember, Fingerprint
+    from culprit.models.evidence import EvidenceBundle, OSFamily, PatchOutcome
+    from culprit.models.patch_run import PatchRun, TriggerMode
+
+    engine = make_engine("sqlite:///:memory:")
+    session_factory = make_session_factory(engine)
+
+    machine = _machine_identity()
+    bundle = EvidenceBundle(
+        run_id="run-1", machine=machine, outcome=PatchOutcome(status="Failed"),
+        collection_started_at=datetime.now(timezone.utc),
+        checks_finding_counts={"subscription-manager (entitlement) status": 1, "dpkg package manager log": 2},
+    )
+    cluster = Cluster(
+        cluster_id="cluster-1", run_id="run-1", cluster_key="key-1",
+        fingerprint=Fingerprint(error_code_normalized="x", os_family=OSFamily.LINUX, failing_target=""),
+        members=[ClusterMember(vm_id=machine.vm_id, vm_name=machine.vm_name)],
+        representative_vm_id=machine.vm_id,
+    )
+
+    with session_factory() as session:
+        repository.save_run(session, PatchRun(
+            run_id="run-1", maintenance_configuration_id="cfg", subscription_id="s",
+            scope_name="test", started_at=datetime.now(timezone.utc), total_machines=1,
+            trigger_mode=TriggerMode.AD_HOC,
+        ))
+        repository.save_cluster(session, cluster)
+        repository.save_machine_outcomes(session, "run-1", "key-1", [bundle])
+
+    with session_factory() as session:
+        detail = repository.get_machine_detail(session, "run-1", "vm-1")
+
+    assert detail is not None
+    assert detail.checks_finding_counts == {"subscription-manager (entitlement) status": 1, "dpkg package manager log": 2}
 
 
 def test_a_row_predating_the_column_reads_back_as_an_empty_list_not_none():
@@ -96,7 +183,8 @@ def test_a_row_predating_the_column_reads_back_as_an_empty_list_not_none():
         # simulate a row genuinely written before this column existed.
         session.add(MachineOutcomeRecord(
             run_id="run-1", vm_id=machine.vm_id, vm_name=machine.vm_name, cluster_key="key-1",
-            status="Failed", checks_performed_json=None,
+            status="Failed", checks_performed_json=None, checks_unavailable_json=None,
+            sources_attempted_json=None, checks_finding_counts_json=None,
         ))
         session.commit()
 
@@ -104,8 +192,10 @@ def test_a_row_predating_the_column_reads_back_as_an_empty_list_not_none():
         detail = repository.get_machine_detail(session, "run-1", "vm-1")
 
     assert detail is not None
-    _, _, _, _, _, _, _, checks_performed = detail
-    assert checks_performed == []
+    assert detail.checks_performed == []
+    assert detail.checks_unavailable == []
+    assert detail.sources_attempted == []
+    assert detail.checks_finding_counts == {}
 
 
 def test_an_existing_sqlite_database_without_the_new_column_gets_it_added():
@@ -163,6 +253,9 @@ def test_an_existing_sqlite_database_without_the_new_column_gets_it_added():
         columns = {row[1] for row in conn.execute("PRAGMA table_info(machine_outcomes)")}
         conn.close()
         assert "checks_performed_json" in columns
+        assert "checks_unavailable_json" in columns
+        assert "sources_attempted_json" in columns
+        assert "checks_finding_counts_json" in columns
 
         # And confirm a real save actually works against this file now.
         machine = _machine_identity()

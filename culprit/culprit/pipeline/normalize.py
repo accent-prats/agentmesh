@@ -32,6 +32,8 @@ def merge_bundle(
     succeeded: list[Source] = []
     patch_extension_status: list[dict] = []
     checks_performed: list[str] = []
+    checks_unavailable: list[str] = []
+    checks_finding_counts: dict[str, int] = {}
 
     for source_key, result in results.items():
         source = source_key if isinstance(source_key, Source) else _coerce_source(source_key)
@@ -43,6 +45,9 @@ def merge_bundle(
         events.extend(result.events)
         patch_extension_status.extend(result.patch_extension_status)
         checks_performed.extend(result.checks_performed)
+        checks_unavailable.extend(result.checks_unavailable)
+        for label, count in result.checks_finding_counts.items():
+            checks_finding_counts[label] = checks_finding_counts.get(label, 0) + count
         if result.outcome is not None:
             outcome = result.outcome
 
@@ -76,6 +81,8 @@ def merge_bundle(
         collection_gaps=gaps,
         patch_extension_status=patch_extension_status,
         checks_performed=checks_performed,
+        checks_unavailable=checks_unavailable,
+        checks_finding_counts=checks_finding_counts,
     )
 
 

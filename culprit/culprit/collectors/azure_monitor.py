@@ -12,7 +12,7 @@ import logging
 import time
 from datetime import timedelta
 
-from culprit.collectors.base import CollectionRequest, CollectionResult, Collector
+from culprit.collectors.base import CollectionRequest, CollectionResult, Collector, non_guest_finding_counts
 from culprit.models.evidence import OSFamily, Source, TimelineEvent
 from culprit.observability import safe_exc_summary
 
@@ -123,7 +123,7 @@ class AzureMonitorCollector(Collector):
             )
             error = (error + "; " if error else "") + f"Event/Syslog query failed: {exc}"
 
-        return CollectionResult(events=events, error=error)
+        return CollectionResult(events=events, error=error, checks_finding_counts=non_guest_finding_counts(Source.AZURE_MONITOR, events))
 
     def _heartbeat_events(self, request: CollectionRequest, computer: str) -> list[TimelineEvent]:
         from culprit.security.kql import escape_kql_string

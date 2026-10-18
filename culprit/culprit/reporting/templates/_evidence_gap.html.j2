@@ -40,6 +40,25 @@
 </div>
 {% endmacro %}
 
+{% macro log_usage_row(entry) %}
+<li class="flex items-start gap-2 py-1.5 border-b border-gray-50 last:border-0">
+  <i data-lucide="{{ entry.icon }}" class="w-3.5 h-3.5 shrink-0 mt-0.5
+    {%- if entry.badge_color == 'emerald' %} text-emerald-500
+    {%- elif entry.badge_color == 'amber' %} text-amber-500
+    {%- else %} text-gray-400{% endif %}"></i>
+  <div class="min-w-0 flex-1">
+    <div class="flex flex-wrap items-center gap-1.5">
+      <span class="text-xs text-gray-700 font-medium">{{ entry.label }}</span>
+      <span class="text-[9px] font-semibold uppercase tracking-wide px-1.5 py-0.5 rounded-full border
+        {%- if entry.badge_color == 'emerald' %} bg-emerald-50 text-emerald-700 border-emerald-200
+        {%- elif entry.badge_color == 'amber' %} bg-amber-50 text-amber-700 border-amber-200
+        {%- else %} bg-gray-50 text-gray-500 border-gray-200{% endif %}">{{ entry.status_label }}</span>
+    </div>
+    <p class="text-[11px] text-gray-400 mt-0.5">{{ entry.reason }}</p>
+  </div>
+</li>
+{% endmacro %}
+
 {% macro extension_finding_card(finding) %}
 <div class="rounded-lg border border-gray-200 overflow-hidden">
   <div class="flex items-center gap-2 px-3 py-2 bg-gray-50 border-b border-gray-100">

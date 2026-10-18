@@ -84,7 +84,7 @@ def test_evidence_timeline_round_trips_through_save_and_load():
         detail = repository.get_machine_detail(session, "run-1", "vm-1")
 
     assert detail is not None
-    _, _, _, _, _, _, timeline, _ = detail
+    timeline = detail.timeline
     assert len(timeline) == 2
     # persisted as plain JSON-safe dicts, not pydantic objects
     assert timeline[0]["kind"] == "patch_assessment"
@@ -126,7 +126,7 @@ def test_timeline_is_capped_keeping_the_most_recent_events():
     with session_factory() as session:
         detail = repository.get_machine_detail(session, "run-1", "vm-1")
 
-    _, _, _, _, _, _, timeline, _ = detail
+    timeline = detail.timeline
     assert len(timeline) == _MAX_PERSISTED_TIMELINE_EVENTS
     kept_refs = {e["raw_ref"] for e in timeline}
     # oldest events (lowest index) must be the ones dropped, most recent kept
@@ -161,7 +161,7 @@ def test_a_row_predating_the_column_reads_back_as_an_empty_list_not_none():
         detail = repository.get_machine_detail(session, "run-1", "vm-1")
 
     assert detail is not None
-    _, _, _, _, _, _, timeline, _ = detail
+    timeline = detail.timeline
     assert timeline == []
 
 

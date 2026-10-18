@@ -137,6 +137,26 @@ class EvidenceBundle(BaseModel):
         "this closes that gap. Populated only by collectors/guest_linux.py and "
         "collectors/guest_windows.py today.",
     )
+    checks_unavailable: list[str] = Field(
+        default_factory=list,
+        description="Human-readable names of checks whose section marker printed but whose "
+        "underlying command wasn't actually available on this VM (e.g. subscription-manager "
+        "on a non-RHEL box) - excluded from checks_performed (a 'command not found' string "
+        "must never be read as 'checked, healthy'), kept here instead so the UI can still "
+        "show them, honestly labeled as not available rather than silently vanishing. "
+        "Populated only by collectors/guest_linux.py and collectors/guest_windows.py today.",
+    )
+    checks_finding_counts: dict[str, int] = Field(
+        default_factory=dict,
+        description="Each guest check's TRUE, uncapped event count from this run, keyed by the "
+        "same human-readable label as checks_performed - recorded at collection time, before "
+        "any persistence truncation. Needed because the persisted timeline is capped "
+        "(db/repository.py::save_machine_outcomes, _MAX_PERSISTED_TIMELINE_EVENTS) to the "
+        "machine's most recent events overall, not per section - without this, a section's own "
+        "finding evicted by that cap could be wrongly read as 'no issues found'. Only labels "
+        "with at least one event appear here. Populated only by collectors/guest_linux.py and "
+        "collectors/guest_windows.py today.",
+    )
 
     def timeline_sorted(self) -> list[TimelineEvent]:
         return sorted(self.timeline, key=lambda e: e.ts)

@@ -77,6 +77,17 @@ def test_checks_performed_is_accumulated_across_collectors():
     assert bundle.checks_performed == ["disk usage", "subscription-manager (entitlement) status"]
 
 
+def test_checks_unavailable_is_accumulated_across_collectors():
+    """checks_unavailable (added 2026-10-19) - same accumulation treatment
+    as checks_performed/patch_extension_status above."""
+    results = {
+        Source.AZURE_CONTROL_PLANE: CollectionResult(events=[], outcome=PatchOutcome(status="Failed")),
+        Source.GUEST_LINUX: CollectionResult(events=[], checks_unavailable=["subscription-manager (entitlement) status"]),
+    }
+    bundle = merge_bundle("run-1", _machine(), results)
+    assert bundle.checks_unavailable == ["subscription-manager (entitlement) status"]
+
+
 def test_duplicate_events_are_deduped():
     now = datetime.now(timezone.utc)
     ev = _ev(now, "same-ref")
