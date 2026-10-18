@@ -31,6 +31,7 @@ _ADDED_COLUMNS: list[tuple[str, str, str]] = [
     ("machine_outcomes", "patch_extension_status_json", "JSON"),
     ("machine_outcomes", "error_details_json", "JSON"),
     ("machine_outcomes", "timeline_json", "JSON"),
+    ("runs", "created_at", "DATETIME"),
 ]
 
 

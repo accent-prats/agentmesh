@@ -101,6 +101,35 @@ def client(monkeypatch):
     return TestClient(app)
 
 
+def test_render_runs_html_shows_created_at_not_window_start(session_factory):
+    """2026-10-18 fix: the visible 'Started' cell must reflect when the
+    run was actually triggered (created_at), not the evidence-collection
+    window's start (started_at) - a large 'Hours back' value can push
+    started_at over a week into the past, which read as "wrong date" to
+    the user even though the run had just run. The window-range tooltip
+    still uses started_at/ended_at - that's a distinct, correctly-labeled
+    purpose and is left alone."""
+    with session_factory() as session:
+        _make_run(
+            session, "run-1", "scope-a", TriggerMode.AD_HOC, RunStage.COMPLETE,
+            started_at=datetime(2026, 10, 10, tzinfo=timezone.utc),  # a large lookback window
+        )
+        runs = repository.list_runs(session)
+
+    assert runs[0].created_at is not None
+    html = render_runs_html(runs)
+
+    # The sortable data-started attribute comes from created_at, not the
+    # much-earlier started_at.
+    assert runs[0].created_at.isoformat() in html.split('data-started="')[1].split('"')[0]
+
+    # The visible cell *text* (after the title="..." tooltip, which still
+    # legitimately mentions started_at's 2026-10-10 date) must show
+    # created_at's date, not started_at's - started_at's formatted value
+    # must not appear as the cell's own closing content.
+    assert "2026-10-10 00:00 UTC</td>" not in html
+
+
 def test_runs_page_http_renders_clean_filter_values_end_to_end(client):
     """Same guard as the render_runs_html tests above, but through the
     real route and a real DB round-trip (RunRecord -> RunSummary via

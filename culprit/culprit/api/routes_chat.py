@@ -102,7 +102,13 @@ def _latest_report(session):
     from culprit.db import repository
     from culprit.db.models import RunRecord
 
-    latest = session.execute(select(RunRecord).order_by(RunRecord.started_at.desc()).limit(1)).scalar_one_or_none()
+    # Trigger recency, not evidence-window start - see repository._RUN_RECENCY's
+    # own comment: a run given a large "Hours back" window has a `started_at`
+    # that can be chronologically before a genuinely more recent run, which
+    # would otherwise make this answer chat questions against a stale run.
+    latest = session.execute(
+        select(RunRecord).order_by(repository._RUN_RECENCY.desc()).limit(1)
+    ).scalar_one_or_none()
     if latest is None:
         return None
     return repository.load_fleet_report(session, latest.run_id)

@@ -31,6 +31,25 @@ from culprit.models.remediation import RemediationLogEntry, RemediationMachineRe
 from culprit.models.taxonomy import CauseFamily
 from culprit.models.verdict import Verdict, VerdictValue
 
+# "How recently was this run actually triggered" - NOT `started_at` alone,
+# which is the evidence-collection window's own start
+# (`window_end - window_hours`, pipeline/live_run.py) and can be days in
+# the past for a caller-chosen large lookback window. Found 2026-10-18
+# from a real production report: a live run given a large "Hours back"
+# sorted as *older* than a previous run with a smaller window, despite
+# having just been triggered - it disappeared off the Runs list (capped,
+# unpaginated) and was skipped by the dashboard's "latest run"/trend/
+# previous-cycle-comparison queries, all of which order by this same
+# recency concept. `created_at` (set once, in save_run(), never touched
+# again) is the real fix; COALESCE falls back to `started_at` only for
+# rows an already-deployed database wrote before this column existed -
+# the usual ALTER-TABLE-has-no-data-side-default gotcha, same as
+# patch_extension_status_json/timeline_json before it. Every query below
+# that means "most recently triggered" uses this, not `started_at` alone -
+# `historical_cluster_keys()` is the one deliberate exception, since it's
+# genuinely comparing evidence-window chronology, not trigger order.
+_RUN_RECENCY = func.coalesce(RunRecord.created_at, RunRecord.started_at)
+
 
 def save_run(session: Session, run: PatchRun, stage: RunStage = RunStage.STARTED) -> RunRecord:
     record = session.get(RunRecord, run.run_id)
@@ -42,6 +61,12 @@ def save_run(session: Session, run: PatchRun, stage: RunStage = RunStage.STARTED
             scope_name=run.scope_name,
             trigger_mode=run.trigger_mode.value,
             started_at=run.started_at,
+            # Set once, here, at the moment this row is first created -
+            # never touched by the `else` branch below (a later
+            # save_run() call for the same run_id only updates `stage`),
+            # so this stays "when was this run actually triggered"
+            # regardless of how large a lookback window it was given.
+            created_at=datetime.now(timezone.utc),
             total_machines=run.total_machines,
             stage=stage.value,
         )
@@ -307,14 +332,21 @@ def _load_fleet_report_core(session: Session, run_id: str):
 
 
 def _previous_completed_run(session: Session, run_record: RunRecord) -> RunRecord | None:
+    """"Previous" means the last run *triggered* before this one, not the
+    one with an earlier evidence-window start - a run given a large
+    "Hours back" window has a `started_at` that can be chronologically
+    before several genuinely-more-recent runs, which would otherwise make
+    this pick the wrong baseline (or skip one it should have picked) for
+    the "vs previous cycle" comparison. See _RUN_RECENCY's own comment."""
+    run_recency = run_record.created_at or run_record.started_at
     stmt = (
         select(RunRecord)
         .where(
             RunRecord.scope_name == run_record.scope_name,
-            RunRecord.started_at < run_record.started_at,
+            _RUN_RECENCY < run_recency,
             RunRecord.stage == RunStage.COMPLETE.value,
         )
-        .order_by(RunRecord.started_at.desc())
+        .order_by(_RUN_RECENCY.desc())
         .limit(1)
     )
     return session.execute(stmt).scalars().first()
@@ -384,7 +416,7 @@ def latest_completed_run_id(session: Session) -> str | None:
     stmt = (
         select(RunRecord.run_id)
         .where(RunRecord.stage == RunStage.COMPLETE.value)
-        .order_by(RunRecord.started_at.desc())
+        .order_by(_RUN_RECENCY.desc())
         .limit(1)
     )
     return session.execute(stmt).scalars().first()
@@ -405,7 +437,7 @@ def compliance_trend(session: Session, scope_name: str, limit: int = 10):
     stmt = (
         select(RunRecord)
         .where(RunRecord.scope_name == scope_name, RunRecord.stage == RunStage.COMPLETE.value)
-        .order_by(RunRecord.started_at.desc())
+        .order_by(_RUN_RECENCY.desc())
         .limit(limit)
     )
     records = session.execute(stmt).scalars().all()
@@ -585,7 +617,7 @@ def list_runs(session: Session, limit: int = 50) -> list[RunSummary]:
     into; `failed_machines` is the count `Pipeline.run()` recorded at
     RunStage.COMPLETE, not recomputed here."""
     records = session.execute(
-        select(RunRecord).order_by(RunRecord.started_at.desc()).limit(limit)
+        select(RunRecord).order_by(_RUN_RECENCY.desc()).limit(limit)
     ).scalars().all()
     return [
         RunSummary(
@@ -596,6 +628,7 @@ def list_runs(session: Session, limit: int = 50) -> list[RunSummary]:
             stage=r.stage,
             started_at=r.started_at,
             ended_at=r.ended_at,
+            created_at=r.created_at,
             total_machines=r.total_machines,
             failed_machines=r.failed_machines,
             total_clusters=len(r.clusters),

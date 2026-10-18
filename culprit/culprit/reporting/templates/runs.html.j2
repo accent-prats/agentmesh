@@ -68,7 +68,7 @@
         <tr class="runs-row hover:bg-gray-50/60 cursor-pointer"
           data-scope="{{ run.scope_name|lower }}" data-config="{{ run.maintenance_configuration_id|lower }}"
           data-trigger="{{ run.trigger_mode }}" data-status="{{ run.stage }}"
-          data-started="{{ run.started_at.isoformat() }}" data-machines="{{ run.total_machines }}"
+          data-started="{{ (run.created_at or run.started_at).isoformat() }}" data-machines="{{ run.total_machines }}"
           data-failed="{{ run.failed_machines }}" data-causes="{{ run.total_clusters }}"
           onclick="window.location.href='runs/{{ run.run_id }}/report.html'">
           <td class="px-5 py-3.5 overflow-hidden">
@@ -78,7 +78,7 @@
           <td class="px-5 py-3.5">
             <span class="whitespace-nowrap text-[10px] font-semibold uppercase tracking-wide px-2 py-0.5 rounded-full bg-gray-50 text-gray-600 border border-gray-200">{{ run.trigger_mode.replace('_', ' ') }}</span>
           </td>
-          <td class="px-5 py-3.5 text-gray-600 whitespace-nowrap" title="Culprit's own lookback window for this scan{% if run.ended_at %} ({{ run.started_at | localtime }} - {{ run.ended_at | localtime }}){% endif %} - the scan itself ran at the end of this range, not any specific Azure Update Manager maintenance job's time.">{{ run.started_at | localtime }}</td>
+          <td class="px-5 py-3.5 text-gray-600 whitespace-nowrap" title="Culprit's own lookback window for this scan{% if run.ended_at %} ({{ run.started_at | localtime }} - {{ run.ended_at | localtime }}){% endif %} - the scan itself ran at the end of this range, not any specific Azure Update Manager maintenance job's time.">{{ (run.created_at or run.started_at) | localtime }}</td>
           <td class="px-5 py-3.5 text-right tabular-nums text-gray-600">{{ run.total_machines }}</td>
           <td class="px-5 py-3.5 text-right tabular-nums {{ 'text-red-600 font-semibold' if run.failed_machines else 'text-gray-400' }}">{{ run.failed_machines }}</td>
           <td class="px-5 py-3.5 text-right tabular-nums text-gray-600">{{ run.total_clusters }}</td>
@@ -117,10 +117,11 @@
 const runRows = Array.from(document.querySelectorAll('#runs-tbody .runs-row'));
 
 // Numeric/date columns compare by value; everything else (currently just
-// "scope") compares as text. started_at is already the row's own
-// ISO-8601 string (data-started), so a plain string comparison already
-// sorts chronologically without parsing a Date - one less thing that can
-// disagree with how the server formatted it.
+// "scope") compares as text. data-started holds created_at (falling back
+// to started_at for pre-migration rows) as an ISO-8601 string already, so
+// a plain string comparison already sorts by true trigger recency without
+// parsing a Date - one less thing that can disagree with how the server
+// formatted it.
 const NUMERIC_SORT_KEYS = new Set(['machines', 'failed', 'causes']);
 
 let sortState = { key: 'started', dir: 'desc' };

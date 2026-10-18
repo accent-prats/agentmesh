@@ -55,6 +55,11 @@ class RunSummary(BaseModel):
     stage: str
     started_at: datetime
     ended_at: datetime | None = None
+    # When this run was actually triggered, as opposed to `started_at`
+    # (the evidence-collection window's start, which a large "Hours back"
+    # value can push days into the past). None only for rows a database
+    # wrote before this column existed. See repository._RUN_RECENCY.
+    created_at: datetime | None = None
     total_machines: int
     failed_machines: int
     total_clusters: int

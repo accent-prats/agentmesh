@@ -42,8 +42,28 @@ class RunRecord(Base):
     subscription_id: Mapped[str] = mapped_column(String)
     scope_name: Mapped[str] = mapped_column(String)
     trigger_mode: Mapped[str] = mapped_column(String)
+    # The evidence-collection window's own bounds - `started_at` is
+    # `window_end - window_hours` (pipeline/live_run.py), a caller-chosen
+    # lookback size, NOT when this run was actually triggered. Found
+    # 2026-10-18 from a real production report: a live run with a large
+    # "Hours back" (e.g. 200) got a `started_at` over a week in the past,
+    # so it sorted - and disappeared off the capped, unpaginated Runs
+    # list - as older than a previous run with a smaller window, even
+    # though it had just been triggered. `created_at` below exists
+    # specifically so "how recent is this run" has an answer that isn't
+    # hostage to whatever window size the caller happened to pick.
     started_at: Mapped[datetime] = mapped_column(DateTime)
     ended_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    # The actual moment this row was first persisted (set once, in
+    # save_run(), never on a later stage-transition call) - what "most
+    # recent run" should mean everywhere this table is ordered by
+    # recency. Nullable because an already-deployed database's existing
+    # rows predate this column (same ALTER-TABLE-has-no-data-side-default
+    # gotcha already documented on patch_extension_status_json/
+    # timeline_json) - every query that orders by this falls back to
+    # `started_at` via COALESCE for those old rows, rather than a mass
+    # backfill UPDATE.
+    created_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
     total_machines: Mapped[int] = mapped_column(Integer)
     failed_machines: Mapped[int] = mapped_column(Integer, default=0)
     stage: Mapped[str] = mapped_column(String, default=RunStage.STARTED.value)
