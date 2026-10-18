@@ -35,7 +35,20 @@ from datetime import datetime, timezone
 
 from culprit.models.evidence import Source, TimelineEvent
 
-_SUMMARY_MAX_CHARS = 240
+# Found 2026-10-18 by the same audit that caught azure_control_plane.py's
+# identical bug: the extension's own `formattedMessage.message` can carry
+# the same kind of hResult-code/troubleshooting-link text Azure's Resource
+# Graph error.details[] does (both come from the same underlying patch
+# subsystem), and 240 chars was silently cutting it off in the one place
+# that reaches the LLM (TimelineEvent.summary - the un-truncated message
+# only survives in `findings`, which only reporting/UI code ever reads,
+# never rca_agent.py). Raised to match azure_control_plane.py's
+# _PATCH_ERROR_SUMMARY_MAX_CHARS for the same reason: this is inherently
+# low-cardinality (one top-level status event plus at most a handful of
+# anomalous substatus entries per machine, not hundreds of short lines),
+# so raising the per-event cap doesn't reopen the Activity Log token-bloat
+# problem fixed earlier this session.
+_SUMMARY_MAX_CHARS = 600
 # Both scripts emit this exact string regardless of whether the extension
 # directory or just the status file inside it was missing - one marker,
 # not two, covers everything either script can actually produce.

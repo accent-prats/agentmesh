@@ -7,7 +7,7 @@ from __future__ import annotations
 
 import json
 
-from culprit.collectors.patch_extension_status import parse_patch_extension_status
+from culprit.collectors.patch_extension_status import _SUMMARY_MAX_CHARS, parse_patch_extension_status
 from culprit.models.evidence import Source
 
 _SUCCESS_STATUS = json.dumps([
@@ -115,7 +115,7 @@ def test_a_windows_source_is_tagged_correctly():
 
 
 def test_a_long_message_is_truncated_in_the_event_summary_but_not_in_the_finding():
-    long_message = "x" * 500
+    long_message = "x" * (_SUMMARY_MAX_CHARS + 300)
     status = json.dumps([{
         "version": "1.0",
         "status": {
@@ -125,8 +125,34 @@ def test_a_long_message_is_truncated_in_the_event_summary_but_not_in_the_finding
         },
     }])
     events, findings = parse_patch_extension_status(status, vm_id="vm-1", source=Source.GUEST_LINUX)
-    assert len(events[0].summary) <= 240
+    assert len(events[0].summary) <= _SUMMARY_MAX_CHARS
     assert findings[0]["message"] == long_message  # the finding keeps the full message for the UI
+
+
+def test_the_event_summary_keeps_a_real_hresult_and_troubleshooting_link_intact():
+    """2026-10-18: raised from 240 to 600 chars after an audit found this
+    is the one place a real extension-reported message (which can carry
+    the same hResult-code/troubleshooting-link text already found
+    truncated in azure_control_plane.py's install-result errors) reaches
+    the LLM - TimelineEvent.summary, not the richer `findings` dict, which
+    only reporting/UI code ever reads."""
+    message = (
+        "Failed to install Update 2026-10 Cumulative Update for Microsoft server operating system "
+        "version 21H2 for x64-based Systems (KB5126655), result code=Failed, hResult:0x80070002. "
+        "For information on diagnosing this error, see https://aka.ms/TroubleshootVMGuestPatching."
+    )
+    assert len(message) > 240  # pin the premise: this real-shaped message exceeds the old cap
+    status = json.dumps([{
+        "version": "1.0",
+        "status": {
+            "name": "Microsoft.CPlat.Core.WindowsPatchExtension", "operation": "Installation",
+            "status": "error", "code": 1,
+            "formattedMessage": {"message": message}, "substatus": [],
+        },
+    }])
+    events, _ = parse_patch_extension_status(status, vm_id="vm-1", source=Source.GUEST_WINDOWS)
+    assert "hResult:0x80070002" in events[0].summary
+    assert "https://aka.ms/TroubleshootVMGuestPatching" in events[0].summary
 
 
 def test_extension_version_comes_from_the_caller_not_the_status_files_own_version_field():
