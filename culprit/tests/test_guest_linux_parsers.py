@@ -9,14 +9,20 @@ import pytest
 from culprit.collectors.guest_linux import (
     ALLOWED_LINUX_SCRIPT,
     parse_disk_usage,
+    parse_dnf_log,
     parse_dpkg_log,
     parse_extension_core_log,
+    parse_extension_wrapper_log,
+    parse_journal_reboot,
     parse_linux_output,
     parse_lock_holder,
     parse_repo_check,
+    parse_repo_diagnostics,
     parse_subscription_manager,
     parse_waagent_log,
+    parse_yum_log,
 )
+from culprit.collectors.patch_extension_status import MAX_ANOMALY_EVENTS_PER_SECTION
 
 _DPKG_LOG = """\
 2026-06-19 02:10:01 startup archives unpack
@@ -226,15 +232,103 @@ def test_parse_extension_core_log_uses_the_real_line_timestamp():
     assert events[0].ts == datetime(2026, 10, 16, 3, 4, 0, 500000, tzinfo=timezone.utc)
 
 
+def test_parse_extension_wrapper_log_flags_an_anomaly_line():
+    text = "2026/10/18 03:03:00 INFO Invoking patch operation\n2026/10/18 03:04:00 ERROR Could not invoke extension: timed out\n"
+    events = parse_extension_wrapper_log(text, vm_id="vm-1")
+    assert len(events) == 1
+    assert "timed out" in events[0].summary
+    assert events[0].kind == "extension_wrapper_log"
+    assert events[0].raw_ref == "guest:ext_wrapper.log:vm-1:1"
+
+
+def test_parse_extension_wrapper_log_quiet_log_is_silent():
+    assert parse_extension_wrapper_log("2026/10/18 03:03:00 INFO Invoked successfully\n", vm_id="vm-1") == []
+
+
+def test_parse_extension_wrapper_log_caps_at_the_shared_max():
+    text = "\n".join(f"2026/10/18 03:0{i}:00 ERROR Failed attempt {i}" for i in range(MAX_ANOMALY_EVENTS_PER_SECTION + 5))
+    events = parse_extension_wrapper_log(text, vm_id="vm-1")
+    assert len(events) == MAX_ANOMALY_EVENTS_PER_SECTION
+
+
+def test_parse_yum_log_flags_an_anomaly_line():
+    """Found 2026-10-18: YUM_LOG was already fetched from the VM but
+    parse_linux_output never read it - the data arrived and was silently
+    dropped on every RHEL/CentOS/Fedora machine."""
+    text = "Jun 19 02:10:01 Installed: bash-4.4.20-1.el8.x86_64\nJun 19 02:14:05 Error: Transaction check error: package conflict\n"
+    events = parse_yum_log(text, vm_id="vm-1")
+    assert len(events) == 1
+    assert "Transaction check error" in events[0].summary
+    assert events[0].kind == "package_manager_log"
+    assert events[0].raw_ref == "guest:yum.log:vm-1:1"
+
+
+def test_parse_yum_log_quiet_log_is_silent():
+    assert parse_yum_log("Jun 19 02:10:01 Installed: bash-4.4.20-1.el8.x86_64\n", vm_id="vm-1") == []
+
+
+def test_parse_dnf_log_flags_an_anomaly_line():
+    """Same bug and same fix as parse_yum_log, for DNF_LOG."""
+    text = "2026-06-19T02:10:01+0000 INFO Installed: bash-4.4.20-1.el8.x86_64\n2026-06-19T02:14:05+0000 ERROR Failed to synchronize cache: repo unreachable\n"
+    events = parse_dnf_log(text, vm_id="vm-1")
+    assert len(events) == 1
+    assert "repo unreachable" in events[0].summary
+    assert events[0].kind == "package_manager_log"
+    assert events[0].raw_ref == "guest:dnf.log:vm-1:1"
+
+
+def test_parse_dnf_log_quiet_log_is_silent():
+    assert parse_dnf_log("2026-06-19T02:10:01+0000 INFO Installed: bash-4.4.20-1.el8.x86_64\n", vm_id="vm-1") == []
+
+
+def test_parse_repo_diagnostics_is_silent_when_everything_resolves_and_responds():
+    text = "configured_host=mirror.example.com\nhttp_proxy=\nhttps_proxy=\ndns_resolved=yes\nhttp_status=200\n"
+    assert parse_repo_diagnostics(text, vm_id="vm-1") == []
+
+
+def test_parse_repo_diagnostics_flags_a_dns_failure():
+    text = "configured_host=mirror.example.com\nhttp_proxy=\nhttps_proxy=\ndns_resolved=no\nhttp_status=unreachable\n"
+    events = parse_repo_diagnostics(text, vm_id="vm-1")
+    assert len(events) == 1
+    assert events[0].detail["dns_resolution_failed"] is True
+    assert events[0].detail["repo_unreachable"] is True
+    assert events[0].detail["configured_host"] == "mirror.example.com"
+
+
+def test_parse_repo_diagnostics_flags_an_http_failure_even_with_dns_ok():
+    text = "configured_host=mirror.example.com\nhttp_proxy=\nhttps_proxy=\ndns_resolved=yes\nhttp_status=503\n"
+    events = parse_repo_diagnostics(text, vm_id="vm-1")
+    assert len(events) == 1
+    assert events[0].detail["dns_resolution_failed"] is False
+    assert events[0].detail["repo_unreachable"] is True
+
+
+def test_parse_journal_reboot_flags_a_kernel_error():
+    text = "Boot 0: 2026-10-17 00:00:00 UTC\nkernel: [12345.678] ERROR: segfault in process\n"
+    events = parse_journal_reboot(text, vm_id="vm-1")
+    assert len(events) == 1
+    assert "segfault" in events[0].summary
+    assert events[0].kind == "journal_reboot"
+
+
+def test_parse_journal_reboot_quiet_log_is_silent():
+    assert parse_journal_reboot("Boot 0: 2026-10-17 00:00:00 UTC\nkernel: [12345.678] Linux version 5.15.0\n", vm_id="vm-1") == []
+
+
 def test_full_output_sectioning_includes_the_new_log_sections():
     """parse_linux_output must actually slice WAAGENT_LOG/EXT_CORE_LOG out
     and hand them to their parsers - not just that the parsers work in
-    isolation (the two tests above)."""
+    isolation (the two tests above). Review 2026-10-18 found that an
+    earlier version of this test used empty YUM_LOG/DNF_LOG content, so it
+    passed even when that wiring was sabotaged out entirely (the exact
+    "fetched but never parsed" bug class this round fixed for those two
+    sections) - both now carry real anomaly content so the dispatcher
+    wiring itself is actually exercised, not just the standalone parsers."""
     stdout = (
         "---DPKG_LOG---\n\n"
         "---APT_HISTORY---\n\n"
-        "---YUM_LOG---\n\n"
-        "---DNF_LOG---\n\n"
+        "---YUM_LOG---\nJun 19 02:14:05 Error: Transaction check error: package conflict\n\n"
+        "---DNF_LOG---\n2026-06-19T02:14:05+0000 ERROR Failed to synchronize cache: repo unreachable\n\n"
         "---DISK_USAGE---\n\n"
         "---LOCK_HOLDER---\n\n"
         "---REPO_CHECK---\n200\n\n"
@@ -242,13 +336,22 @@ def test_full_output_sectioning_includes_the_new_log_sections():
         "---SUBMAN---\n\n"
         "---WAAGENT_LOG---\n2026/10/16 03:04:00 ERROR ExtHandler Failed to download extension package\n\n"
         "---EXT_CORE_LOG---\n2026-10-16 03:04:00,000 - root - ERROR - Repository unreachable\n\n"
+        "---EXT_WRAPPER_LOG---\n2026/10/18 03:04:00 ERROR Could not invoke extension: timed out\n\n"
+        "---REPO_DIAGNOSTICS---\nconfigured_host=mirror.example.com\ndns_resolved=no\nhttp_status=unreachable\n\n"
+        "---JOURNAL_REBOOT---\nkernel: [12345.678] ERROR: segfault in process\n\n"
         "---EXT_VERSION---\n\n"
         "---EXT_STATUS---\nNo status file found\n"
     )
     events, _ = parse_linux_output(stdout, vm_id="vm-1")
     kinds = {e.kind for e in events}
+    raw_refs = {e.raw_ref for e in events}
     assert "waagent_log" in kinds
     assert "extension_core_log" in kinds
+    assert "extension_wrapper_log" in kinds
+    assert "repo_diagnostics" in kinds
+    assert "journal_reboot" in kinds
+    assert any(ref.startswith("guest:yum.log:") for ref in raw_refs)
+    assert any(ref.startswith("guest:dnf.log:") for ref in raw_refs)
 
 
 def test_repo_check_curl_format_ends_with_a_newline():
@@ -284,7 +387,8 @@ def test_allowed_linux_script_runs_cleanly_through_a_real_shell(tmp_path):
     for marker in (
         "DPKG_LOG", "APT_HISTORY", "YUM_LOG", "DNF_LOG", "DISK_USAGE",
         "LOCK_HOLDER", "REPO_CHECK", "KERNELS", "SUBMAN", "WAAGENT_LOG",
-        "EXT_CORE_LOG", "EXT_VERSION", "EXT_STATUS",
+        "EXT_CORE_LOG", "EXT_WRAPPER_LOG", "REPO_DIAGNOSTICS", "JOURNAL_REBOOT",
+        "EXT_VERSION", "EXT_STATUS",
     ):
         assert f"---{marker}---" in stdout.splitlines(), f"{marker} marker missing or merged onto another line"
 

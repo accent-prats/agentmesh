@@ -67,6 +67,28 @@ patchinstallationresources
 # `arg_max`, so this matches an already-proven pattern rather than
 # introducing a second cast convention.
 
+# Found 2026-10-18 auditing against a user-supplied "recommended evidence"
+# list: `patchassessmentresources` (missing/available patch counts, last
+# assessment status) was never queried at all - only the install-result
+# table above. Modeled byte-for-byte on _INSTALL_RESULT_QUERY (same
+# vm_id/window filter shape, same tostring() cast for the same dynamic-
+# column reason) - only the table name and `type` filter differ.
+_ASSESSMENT_RESULT_QUERY = """
+patchassessmentresources
+| where type =~ 'microsoft.compute/virtualmachines/patchassessmentresults'
+| where id startswith '{vm_id}'
+| where properties.startDateTime >= datetime('{window_start}')
+| where properties.startDateTime <= datetime('{window_end}')
+| project id, properties
+| order by tostring(properties.startDateTime) desc
+| limit 1
+"""
+
+# See _activity_log_events()'s own comment for why this exists - bounds
+# the worst case (a busy VM with hundreds of routine Activity Log rows)
+# after the read/write filter already does most of the work.
+_MAX_ACTIVITY_LOG_EVENTS = 20
+
 
 class AzureControlPlaneCollector(Collector):
     source_name = "azure_control_plane"
@@ -156,6 +178,49 @@ class AzureControlPlaneCollector(Collector):
             )
             error = f"Resource Graph query failed: {exc}"
 
+        assessment_started = time.monotonic()
+        try:
+            from culprit.security.kql import escape_kql_string
+
+            assessment_query = _ASSESSMENT_RESULT_QUERY.format(
+                vm_id=escape_kql_string(request.machine.vm_id),
+                window_start=request.window_start.isoformat(),
+                window_end=request.window_end.isoformat(),
+            )
+            assessment_result = self._graph_client.resources(
+                QueryRequest(subscriptions=[request.machine.subscription_id], query=assessment_query)
+            )
+            assessment_rows = assessment_result.data or []
+            log.info(
+                "azure_control_plane: assessment-result query for %s returned %d row(s) after %.1fs",
+                request.machine.vm_name, len(assessment_rows), time.monotonic() - assessment_started,
+            )
+            if assessment_rows:
+                assessment_props = assessment_rows[0]["properties"]
+                summary_detail = _summarize_assessment_result(assessment_props)
+                pending = sum(summary_detail["available_patch_counts"].values())
+                summary_line = f"patchassessmentresults -> {summary_detail['status']}"
+                if pending:
+                    summary_line += f", {pending} patch(es) pending"
+                if summary_detail["reboot_pending"]:
+                    summary_line += ", reboot pending"
+                events.append(
+                    TimelineEvent(
+                        ts=_parse_ts(assessment_props.get("lastModifiedDateTime") or assessment_props.get("startDateTime")),
+                        source=Source.AZURE_CONTROL_PLANE,
+                        kind="patch_assessment",
+                        summary=summary_line,
+                        detail=summary_detail,
+                        raw_ref=f"resourcegraph:{assessment_rows[0]['id']}",
+                    )
+                )
+        except Exception as exc:  # noqa: BLE001
+            log.warning(
+                "azure_control_plane: assessment-result query for %s failed after %.1fs (%s)",
+                request.machine.vm_name, time.monotonic() - assessment_started, safe_exc_summary(exc),
+            )
+            error = (error + "; " if error else "") + f"Assessment query failed: {exc}"
+
         activity_started = time.monotonic()
         try:
             activity_events = self._activity_log_events(request)
@@ -181,8 +246,36 @@ class AzureControlPlaneCollector(Collector):
             f"and eventTimestamp le '{request.window_end.isoformat()}' "
             f"and resourceUri eq '{escape_kql_string(request.machine.vm_id)}'"
         )
+        raw_entries = list(self._monitor_client.activity_logs.list(filter=filter_str))
+        # Found 2026-10-18 from a real production run: this used to build
+        # one TimelineEvent per raw row with no cap - a single machine
+        # returned 262 events in one run, and since render_timeline_text()
+        # puts one line per event straight into the RCA prompt, that's
+        # plausibly tens of thousands of characters of mostly routine,
+        # read-only noise (a very likely contributor to a real OpenAI 400
+        # over prompt size this session) drowning out the 1-2 lines that
+        # actually matter. Azure's own operation-name convention is
+        # `{provider}/{resourceType}/{operation}` where the last segment is
+        # "read"/"write"/"action"/"delete" - keep anything that failed
+        # (regardless of type, since even a failed read can matter, e.g. a
+        # permission error) plus every non-read operation; drop routine
+        # reads. Capped and sorted most-recent-first on top of that, since
+        # even the filtered set could still be large on a busy VM.
+        relevant = [
+            entry for entry in raw_entries
+            if (entry.status and entry.status.value == "Failed")
+            or (entry.operation_name and entry.operation_name.value and not entry.operation_name.value.lower().endswith("/read"))
+        ]
+        relevant.sort(key=lambda e: e.event_timestamp or datetime.min.replace(tzinfo=timezone.utc), reverse=True)
+        kept = relevant[:_MAX_ACTIVITY_LOG_EVENTS]
+        if len(kept) < len(raw_entries):
+            log.info(
+                "azure_control_plane: activity log for %s had %d event(s), kept %d after filtering",
+                request.machine.vm_name, len(raw_entries), len(kept),
+            )
+
         events: list[TimelineEvent] = []
-        for entry in self._monitor_client.activity_logs.list(filter=filter_str):
+        for entry in kept:
             events.append(
                 TimelineEvent(
                     ts=entry.event_timestamp or datetime.now(timezone.utc),
@@ -244,6 +337,30 @@ def _outcome_from_install_result(props: dict) -> PatchOutcome:
         ended_at=_parse_ts(props.get("lastModifiedDateTime")),
         window_minutes=props.get("maximumDuration"),
     )
+
+
+def _summarize_assessment_result(props: dict) -> dict:
+    """Builds the detail dict for a 'patch_assessment' TimelineEvent from a
+    patchassessmentresources row's properties - same defensive handling as
+    _outcome_from_install_result, since this is the identical Azure
+    Resource Graph API surface (reuses _parse_error_details for
+    `error.details`, the exact "always an array, never a bare string" bug
+    already fixed once for install results). Kept JSON-plain (no pydantic
+    objects) for the same reason azure_patch_error's own detail dict
+    extracts plain fields rather than embedding AzureApiErrorDetail
+    objects directly."""
+    error = props.get("error") if isinstance(props.get("error"), dict) else {}
+    counts = props.get("availablePatchCountByClassification")
+    if not isinstance(counts, dict):
+        counts = {}
+    error_details = _parse_error_details(error.get("details"))
+    return {
+        "status": props.get("status", "Unknown"),
+        "reboot_pending": bool(props.get("rebootPending", False)),
+        "available_patch_counts": {k: v for k, v in counts.items() if isinstance(v, int)},
+        "error_message": error.get("message"),
+        "error_detail_messages": [d.message for d in error_details if d.message],
+    }
 
 
 def _parse_ts(value: str | None) -> datetime:

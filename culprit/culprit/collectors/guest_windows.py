@@ -15,6 +15,7 @@ from datetime import datetime, timezone
 
 from culprit.collectors.base import CollectionRequest, CollectionResult, Collector
 from culprit.collectors.patch_extension_status import (
+    MAX_ANOMALY_EVENTS_PER_SECTION,
     has_extension_log_anomaly,
     parse_leading_timestamp,
     parse_patch_extension_status,
@@ -45,8 +46,33 @@ Write-Output "---WUAUSERV---"
 (Get-Service wuauserv -ErrorAction SilentlyContinue).Status
 Write-Output "---DISK_USAGE---"
 Get-PSDrive -PSProvider FileSystem | ForEach-Object { "$($_.Name) $($_.Free) $($_.Used)" }
-Write-Output "---WSUS_TARGET---"
-(Get-ItemProperty "HKLM:\SOFTWARE\Policies\Microsoft\Windows\WindowsUpdate" -ErrorAction SilentlyContinue).WUServer
+Write-Output "---WSUS_CONNECTIVITY---"
+$wsusServer = (Get-ItemProperty "HKLM:\SOFTWARE\Policies\Microsoft\Windows\WindowsUpdate" -ErrorAction SilentlyContinue).WUServer
+if ($wsusServer) {
+    Write-Output "wsus_server=$wsusServer"
+    try {
+        $wsusServerUri = $wsusServer
+        if ($wsusServerUri -notmatch '^[a-zA-Z][a-zA-Z0-9+.-]*://') { $wsusServerUri = "http://$wsusServerUri" }
+        $wsusHost = ([System.Uri]$wsusServerUri).Host
+    } catch { $wsusHost = $null }
+} else {
+    Write-Output "wsus_server="
+    $wsusHost = "windowsupdate.microsoft.com"
+}
+if ($wsusHost) {
+    $wsusDns = Resolve-DnsName $wsusHost -ErrorAction SilentlyContinue
+    Write-Output "dns_resolved=$(if ($wsusDns) {'yes'} else {'no'})"
+    $wsusTest = Test-NetConnection -ComputerName $wsusHost -Port 443 -WarningAction SilentlyContinue -ErrorAction SilentlyContinue
+    Write-Output "tcp_reachable=$(if ($wsusTest -and $wsusTest.TcpTestSucceeded) {'yes'} else {'no'})"
+}
+Write-Output "---VMAGENT_STATUS---"
+if (Test-Path "C:\WindowsAzure\Logs\AggregateStatus" -PathType Leaf) {
+    Get-Content "C:\WindowsAzure\Logs\AggregateStatus" -Tail 200 -ErrorAction SilentlyContinue
+} elseif (Test-Path "C:\WindowsAzure\Logs\AggregateStatus") {
+    $aggStatusFile = Get-ChildItem "C:\WindowsAzure\Logs\AggregateStatus" -Filter *.json -ErrorAction SilentlyContinue |
+        Sort-Object LastWriteTime -Descending | Select-Object -First 1
+    if ($aggStatusFile) { Get-Content $aggStatusFile.FullName -Tail 200 -ErrorAction SilentlyContinue }
+}
 $extRoot = "C:\Packages\Plugins\Microsoft.CPlat.Core.WindowsPatchExtension"
 $latestVersionDir = Get-ChildItem -Path $extRoot -Directory -ErrorAction SilentlyContinue |
     Sort-Object { [version]$_.Name } -Descending -ErrorAction SilentlyContinue | Select-Object -First 1
@@ -251,6 +277,77 @@ def parse_disk_usage(text: str, vm_id: str, min_free_bytes: int = 250 * 1024 * 1
     return events
 
 
+def parse_wsus_connectivity(text: str, vm_id: str) -> list[TimelineEvent]:
+    """Replaces the old dead WSUS_TARGET section (fetched the WUServer
+    registry value but never parsed it anywhere - found 2026-10-18) with a
+    combined read + connectivity probe in one section, rather than two
+    near-duplicate signals about the same topic. Falls back to the public
+    Windows Update endpoint when no WSUS is configured.
+
+    Anomaly-gated like guest_linux.py's parse_repo_diagnostics: only
+    emits when there's a real problem. Also deliberately returns nothing
+    when the probe simply didn't run (e.g. Resolve-DnsName/Test-NetConnection
+    unavailable, or the registry value wasn't a parseable host) - the
+    "no citation, no claim" discipline this codebase applies everywhere
+    else applies here too: absence of data is not evidence of a problem,
+    and manufacturing a false "unreachable" finding from a probe that
+    never actually ran would be worse than reporting nothing."""
+    fields: dict[str, str] = {}
+    for line in text.splitlines():
+        key, sep, value = line.partition("=")
+        if sep:
+            fields.setdefault(key.strip(), value.strip())
+    if "dns_resolved" not in fields or "tcp_reachable" not in fields:
+        return []
+    wsus_server = fields.get("wsus_server", "")
+    dns_resolved = fields["dns_resolved"] == "yes"
+    tcp_reachable = fields["tcp_reachable"] == "yes"
+    if dns_resolved and tcp_reachable:
+        return []
+    return [
+        TimelineEvent(
+            ts=datetime.now(timezone.utc),
+            source=Source.GUEST_WINDOWS,
+            kind="wsus_connectivity",
+            summary=f"WSUS/Windows Update connectivity: server={wsus_server or '(public Windows Update)'}, "
+            f"dns_resolved={dns_resolved}, tcp_reachable={tcp_reachable}",
+            detail={
+                "wsus_server": wsus_server or None,
+                "dns_resolution_failed": not dns_resolved,
+                "wsus_unreachable": not tcp_reachable,
+            },
+            raw_ref=f"guest:wsus_connectivity:{vm_id}",
+        )
+    ]
+
+
+def parse_vmagent_status(text: str, vm_id: str) -> list[TimelineEvent]:
+    """The Azure VM Agent's own aggregate status
+    (C:\\WindowsAzure\\Logs\\AggregateStatus) - Windows' counterpart to
+    guest_linux.py's waagent.log, surfacing whether the agent itself
+    received/triggered the extension request. Real on-disk shape (a single
+    file vs. a directory of JSON snapshots) not independently verified -
+    same honesty caveat as every other new guest-log parser added
+    2026-10-18. Same generic anomaly-keyword scan, applied to the raw text
+    regardless of whether it's JSON - a defensible-confidence choice over
+    parsing specific JSON fields never confirmed against a real box."""
+    events: list[TimelineEvent] = []
+    for i, line in enumerate(text.splitlines()):
+        if not line.strip() or not has_extension_log_anomaly(line):
+            continue
+        events.append(
+            TimelineEvent(
+                ts=parse_leading_timestamp(line) or datetime.now(timezone.utc),
+                source=Source.GUEST_WINDOWS,
+                kind="vmagent_status",
+                summary=line.strip()[:240],
+                detail={},
+                raw_ref=f"guest:vmagent_status:{vm_id}:{i}",
+            )
+        )
+    return events[:MAX_ANOMALY_EVENTS_PER_SECTION]
+
+
 def parse_extension_log(text: str, vm_id: str) -> list[TimelineEvent]:
     """The Windows patch extension's own detailed operational log
     (C:\\WindowsAzure\\Logs\\Plugins\\Microsoft.CPlat.Core.
@@ -277,6 +374,14 @@ def parse_extension_log(text: str, vm_id: str) -> list[TimelineEvent]:
                 raw_ref=f"guest:WindowsPatchExtension.log:{vm_id}:{i}",
             )
         )
+    return events[:MAX_ANOMALY_EVENTS_PER_SECTION]
+
+
+def _log_if_found(parser_name: str, events: list[TimelineEvent], vm_id: str) -> list[TimelineEvent]:
+    """See guest_linux.py's identical helper for why this exists and why
+    it only logs on a non-empty result."""
+    if events:
+        log.info("guest_windows: %s found %d anomaly event(s) for %s", parser_name, len(events), vm_id)
     return events
 
 
@@ -288,6 +393,8 @@ def parse_windows_output(stdout: str, vm_id: str) -> tuple[list[TimelineEvent], 
     events += parse_pending_reboot(sections.get("PENDING_REBOOT", ""), vm_id)
     events += parse_wuauserv_state(sections.get("WUAUSERV", ""), vm_id)
     events += parse_disk_usage(sections.get("DISK_USAGE", ""), vm_id)
+    events += _log_if_found("parse_wsus_connectivity", parse_wsus_connectivity(sections.get("WSUS_CONNECTIVITY", ""), vm_id), vm_id)
+    events += _log_if_found("parse_vmagent_status", parse_vmagent_status(sections.get("VMAGENT_STATUS", ""), vm_id), vm_id)
     events += parse_extension_log(sections.get("EXT_LOG", ""), vm_id)
     ext_events, ext_findings = parse_patch_extension_status(
         sections.get("EXT_STATUS", ""), vm_id, Source.GUEST_WINDOWS,

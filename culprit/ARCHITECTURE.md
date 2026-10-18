@@ -50,24 +50,58 @@ Four collectors, one per evidence plane, all implementing the same
 `Collector` protocol (`collectors/base.py`) so the orchestrator never
 distinguishes real from fixture:
 
-- `azure_control_plane.py` - Resource Graph (`patchinstallationresources`)
-  + Activity Log.
+- `azure_control_plane.py` - Resource Graph (`patchinstallationresources`
+  + `patchassessmentresources` - the latter added 2026-10-18 for
+  missing/available-patch counts and last-assessment status, modeled
+  byte-for-byte on the install-result query) + Activity Log (filtered to
+  `Failed`/non-`read` operations and capped at 20, found 2026-10-18 after
+  a real run returned 262 uncapped events for one machine - one
+  `TimelineEvent` per row with no cap was a real prompt-size/accuracy
+  risk, since routine reads drowned the 1-2 actually diagnostic lines).
 - `azure_monitor.py` - Log Analytics: Heartbeat gaps, Windows `Event` /
   Linux `Syslog` around the window.
 - `guest_linux.py` / `guest_windows.py` - Run Command with a **fixed,
   reviewed, read-only script** (never arbitrary execution), plus real
-  regex parsers for dpkg/apt/yum/CBS/WindowsUpdate log formats, and -
-  the single richest signal either script reads - the guest's own Azure
-  patch extension status file (`collectors/patch_extension_status.py`,
-  shared by both OSes since the Azure VM extension handler status schema
-  is OS-agnostic): the structured success/error/substatus account from
-  the exact component Azure Update Manager invokes, not just an inference
-  from OS package-manager log text. The parsers are pure functions,
-  unit-tested directly against real log/status text in
+  regex parsers for dpkg/apt/CBS/WindowsUpdate log formats, a shared
+  generic anomaly-keyword scan (`collectors/patch_extension_status.py::
+  EXTENSION_LOG_ANOMALY_RE`/`has_extension_log_anomaly`, capped at
+  `MAX_ANOMALY_EVENTS_PER_SECTION` per section) for log formats with no
+  independently-verified real sample to build an exact regex against -
+  Azure VM Agent logs (`waagent.log` / Windows `AggregateStatus`), the
+  patch extension's detailed core log and wrapper/invocation log on both
+  OSes, yum/dnf package-manager logs (fetched since before 2026-10-18 but
+  silently never parsed until then), and Linux kernel/journal reboot
+  evidence - plus real connectivity diagnostics against the *actually
+  configured* repo/WSUS target (DNS + reachability, not just a hardcoded
+  `archive.ubuntu.com` probe or an unparsed registry read) and - the
+  single richest signal either script reads - the guest's own Azure patch
+  extension status file (`collectors/patch_extension_status.py`, shared
+  by both OSes since the Azure VM extension handler status schema is
+  OS-agnostic): the structured success/error/substatus account from the
+  exact component Azure Update Manager invokes, not just an inference
+  from OS package-manager log text. Every anomaly-scan parser logs when
+  it actually finds something (`log.info` only on a non-empty result -
+  never a per-machine "found nothing" line) so a real run's container
+  logs show which specific new signal fired. The parsers are pure
+  functions, unit-tested directly against real log/status text in
   `tests/test_guest_linux_parsers.py` / `test_guest_windows_parsers.py` /
-  `test_patch_extension_status.py` without needing a live VM.
+  `test_patch_extension_status.py` without needing a live VM - including
+  a real-shell/real-PowerShell execution test for each script, not just
+  hand-typed fixtures, to catch a quoting/escaping mistake that would
+  otherwise silently merge or drop a section marker.
 - `datadog_collector.py` - metrics (disk/memory trend into the window),
   monitor state, logs/events (the post-reboot regression signal).
+
+All of the above feed `EvidenceBundle.timeline` as `TimelineEvent`s, which
+`render_timeline_text()` turns into prompt lines for the RCA agent -
+critically, only each event's one-line `summary` is ever rendered to the
+LLM, never its `detail` dict (`models/evidence.py::render_timeline_text`),
+so a rich `detail` payload costs nothing in tokens and the only real
+token lever for any new evidence source is how many events it adds and
+how long each summary line is. Every anomaly-gated parser above exists
+specifically to keep that count low on a healthy machine (no finding = no
+event = zero added tokens), which is also why the Activity Log fix above
+caps and filters rather than just logging a warning about the volume.
 
 `pipeline/collection.py::collect_all` fans these out in parallel per
 machine; `collect_all` -> `normalize.merge_bundle` -> one `EvidenceBundle`

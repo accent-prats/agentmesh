@@ -15,11 +15,14 @@ from datetime import datetime, timedelta, timezone
 import pytest
 
 from culprit.collectors.azure_control_plane import (
+    _ASSESSMENT_RESULT_QUERY,
     _INSTALL_RESULT_QUERY,
+    _MAX_ACTIVITY_LOG_EVENTS,
     AzureControlPlaneCollector,
     _outcome_from_install_result,
     _parse_error_details,
     _parse_ts,
+    _summarize_assessment_result,
 )
 from culprit.collectors.base import CollectionRequest
 from culprit.models.evidence import MachineIdentity, OSFamily
@@ -153,6 +156,55 @@ def test_parse_ts_falls_back_to_now_for_missing_or_invalid_input():
     assert _parse_ts("not a timestamp") >= now_before
 
 
+# ── patch assessment result (2026-10-18) ─────────────────────────────────────
+# Found auditing against a user-supplied "recommended evidence" list:
+# patchassessmentresources (missing/available patch counts, assessment
+# status) was never queried at all.
+
+def test_assessment_result_query_never_orders_by_a_bare_dynamic_property():
+    """Same regression guard as the install-result query above - modeled
+    byte-for-byte on it, so it must share the same tostring() cast fix."""
+    assert not _BARE_DYNAMIC_ORDER_BY_RE.search(_ASSESSMENT_RESULT_QUERY)
+    assert "order by tostring(properties.startDateTime)" in _ASSESSMENT_RESULT_QUERY
+    assert "patchassessmentresources" in _ASSESSMENT_RESULT_QUERY
+
+
+def test_summarize_assessment_result_builds_a_correct_detail_dict():
+    props = {
+        "status": "Succeeded",
+        "rebootPending": True,
+        "availablePatchCountByClassification": {"security": 3, "critical": 1, "other": 0},
+        "startDateTime": "2026-10-18T08:00:00Z",
+        "lastModifiedDateTime": "2026-10-18T08:05:00Z",
+    }
+    detail = _summarize_assessment_result(props)
+    assert detail["status"] == "Succeeded"
+    assert detail["reboot_pending"] is True
+    assert detail["available_patch_counts"] == {"security": 3, "critical": 1, "other": 0}
+    assert detail["error_message"] is None
+    assert detail["error_detail_messages"] == []
+
+
+def test_summarize_assessment_result_is_defensive_against_malformed_fields():
+    """Same defensive handling as _outcome_from_install_result - a
+    non-dict `error`/`availablePatchCountByClassification`, or a details
+    array with a non-string value, must degrade, not raise. Reuses
+    _parse_error_details, so this also guards against regressing that bug
+    class for the assessment table specifically."""
+    detail = _summarize_assessment_result({
+        "availablePatchCountByClassification": "not a dict",
+        "error": {
+            "message": "assessment failed",
+            "details": [{"code": 404, "message": "bad"}, {"code": "Error", "message": "good"}],
+        },
+    })
+    assert detail["status"] == "Unknown"
+    assert detail["reboot_pending"] is False
+    assert detail["available_patch_counts"] == {}
+    assert detail["error_message"] == "assessment failed"
+    assert detail["error_detail_messages"] == ["good"]  # the malformed entry is skipped, not fatal
+
+
 # ── collect() tracing (2026-10-17) ───────────────────────────────────────────
 # No collect()-level fixture existed before this - built here the same way
 # tests/test_guest_collector_timeouts.py bypasses the real Azure SDK, by
@@ -165,13 +217,42 @@ class _ExplodingGraphClient:
 
 
 class _FakeActivityLogs:
+    def __init__(self, entries=None):
+        self._entries = entries or []
+
     def list(self, filter):
-        return []
+        return self._entries
 
 
 class _FakeMonitorClient:
-    def __init__(self):
-        self.activity_logs = _FakeActivityLogs()
+    def __init__(self, activity_entries=None):
+        self.activity_logs = _FakeActivityLogs(activity_entries)
+
+
+class _FakeGraphResult:
+    def __init__(self, data):
+        self.data = data
+
+
+class _RoutingGraphClient:
+    """collect() now runs two separate Resource Graph queries (install
+    result, then assessment result) through the same client - routes by
+    which table the query text actually targets so a test can give each
+    its own response/exception independently."""
+    def __init__(self, install_response=None, assessment_response=None, install_exc=None, assessment_exc=None):
+        self._install_response = install_response or _FakeGraphResult([])
+        self._assessment_response = assessment_response or _FakeGraphResult([])
+        self._install_exc = install_exc
+        self._assessment_exc = assessment_exc
+
+    def resources(self, request):
+        if "patchassessmentresources" in request.query:
+            if self._assessment_exc:
+                raise self._assessment_exc
+            return self._assessment_response
+        if self._install_exc:
+            raise self._install_exc
+        return self._install_response
 
 
 def _request():
@@ -205,3 +286,129 @@ def test_a_failed_install_result_query_is_traced_but_still_returns_a_collection_
         r.levelname == "WARNING" and "azure_control_plane: install-result query for vm-1 failed" in r.message and "RuntimeError" in r.message
         for r in caplog.records
     )
+
+
+def _collector_with(install_response=None, assessment_response=None, install_exc=None, assessment_exc=None, activity_entries=None):
+    pytest.importorskip("azure.mgmt.monitor")
+    collector = AzureControlPlaneCollector(credential=object())
+    collector._graph_client = _RoutingGraphClient(install_response, assessment_response, install_exc, assessment_exc)
+    collector._monitor_client = _FakeMonitorClient(activity_entries)
+    collector._ensure_clients = lambda subscription_id: None
+    return collector
+
+
+def test_a_successful_assessment_result_produces_a_patch_assessment_event():
+    response = _FakeGraphResult([{
+        "id": "/subscriptions/s/.../patchassessmentresults/x",
+        "properties": {
+            "status": "Succeeded",
+            "rebootPending": False,
+            "availablePatchCountByClassification": {"security": 2, "other": 1},
+            "lastModifiedDateTime": "2026-10-18T08:05:00Z",
+        },
+    }])
+    collector = _collector_with(assessment_response=response)
+
+    result = collector.collect(_request())
+
+    assessment_events = [e for e in result.events if e.kind == "patch_assessment"]
+    assert len(assessment_events) == 1
+    assert "Succeeded" in assessment_events[0].summary
+    assert "3 patch(es) pending" in assessment_events[0].summary
+    assert assessment_events[0].detail["available_patch_counts"] == {"security": 2, "other": 1}
+
+
+def test_a_failed_assessment_result_query_is_traced_but_still_returns_a_collection_gap(caplog):
+    collector = _collector_with(assessment_exc=RuntimeError("assessment table unavailable"))
+
+    with caplog.at_level("WARNING"):
+        result = collector.collect(_request())
+
+    assert result.error is not None and "Assessment query failed" in result.error
+    assert any(
+        r.levelname == "WARNING" and "azure_control_plane: assessment-result query for vm-1 failed" in r.message and "RuntimeError" in r.message
+        for r in caplog.records
+    )
+
+
+# ── Activity Log cap/filter (2026-10-18) ─────────────────────────────────────
+# Found answering a direct "will this bloat LLM token usage" question: a
+# real production run logged "activity-log query ... returned 262
+# event(s)" for a single machine - one TimelineEvent per raw row, no cap,
+# most of them routine reads.
+
+class _FakeOperationName:
+    def __init__(self, value):
+        self.value = value
+        self.localized_value = value
+
+
+class _FakeStatus:
+    def __init__(self, value):
+        self.value = value
+
+
+class _FakeActivityLogEntry:
+    def __init__(self, operation_value, status_value="Succeeded", ts=None, event_id="id"):
+        self.operation_name = _FakeOperationName(operation_value)
+        self.status = _FakeStatus(status_value)
+        self.event_timestamp = ts or datetime.now(timezone.utc)
+        self.caller = "user@example.com"
+        self.event_data_id = event_id
+        self.correlation_id = None
+
+
+def test_activity_log_drops_routine_reads_but_keeps_writes_and_failures():
+    entries = [
+        _FakeActivityLogEntry("Microsoft.Compute/virtualMachines/read", "Succeeded", event_id="read-1"),
+        _FakeActivityLogEntry("Microsoft.Compute/virtualMachines/read", "Succeeded", event_id="read-2"),
+        _FakeActivityLogEntry("Microsoft.Compute/virtualMachines/write", "Succeeded", event_id="write-1"),
+        _FakeActivityLogEntry("Microsoft.Compute/virtualMachines/read", "Failed", event_id="failed-read"),
+    ]
+    collector = _collector_with(activity_entries=entries)
+
+    result = collector.collect(_request())
+
+    kept_refs = {e.raw_ref for e in result.events if e.kind == "activity_log"}
+    assert kept_refs == {"activitylog:write-1", "activitylog:failed-read"}
+
+
+def test_activity_log_caps_at_the_max_even_after_filtering_keeping_most_recent():
+    now = datetime.now(timezone.utc)
+    entries = [
+        _FakeActivityLogEntry(
+            "Microsoft.Compute/virtualMachines/write", "Succeeded",
+            ts=now - timedelta(minutes=i), event_id=f"write-{i}",
+        )
+        for i in range(_MAX_ACTIVITY_LOG_EVENTS + 10)
+    ]
+    collector = _collector_with(activity_entries=entries)
+
+    result = collector.collect(_request())
+
+    activity_events = [e for e in result.events if e.kind == "activity_log"]
+    assert len(activity_events) == _MAX_ACTIVITY_LOG_EVENTS
+    # most-recent-first: write-0 (now) must survive, write-{last} (oldest) must not
+    kept_refs = {e.raw_ref for e in activity_events}
+    assert "activitylog:write-0" in kept_refs
+    assert f"activitylog:write-{_MAX_ACTIVITY_LOG_EVENTS + 9}" not in kept_refs
+
+
+def test_activity_log_logs_only_when_the_filter_actually_reduced_the_count(caplog):
+    entries = [_FakeActivityLogEntry("Microsoft.Compute/virtualMachines/read", "Succeeded", event_id="read-1")]
+    collector = _collector_with(activity_entries=entries)
+
+    with caplog.at_level("INFO"):
+        collector.collect(_request())
+
+    assert any("activity log for vm-1 had 1 event(s), kept 0 after filtering" in r.message for r in caplog.records)
+
+
+def test_activity_log_logs_nothing_extra_when_nothing_was_filtered(caplog):
+    entries = [_FakeActivityLogEntry("Microsoft.Compute/virtualMachines/write", "Succeeded", event_id="write-1")]
+    collector = _collector_with(activity_entries=entries)
+
+    with caplog.at_level("INFO"):
+        collector.collect(_request())
+
+    assert not any("kept" in r.message and "after filtering" in r.message for r in caplog.records)

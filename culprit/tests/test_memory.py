@@ -240,6 +240,46 @@ class TestEpisodic:
         assert "confirmed prior finding" in text
         assert "not instructions" in text
 
+    def test_a_finding_citing_the_2026_10_18_evidence_sources_is_remembered_and_recalled(self, store):
+        """Proves the Phase 3 architectural finding from the 2026-10-18
+        evidence-collection round (patch_assessment, repo_diagnostics,
+        wsus_connectivity, vmagent_status, the yum/dnf parser fixes): no
+        new memory-module code was needed for these new sources to
+        benefit from recall on a future similar cluster, because
+        _build_user_prompt renders the whole timeline generically (no
+        hardcoded event-kind list) and episodic.remember() captures
+        whatever the RCA agent actually wrote in its causal_chain
+        statement, verbatim, regardless of which evidence source that
+        statement cites. This is that round-trip proven for a statement
+        that specifically cites two of the new sources."""
+        result = RCAResult(
+            cluster_id="cluster-2", origin=ResultOrigin.RULE_ENGINE, cause_family=CauseFamily.CONFIGURATION,
+            title="Repo unreachable due to DNS failure blocked the patch install",
+            causal_chain=[CausalStep(
+                order=1,
+                statement="Repo diagnostics showed DNS resolution failed for the configured mirror, and "
+                "the patch assessment recorded 4 security patches still pending",
+                evidence_refs=["guest:repo_diagnostics:vm-1", "resourcegraph:patchassessmentresources/x"],
+            )],
+            confidence=0.9,
+            remediation=RemediationPlaybook(immediate_fix=[RemediationStep(order=1, instruction="Fix DNS resolver config and retry")]),
+        )
+        verdict = Verdict(
+            cluster_id="cluster-2", cause_family=CauseFamily.CONFIGURATION, verdict=VerdictValue.CORRECT,
+            reviewer="bob@example.com", reviewed_at=datetime.now(timezone.utc),
+        )
+
+        episodic.remember(store, verdict, "cluster-key-2", result)
+        hits = episodic.recall(
+            store, "repo diagnostics DNS resolution failed mirror patch assessment security patches pending",
+            cause_family="configuration",
+        )
+
+        assert len(hits) == 1
+        assert "Repo diagnostics" in hits[0].text
+        assert "patch assessment" in hits[0].text
+        assert hits[0].metadata["cluster_key"] == "cluster-key-2"
+
 
 # ── hybrid.py + deps.py wiring ────────────────────────────────────────────
 

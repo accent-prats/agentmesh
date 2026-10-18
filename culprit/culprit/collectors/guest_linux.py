@@ -20,6 +20,7 @@ from datetime import datetime, timezone
 
 from culprit.collectors.base import CollectionRequest, CollectionResult, Collector
 from culprit.collectors.patch_extension_status import (
+    MAX_ANOMALY_EVENTS_PER_SECTION,
     has_extension_log_anomaly,
     parse_leading_timestamp,
     parse_patch_extension_status,
@@ -77,6 +78,24 @@ ALLOWED_LINUX_SCRIPT = (
     "echo ---EXT_CORE_LOG---; "
     "LATESTCORE=$(ls -t /var/log/azure/Microsoft.CPlat.Core.LinuxPatchExtension/*.core.log 2>/dev/null | head -1); "
     "if [ -n \"$LATESTCORE\" ]; then tail -n 200 \"$LATESTCORE\"; fi; "
+    "echo ---EXT_WRAPPER_LOG---; "
+    "LATESTWRAPPER=$(ls -t /var/log/azure/Microsoft.CPlat.Core.LinuxPatchExtension/*_Enable.ext.log "
+    "/var/log/azure/Microsoft.CPlat.Core.LinuxPatchExtension/*.ext.log 2>/dev/null | head -1); "
+    "if [ -n \"$LATESTWRAPPER\" ]; then tail -n 200 \"$LATESTWRAPPER\"; fi; "
+    "echo ---REPO_DIAGNOSTICS---; "
+    "REPOHOST=$(grep -h -oE '^deb[[:space:]]+https?://[^/[:space:]]+' /etc/apt/sources.list "
+    "/etc/apt/sources.list.d/*.list 2>/dev/null | head -1 | sed -E 's#^deb[[:space:]]+https?://##'); "
+    "if [ -z \"$REPOHOST\" ]; then REPOHOST=$(grep -h -oE '^baseurl=https?://[^/[:space:]]+' "
+    "/etc/yum.repos.d/*.repo 2>/dev/null | head -1 | sed -E 's#^baseurl=https?://##'); fi; "
+    "if [ -z \"$REPOHOST\" ]; then REPOHOST=archive.ubuntu.com; fi; "
+    "echo \"configured_host=$REPOHOST\"; "
+    "echo \"http_proxy=$http_proxy\"; "
+    "echo \"https_proxy=$https_proxy\"; "
+    "getent hosts \"$REPOHOST\" >/dev/null 2>&1 && echo dns_resolved=yes || echo dns_resolved=no; "
+    "timeout 5 curl -o /dev/null -s -w \"http_status=%{http_code}\\n\" \"http://$REPOHOST\" 2>/dev/null || echo http_status=unreachable; "
+    "echo ---JOURNAL_REBOOT---; "
+    "journalctl --list-boots 2>/dev/null | tail -5; "
+    "journalctl -k -p err -n 100 2>/dev/null; "
     "EXTDIR=$(find /var/lib/waagent -maxdepth 1 -type d "
     "-name 'Microsoft.CPlat.Core.LinuxPatchExtension-*' 2>/dev/null | sort -V | tail -1); "
     "echo ---EXT_VERSION---; "
@@ -298,7 +317,7 @@ def parse_waagent_log(text: str, vm_id: str) -> list[TimelineEvent]:
                 raw_ref=f"guest:waagent.log:{vm_id}:{i}",
             )
         )
-    return events
+    return events[:MAX_ANOMALY_EVENTS_PER_SECTION]
 
 
 def parse_extension_core_log(text: str, vm_id: str) -> list[TimelineEvent]:
@@ -323,7 +342,134 @@ def parse_extension_core_log(text: str, vm_id: str) -> list[TimelineEvent]:
                 raw_ref=f"guest:core.log:{vm_id}:{i}",
             )
         )
-    return events
+    return events[:MAX_ANOMALY_EVENTS_PER_SECTION]
+
+
+def parse_extension_wrapper_log(text: str, vm_id: str) -> list[TimelineEvent]:
+    """The extension *wrapper's* log (`*_Enable.ext.log`/`*.ext.log`) -
+    whether Azure actually invoked the patch operation at all, distinct
+    from parse_extension_core_log's "what happened once it ran." Same
+    generic anomaly scan and the same honesty caveat as every other new
+    guest-log parser added 2026-10-18 - no live-verified real sample of
+    this file's line format."""
+    events: list[TimelineEvent] = []
+    for i, line in enumerate(text.splitlines()):
+        if not line.strip() or not has_extension_log_anomaly(line):
+            continue
+        events.append(
+            TimelineEvent(
+                ts=parse_leading_timestamp(line) or datetime.now(timezone.utc),
+                source=Source.GUEST_LINUX,
+                kind="extension_wrapper_log",
+                summary=line.strip()[:240],
+                detail={},
+                raw_ref=f"guest:ext_wrapper.log:{vm_id}:{i}",
+            )
+        )
+    return events[:MAX_ANOMALY_EVENTS_PER_SECTION]
+
+
+def parse_yum_log(text: str, vm_id: str) -> list[TimelineEvent]:
+    """Found 2026-10-18: YUM_LOG was already being fetched from the VM
+    (ALLOWED_LINUX_SCRIPT) but parse_linux_output never read it - the data
+    arrived and was silently dropped on every RHEL/CentOS/Fedora machine.
+    Generic anomaly scan, not an exact-format parse like parse_dpkg_log -
+    same reasoning as parse_waagent_log: no live-verified sample of a real
+    yum.log's line format to build an exact regex against."""
+    events: list[TimelineEvent] = []
+    for i, line in enumerate(text.splitlines()):
+        if not line.strip() or not has_extension_log_anomaly(line):
+            continue
+        events.append(
+            TimelineEvent(
+                ts=datetime.now(timezone.utc),
+                source=Source.GUEST_LINUX,
+                kind="package_manager_log",
+                summary=f"yum.log: {line.strip()}"[:240],
+                detail={},
+                raw_ref=f"guest:yum.log:{vm_id}:{i}",
+            )
+        )
+    return events[:MAX_ANOMALY_EVENTS_PER_SECTION]
+
+
+def parse_dnf_log(text: str, vm_id: str) -> list[TimelineEvent]:
+    """Same bug and same fix as parse_yum_log above, for DNF_LOG."""
+    events: list[TimelineEvent] = []
+    for i, line in enumerate(text.splitlines()):
+        if not line.strip() or not has_extension_log_anomaly(line):
+            continue
+        events.append(
+            TimelineEvent(
+                ts=datetime.now(timezone.utc),
+                source=Source.GUEST_LINUX,
+                kind="package_manager_log",
+                summary=f"dnf.log: {line.strip()}"[:240],
+                detail={},
+                raw_ref=f"guest:dnf.log:{vm_id}:{i}",
+            )
+        )
+    return events[:MAX_ANOMALY_EVENTS_PER_SECTION]
+
+
+def parse_repo_diagnostics(text: str, vm_id: str) -> list[TimelineEvent]:
+    """REPO_DIAGNOSTICS probes the *actually configured* repo host (unlike
+    REPO_CHECK's hardcoded archive.ubuntu.com, kept as-is alongside this -
+    see its own docstring) for DNS resolution and HTTP reachability, plus
+    proxy env vars for context. Anomaly-gated: only emits when something's
+    actually wrong, not a routine "all fine" confirmation line every run -
+    keeps this consistent with every other new parser's token-conscious
+    design (no finding = no event = zero added prompt tokens)."""
+    fields: dict[str, str] = {}
+    for line in text.splitlines():
+        key, sep, value = line.partition("=")
+        if sep:
+            fields.setdefault(key.strip(), value.strip())
+    host = fields.get("configured_host", "")
+    dns_resolved = fields.get("dns_resolved") == "yes"
+    http_status = fields.get("http_status", "")
+    http_ok = http_status.isdigit() and http_status.startswith(("2", "3"))
+    if dns_resolved and http_ok:
+        return []
+    return [
+        TimelineEvent(
+            ts=datetime.now(timezone.utc),
+            source=Source.GUEST_LINUX,
+            kind="repo_diagnostics",
+            summary=f"Repo diagnostics for {host or '(unknown host)'}: "
+            f"dns_resolved={dns_resolved}, http_status={http_status or 'unreachable'}",
+            detail={
+                "configured_host": host,
+                "dns_resolution_failed": not dns_resolved,
+                "repo_unreachable": not http_ok,
+                "http_proxy": fields.get("http_proxy", ""),
+                "https_proxy": fields.get("https_proxy", ""),
+            },
+            raw_ref=f"guest:repo_diagnostics:{vm_id}",
+        )
+    ]
+
+
+def parse_journal_reboot(text: str, vm_id: str) -> list[TimelineEvent]:
+    """journalctl --list-boots (surfaces a mid-window reboot) + recent
+    kernel errors (-k -p err) - same generic anomaly-keyword scan as
+    parse_waagent_log/parse_extension_core_log, for the same reason: no
+    live-verified sample of a real VM's journal line formats."""
+    events: list[TimelineEvent] = []
+    for i, line in enumerate(text.splitlines()):
+        if not line.strip() or not has_extension_log_anomaly(line):
+            continue
+        events.append(
+            TimelineEvent(
+                ts=parse_leading_timestamp(line) or datetime.now(timezone.utc),
+                source=Source.GUEST_LINUX,
+                kind="journal_reboot",
+                summary=line.strip()[:240],
+                detail={},
+                raw_ref=f"guest:journal:{vm_id}:{i}",
+            )
+        )
+    return events[:MAX_ANOMALY_EVENTS_PER_SECTION]
 
 
 def parse_subscription_manager(text: str, vm_id: str) -> list[TimelineEvent]:
@@ -343,17 +489,34 @@ def parse_subscription_manager(text: str, vm_id: str) -> list[TimelineEvent]:
     return []
 
 
+def _log_if_found(parser_name: str, events: list[TimelineEvent], vm_id: str) -> list[TimelineEvent]:
+    """Found 2026-10-18: the existing per-collector tracing covers the
+    whole Run Command call these sections ride inside, but not which
+    specific new signal actually fired - useful when triaging a real run's
+    container logs. Logs only when something was actually found (never a
+    "found nothing" line per section per machine - that's 114 machines x
+    several new sections of pure noise for the common healthy case)."""
+    if events:
+        log.info("guest_linux: %s found %d anomaly event(s) for %s", parser_name, len(events), vm_id)
+    return events
+
+
 def parse_linux_output(stdout: str, vm_id: str) -> tuple[list[TimelineEvent], list[dict]]:
     sections = _split_sections(stdout)
     events: list[TimelineEvent] = []
     events += parse_dpkg_log(sections.get("DPKG_LOG", ""), vm_id)
     events += parse_apt_history(sections.get("APT_HISTORY", ""), vm_id)
+    events += _log_if_found("parse_yum_log", parse_yum_log(sections.get("YUM_LOG", ""), vm_id), vm_id)
+    events += _log_if_found("parse_dnf_log", parse_dnf_log(sections.get("DNF_LOG", ""), vm_id), vm_id)
     events += parse_disk_usage(sections.get("DISK_USAGE", ""), vm_id)
     events += parse_lock_holder(sections.get("LOCK_HOLDER", ""), vm_id)
     events += parse_repo_check(sections.get("REPO_CHECK", ""), vm_id)
+    events += _log_if_found("parse_repo_diagnostics", parse_repo_diagnostics(sections.get("REPO_DIAGNOSTICS", ""), vm_id), vm_id)
     events += parse_subscription_manager(sections.get("SUBMAN", ""), vm_id)
     events += parse_waagent_log(sections.get("WAAGENT_LOG", ""), vm_id)
     events += parse_extension_core_log(sections.get("EXT_CORE_LOG", ""), vm_id)
+    events += _log_if_found("parse_extension_wrapper_log", parse_extension_wrapper_log(sections.get("EXT_WRAPPER_LOG", ""), vm_id), vm_id)
+    events += _log_if_found("parse_journal_reboot", parse_journal_reboot(sections.get("JOURNAL_REBOOT", ""), vm_id), vm_id)
     ext_events, ext_findings = parse_patch_extension_status(
         sections.get("EXT_STATUS", ""), vm_id, Source.GUEST_LINUX,
         extension_version=sections.get("EXT_VERSION", "").strip() or None,

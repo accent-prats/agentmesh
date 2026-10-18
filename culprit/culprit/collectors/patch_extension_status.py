@@ -71,6 +71,18 @@ EXTENSION_LOG_ZERO_COUNT_RE = re.compile(
     re.IGNORECASE,
 )
 
+# Shared cap for every generic anomaly-keyword-scan parser in
+# guest_linux.py/guest_windows.py (waagent.log, core.log, the extension
+# wrapper log, VM Agent status, yum/dnf logs, journal/kernel errors,
+# System Event Log). Found 2026-10-18 answering a direct "will this bloat
+# LLM token usage" question: each anomaly event becomes one line in the
+# RCA prompt via EvidenceBundle.render_timeline_text(), so a single
+# genuinely noisy log file could otherwise add an unbounded number of
+# prompt lines. 5 is generous for what these scans exist to catch (a
+# handful of real failures, not a full log dump) while bounding the
+# worst case.
+MAX_ANOMALY_EVENTS_PER_SECTION = 5
+
 
 def has_extension_log_anomaly(line: str) -> bool:
     """True if `line` contains a real anomaly - not just a healthy
