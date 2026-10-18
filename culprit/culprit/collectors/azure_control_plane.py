@@ -44,7 +44,18 @@ log = logging.getLogger(__name__)
 # handful of long entries per machine, not hundreds of short ones, so this
 # doesn't reopen the Activity Log token-bloat problem fixed earlier this
 # session (azure_control_plane.py::_activity_log_events's own 20-event cap).
-_PATCH_ERROR_SUMMARY_MAX_CHARS = 600
+#
+# Raised again the same day, 600 -> 900: a real top-level `error.message`
+# (used by the fallback below when `error.details[]` is empty) measured 632
+# chars on its own - longer than a single `details[]` entry, because the
+# top-level field wraps the same diagnostic text in Azure's own boilerplate
+# preamble ("1 errors reported. The latest N errors are shared in details.
+# To view all errors, review this log file on the machine: [path]") before
+# the actual "Failed to assess and install update... hResult:...aka.ms
+# link" content. 600 was still cutting the link off for this real message;
+# 900 gives real headroom without meaningfully changing the token-bloat
+# argument above (still one event, not a growing count).
+_PATCH_ERROR_SUMMARY_MAX_CHARS = 900
 
 # Defense-in-depth found by review: both _INSTALL_RESULT_QUERY and
 # _ASSESSMENT_RESULT_QUERY already `limit 1` (at most one install row and
@@ -190,17 +201,47 @@ class AzureControlPlaneCollector(Collector):
                 # Culprit's own RCA had no visibility into. Reaches the
                 # model for free via render_timeline_text() - no prompt
                 # change needed, same as patch_extension_status.py.
-                for i, detail in enumerate(outcome.error_details[:_MAX_PATCH_ERROR_EVENTS]):
+                if outcome.error_details:
+                    for i, detail in enumerate(outcome.error_details[:_MAX_PATCH_ERROR_EVENTS]):
+                        events.append(
+                            TimelineEvent(
+                                ts=_parse_ts(props.get("lastModifiedDateTime") or props.get("startDateTime")),
+                                source=Source.AZURE_CONTROL_PLANE,
+                                kind="azure_patch_error",
+                                summary=(f"Azure-reported install error: {detail.message or detail.code or '(no message)'}")[
+                                    :_PATCH_ERROR_SUMMARY_MAX_CHARS
+                                ],
+                                detail={"code": detail.code, "target": detail.target},
+                                raw_ref=f"resourcegraph:{rows[0]['id']}:error:{i}",
+                            )
+                        )
+                elif outcome.error_message:
+                    # Found 2026-10-18 from a real production RCA that
+                    # fabricated a wrong hResult code and a nonexistent
+                    # "vendor documentation" citation: when `error.details[]`
+                    # is empty, the only real diagnostic text Azure gave us
+                    # (the full "Failed to assess and install update...
+                    # hResult:0x...  For information on diagnosing this
+                    # error, see https://aka.ms/..." message, confirmed
+                    # directly against the real Azure Portal "Update
+                    # deployment run" pane for this exact operation) lives
+                    # entirely in the top-level `error.message` field - which
+                    # previously never became a TimelineEvent at all. With
+                    # nothing concrete to cite, the model invented a
+                    # plausible-sounding but WRONG specific answer instead of
+                    # admitting it lacked detail - a more dangerous variant
+                    # of "no citation, no claim" than a fabricated raw_ref,
+                    # since the cited event (bare patch_result) is real, just
+                    # uninformative. Same cap/kind as the per-detail events
+                    # above so this is indistinguishable downstream.
                     events.append(
                         TimelineEvent(
                             ts=_parse_ts(props.get("lastModifiedDateTime") or props.get("startDateTime")),
                             source=Source.AZURE_CONTROL_PLANE,
                             kind="azure_patch_error",
-                            summary=(f"Azure-reported install error: {detail.message or detail.code or '(no message)'}")[
-                                :_PATCH_ERROR_SUMMARY_MAX_CHARS
-                            ],
-                            detail={"code": detail.code, "target": detail.target},
-                            raw_ref=f"resourcegraph:{rows[0]['id']}:error:{i}",
+                            summary=f"Azure-reported install error: {outcome.error_message}"[:_PATCH_ERROR_SUMMARY_MAX_CHARS],
+                            detail={},
+                            raw_ref=f"resourcegraph:{rows[0]['id']}:error_message",
                         )
                     )
         except Exception as exc:  # noqa: BLE001 - collection must degrade, not crash the pipeline
@@ -253,14 +294,29 @@ class AzureControlPlaneCollector(Collector):
                 # invisible to the RCA even though they were already being
                 # collected. Found 2026-10-18 alongside the truncation fix
                 # for the install-result side of this exact gap.
-                for i, message in enumerate(summary_detail["error_detail_messages"][:_MAX_PATCH_ERROR_EVENTS]):
+                error_detail_messages = summary_detail["error_detail_messages"]
+                if error_detail_messages:
+                    for i, message in enumerate(error_detail_messages[:_MAX_PATCH_ERROR_EVENTS]):
+                        events.append(
+                            TimelineEvent(
+                                ts=_parse_ts(assessment_props.get("lastModifiedDateTime") or assessment_props.get("startDateTime")),
+                                source=Source.AZURE_CONTROL_PLANE,
+                                kind="azure_assessment_error",
+                                summary=f"Azure-reported assessment error: {message}"[:_PATCH_ERROR_SUMMARY_MAX_CHARS],
+                                raw_ref=f"resourcegraph:{assessment_rows[0]['id']}:error:{i}",
+                            )
+                        )
+                elif summary_detail["error_message"]:
+                    # Same install-result gap, mirrored: when
+                    # error.details[] is empty, the only real content lives
+                    # in the top-level error.message field.
                     events.append(
                         TimelineEvent(
                             ts=_parse_ts(assessment_props.get("lastModifiedDateTime") or assessment_props.get("startDateTime")),
                             source=Source.AZURE_CONTROL_PLANE,
                             kind="azure_assessment_error",
-                            summary=f"Azure-reported assessment error: {message}"[:_PATCH_ERROR_SUMMARY_MAX_CHARS],
-                            raw_ref=f"resourcegraph:{assessment_rows[0]['id']}:error:{i}",
+                            summary=f"Azure-reported assessment error: {summary_detail['error_message']}"[:_PATCH_ERROR_SUMMARY_MAX_CHARS],
+                            raw_ref=f"resourcegraph:{assessment_rows[0]['id']}:error_message",
                         )
                     )
         except Exception as exc:  # noqa: BLE001

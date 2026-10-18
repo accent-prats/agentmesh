@@ -547,3 +547,98 @@ def test_azure_assessment_error_events_are_capped_defensively():
 
     error_events = [e for e in result.events if e.kind == "azure_assessment_error"]
     assert len(error_events) == _MAX_PATCH_ERROR_EVENTS
+
+
+# A real production case (2026-10-18): a patchinstallationresults row whose
+# `error.details[]` was empty but whose top-level `error.message` carried
+# the ENTIRE real diagnostic text (confirmed directly against the Azure
+# Portal's own "Update deployment run" pane for the same operation) -
+# previously invisible to the RCA model, which then fabricated a wrong
+# hResult code and a nonexistent "vendor documentation" citation rather
+# than admitting it had no real detail.
+_REAL_MESSAGE_ONLY_ERROR = (
+    "\"1 errors reported. The latest 3 errors are shared in details. To view all errors, review "
+    "this log file on the machine: [C:\\WindowsAzure\\Logs\\Plugins\\Microsoft.CPlat.Core."
+    "WindowsPatchExtension\\1.5.85] [\"Failed to assess and install update [2026-10 Cumulative "
+    "Update for Microsoft server operating system version 21H2 for x64-based Systems "
+    "(KB5126655)]. Reason: [Failed to install Update 2026-10 Cumulative Update for Microsoft "
+    "server operating system version 21H2 for x64-based Systems (KB5126655), result "
+    "code=Failed, hResult: 0x80070002.. For information on diagnosing this error, see "
+    "https://aka.ms/TroubleshootVMGuestPatching.]\"]"
+)
+
+
+def test_install_result_falls_back_to_the_top_level_error_message_when_details_is_empty():
+    response = _FakeGraphResult([{
+        "id": "/subscriptions/s/.../patchinstallationresults/8772a0f9",
+        "properties": {
+            "status": "Failed",
+            "lastModifiedDateTime": "2026-10-16T04:28:49Z",
+            "error": {"message": _REAL_MESSAGE_ONLY_ERROR, "details": []},
+        },
+    }])
+    collector = _collector_with(install_response=response)
+
+    result = collector.collect(_request())
+
+    error_events = [e for e in result.events if e.kind == "azure_patch_error"]
+    assert len(error_events) == 1
+    assert "hResult: 0x80070002" in error_events[0].summary
+    assert "https://aka.ms/TroubleshootVMGuestPatching" in error_events[0].summary
+    assert error_events[0].raw_ref == "resourcegraph:/subscriptions/s/.../patchinstallationresults/8772a0f9:error_message"
+
+
+def test_install_result_prefers_error_details_over_the_top_level_message_when_both_exist():
+    """The fallback must not duplicate real per-detail events - when
+    error.details[] is populated, the top-level error.message (often just
+    a terse "N errors reported" meta-summary) is not surfaced separately."""
+    response = _FakeGraphResult([{
+        "id": "/subscriptions/s/.../patchinstallationresults/x",
+        "properties": {
+            "status": "Failed",
+            "lastModifiedDateTime": "2026-10-16T04:28:49Z",
+            "error": {
+                "message": "1 errors reported.",
+                "details": [{"code": "Error", "message": "the real detailed reason"}],
+            },
+        },
+    }])
+    collector = _collector_with(install_response=response)
+
+    result = collector.collect(_request())
+
+    error_events = [e for e in result.events if e.kind == "azure_patch_error"]
+    assert len(error_events) == 1
+    assert "the real detailed reason" in error_events[0].summary
+    assert "1 errors reported" not in error_events[0].summary
+
+
+def test_install_result_with_no_error_message_and_no_details_produces_no_error_event():
+    response = _FakeGraphResult([{
+        "id": "/subscriptions/s/.../patchinstallationresults/x",
+        "properties": {"status": "Failed", "lastModifiedDateTime": "2026-10-16T04:28:49Z"},
+    }])
+    collector = _collector_with(install_response=response)
+
+    result = collector.collect(_request())
+
+    assert not [e for e in result.events if e.kind == "azure_patch_error"]
+
+
+def test_assessment_result_falls_back_to_the_top_level_error_message_when_details_is_empty():
+    response = _FakeGraphResult([{
+        "id": "/subscriptions/s/.../patchassessmentresults/x",
+        "properties": {
+            "status": "Failed",
+            "rebootPending": False,
+            "lastModifiedDateTime": "2026-10-18T08:05:00Z",
+            "error": {"message": "Could not reach Windows Update service", "details": []},
+        },
+    }])
+    collector = _collector_with(assessment_response=response)
+
+    result = collector.collect(_request())
+
+    error_events = [e for e in result.events if e.kind == "azure_assessment_error"]
+    assert len(error_events) == 1
+    assert "Could not reach Windows Update service" in error_events[0].summary
