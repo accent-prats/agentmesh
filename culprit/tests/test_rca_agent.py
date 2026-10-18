@@ -7,7 +7,7 @@ from typing import Any
 from culprit.models.evidence import EvidenceBundle, MachineIdentity, OSFamily, PatchOutcome, Source, TimelineEvent
 from culprit.models.taxonomy import CauseFamily
 from culprit.pipeline.fingerprint import cluster_run
-from culprit.pipeline.rca_agent import DeepRCAAgent, _TOOL_NAME
+from culprit.pipeline.rca_agent import _RCA_TOOL_SCHEMA, DeepRCAAgent, _TOOL_NAME
 
 
 @dataclass
@@ -235,3 +235,33 @@ def test_prompt_surfaces_which_evidence_sources_were_attempted_and_succeeded():
     # guest_linux was attempted but is absent from succeeded - the model
     # should be able to see that asymmetry directly in this one line.
     assert "guest_linux" not in prompt.split("succeeded:")[1].split("\n")[0]
+
+
+def _assert_every_object_requires_every_property(schema: Any, path: str = "$") -> None:
+    """OpenAI's strict function-calling mode (Culprit's own tool schema has
+    `"strict": True`) rejects any object schema whose `required` doesn't
+    list every key in `properties` - "optional" there is expressed by the
+    model supplying an empty/default value, not by omitting the key from
+    `required`. Found 2026-10-18 from a real production 400 Bad Request:
+    both `ruled_out`'s and `immediate_fix_steps`'s item schemas had a
+    property (`evidence_refs`, `expected_result` respectively) missing
+    from `required`, and nothing caught it until a live OpenAI call
+    rejected it outright. Walks the whole schema recursively so any future
+    edit that reintroduces this - anywhere, not just these two fields -
+    fails a test instead of a live run."""
+    if not isinstance(schema, dict):
+        return
+    if schema.get("type") == "object" and "properties" in schema:
+        properties = set(schema["properties"])
+        required = set(schema.get("required", []))
+        missing = properties - required
+        assert not missing, f"{path}: required is missing {missing} (strict mode needs every property required)"
+        for key, subschema in schema["properties"].items():
+            _assert_every_object_requires_every_property(subschema, f"{path}.properties.{key}")
+    if schema.get("type") == "array" and "items" in schema:
+        _assert_every_object_requires_every_property(schema["items"], f"{path}.items")
+
+
+def test_tool_schema_satisfies_openai_strict_mode_everywhere():
+    assert _RCA_TOOL_SCHEMA["strict"] is True
+    _assert_every_object_requires_every_property(_RCA_TOOL_SCHEMA["input_schema"])

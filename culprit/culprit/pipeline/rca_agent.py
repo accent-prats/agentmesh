@@ -96,9 +96,21 @@ _RCA_TOOL_SCHEMA: dict[str, Any] = {
                     "properties": {
                         "candidate": {"type": "string"},
                         "reason": {"type": "string"},
-                        "evidence_refs": {"type": "array", "items": {"type": "string"}},
+                        "evidence_refs": {
+                            "type": "array",
+                            "items": {"type": "string"},
+                            "description": "raw_ref values supporting why this was ruled out - empty array if none apply",
+                        },
                     },
-                    "required": ["candidate", "reason"],
+                    # Found 2026-10-18 from a real production 400: OpenAI's
+                    # strict function-calling mode rejects any object schema
+                    # whose `required` doesn't list every key in
+                    # `properties` - "optional" here is expressed by the
+                    # model supplying an empty array, not by omitting the
+                    # key from `required` (models/rca.py::RuledOutCause's
+                    # own `evidence_refs` already defaults to `[]`, so this
+                    # doesn't change how an empty value is handled downstream).
+                    "required": ["candidate", "reason", "evidence_refs"],
                     "additionalProperties": False,
                 },
             },
@@ -113,8 +125,19 @@ _RCA_TOOL_SCHEMA: dict[str, Any] = {
                 "type": "array",
                 "items": {
                     "type": "object",
-                    "properties": {"order": {"type": "integer"}, "instruction": {"type": "string"}, "expected_result": {"type": "string"}},
-                    "required": ["order", "instruction"],
+                    "properties": {
+                        "order": {"type": "integer"},
+                        "instruction": {"type": "string"},
+                        "expected_result": {
+                            "type": "string",
+                            "description": "What should be true after this step succeeds - empty string if not yet known",
+                        },
+                    },
+                    # Same fix, same reason as "ruled_out" above - strict
+                    # mode requires every property in `required`.
+                    # models/rca.py::RemediationStep's own `expected_result`
+                    # already defaults to "".
+                    "required": ["order", "instruction", "expected_result"],
                     "additionalProperties": False,
                 },
             },
