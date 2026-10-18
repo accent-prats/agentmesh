@@ -83,7 +83,13 @@ def test_valid_tool_call_parses_into_rca_result():
     bundle = _bundle()
     result = agent.diagnose(_cluster(bundle), bundle)
     assert result.cause_family == CauseFamily.WINDOW_SCHEDULING
-    assert result.confidence == 0.7
+    # _bundle() has exactly one TimelineEvent (a single source,
+    # AZURE_CONTROL_PLANE) - 2026-10-19's confidence-calibration fix caps a
+    # deep_rca result's claimed 0.7 down to 0.6 whenever only one source
+    # backs the causal chain. See test_rca_agent_confidence_calibration.py
+    # for dedicated coverage of that behavior itself; this test's own
+    # purpose is just confirming the rest of the result parses faithfully.
+    assert result.confidence == 0.6
     assert result.causal_chain[0].evidence_refs == ["ref-1"]
 
 
@@ -290,6 +296,43 @@ def test_prompt_surfaces_which_evidence_sources_were_attempted_and_succeeded():
     # guest_linux was attempted but is absent from succeeded - the model
     # should be able to see that asymmetry directly in this one line.
     assert "guest_linux" not in prompt.split("succeeded:")[1].split("\n")[0]
+
+
+def test_prompt_tells_the_model_which_checks_already_ran_clean():
+    """checks_performed (added 2026-10-19 - see EvidenceBundle's own
+    docstring) - found from a real production RCA that cited "check
+    subscription-manager status" as a missing_evidence gap even though
+    SUBMAN runs unconditionally every scan and simply found nothing wrong.
+    The prompt must surface what was already checked, and explicitly tell
+    the model not to list an already-checked item as a gap or treat its
+    silence as license to guess."""
+    response = FakeResponse(content=[FakeBlock(type="tool_use", name=_TOOL_NAME, input=dict(_VALID_INPUT))])
+    client = FakeAnthropicClient(response)
+    agent = DeepRCAAgent(client=client)
+    bundle = _bundle().model_copy(update={
+        "checks_performed": ["subscription-manager (entitlement) status", "disk usage"],
+    })
+    agent.diagnose(_cluster(bundle), bundle, near_misses=[], retrieval_context="")
+    prompt = client.messages.last_kwargs["messages"][0]["content"]
+
+    assert "CHECKS PERFORMED WITH NO ISSUES FOUND" in prompt
+    assert "subscription-manager (entitlement) status" in prompt
+    assert "disk usage" in prompt
+    assert "do not list these under missing_evidence" in prompt
+
+
+def test_prompt_omits_the_checks_performed_section_when_there_are_none():
+    """No noise added to the prompt for a bundle whose collectors (e.g.
+    Windows/Linux guest collection never ran, or an older EvidenceBundle)
+    never populated checks_performed."""
+    response = FakeResponse(content=[FakeBlock(type="tool_use", name=_TOOL_NAME, input=dict(_VALID_INPUT))])
+    client = FakeAnthropicClient(response)
+    agent = DeepRCAAgent(client=client)
+    bundle = _bundle()
+    agent.diagnose(_cluster(bundle), bundle, near_misses=[], retrieval_context="")
+    prompt = client.messages.last_kwargs["messages"][0]["content"]
+
+    assert "CHECKS PERFORMED" not in prompt
 
 
 def _assert_object_schema_satisfies_strict_mode(schema: Any, path: str = "$") -> None:

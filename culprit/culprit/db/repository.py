@@ -171,6 +171,7 @@ def save_machine_outcomes(session: Session, run_id: str, cluster_key: str, bundl
         record.timeline_json = [
             e.model_dump(mode="json") for e in bundle.timeline_sorted()[-_MAX_PERSISTED_TIMELINE_EVENTS:]
         ]
+        record.checks_performed_json = bundle.checks_performed
     session.commit()
 
 
@@ -562,15 +563,17 @@ def get_machine_detail(session: Session, run_id: str, vm_name: str):
     `PatchOutcome`/collection gaps/patch extension status if this run saved
     one (see MachineOutcomeRecord - runs diagnosed before that table
     existed won't have one; `outcome` is None in that case, not an error).
-    Returns a 7-tuple (cluster, member, result, outcome, collection_gaps,
-    patch_extension_status, timeline), or None if the run, or a member
-    with this vm_name inside it, doesn't exist. `timeline` is the capped,
-    chronological slice of raw TimelineEvent dicts save_machine_outcomes
-    persisted (see MAX_PERSISTED_TIMELINE_EVENTS there) - left as raw
-    dicts, not reconstructed into TimelineEvent objects, matching
-    collection_gaps/patch_extension_status's own untyped-dict convention;
-    reporting/evidence_timeline_view.py is the one place that interprets
-    their shape for display.
+    Returns an 8-tuple (cluster, member, result, outcome, collection_gaps,
+    patch_extension_status, timeline, checks_performed), or None if the
+    run, or a member with this vm_name inside it, doesn't exist. `timeline`
+    is the capped, chronological slice of raw TimelineEvent dicts
+    save_machine_outcomes persisted (see MAX_PERSISTED_TIMELINE_EVENTS
+    there) - left as raw dicts, not reconstructed into TimelineEvent
+    objects, matching collection_gaps/patch_extension_status's own
+    untyped-dict convention; reporting/evidence_timeline_view.py is the one
+    place that interprets their shape for display. `checks_performed`
+    (added 2026-10-19) is the plain list of human-readable check names from
+    EvidenceBundle.checks_performed - see its own docstring.
 
     Keyed by vm_name rather than vm_id (a full Azure resource ID, which
     contains slashes and can't be a clean URL path segment) - the same
@@ -598,7 +601,7 @@ def get_machine_detail(session: Session, run_id: str, vm_name: str):
         result = RCAResult.model_validate(cr.rca_result.result_json) if cr.rca_result else None
 
         outcome_record = session.get(MachineOutcomeRecord, (run_id, member["vm_id"]))
-        outcome, collection_gaps, patch_extension_status, timeline = None, [], [], []
+        outcome, collection_gaps, patch_extension_status, timeline, checks_performed = None, [], [], [], []
         if outcome_record is not None:
             outcome = PatchOutcome(
                 status=outcome_record.status,
@@ -622,8 +625,9 @@ def get_machine_detail(session: Session, run_id: str, vm_name: str):
             # future consumer to re-derive the same `or []` guard.
             patch_extension_status = outcome_record.patch_extension_status_json or []
             timeline = outcome_record.timeline_json or []
+            checks_performed = outcome_record.checks_performed_json or []
 
-        return cluster, ClusterMember(**member), result, outcome, collection_gaps, patch_extension_status, timeline
+        return cluster, ClusterMember(**member), result, outcome, collection_gaps, patch_extension_status, timeline, checks_performed
 
     return None
 

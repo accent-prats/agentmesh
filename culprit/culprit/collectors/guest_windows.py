@@ -232,10 +232,10 @@ class GuestWindowsCollector(Collector):
                 return CollectionResult(events=[], error=f"Run Command failed: {exc}")
         log.info("guest_windows: Run Command on %s completed after %.1fs", request.machine.vm_name, time.monotonic() - started)
 
-        events, patch_extension_status = parse_windows_output(
+        events, patch_extension_status, checks_performed = parse_windows_output(
             stdout, vm_id=request.machine.vm_id, window_start=request.window_start, window_end=request.window_end,
         )
-        return CollectionResult(events=events, patch_extension_status=patch_extension_status)
+        return CollectionResult(events=events, patch_extension_status=patch_extension_status, checks_performed=checks_performed)
 
 
 _SECTION_RE = re.compile(r"^---(\w+)---$")
@@ -585,9 +585,30 @@ def _log_if_found(parser_name: str, events: list[TimelineEvent], vm_id: str) -> 
     return events
 
 
+# See guest_linux.py's identical constant/helper for the full rationale.
+# EXT_VERSION/EXT_STATUS are left out for the same reason as the Linux side.
+_SECTION_CHECK_LABELS: dict[str, str] = {
+    "WU_LOG": "Windows Update log",
+    "CBS_LOG": "CBS (servicing) log",
+    "PENDING_REBOOT": "pending reboot registry key",
+    "WUAUSERV": "Windows Update service (wuauserv) state",
+    "WU_HISTORY": "Windows Update install history",
+    "DISK_USAGE": "disk usage",
+    "WSUS_CONNECTIVITY": "WSUS/Windows Update connectivity",
+    "VMAGENT_STATUS": "Azure VM Agent aggregate status",
+    "SYSTEM_EVENTLOG": "Windows System Event Log",
+    "EXT_LOG": "patch extension log",
+    "COMMAND_EXECUTION_LOG": "patch extension command execution log",
+}
+
+
+def _checks_performed(sections: dict[str, str]) -> list[str]:
+    return [label for key, label in _SECTION_CHECK_LABELS.items() if key in sections]
+
+
 def parse_windows_output(
     stdout: str, vm_id: str, window_start: datetime | None = None, window_end: datetime | None = None,
-) -> tuple[list[TimelineEvent], list[dict]]:
+) -> tuple[list[TimelineEvent], list[dict], list[str]]:
     sections = _split_sections(stdout)
     events: list[TimelineEvent] = []
     events += parse_wu_log(sections.get("WU_LOG", ""), vm_id, window_start, window_end)
@@ -616,4 +637,4 @@ def parse_windows_output(
         extension_version=sections.get("EXT_VERSION", "").strip() or None,
     )
     events += ext_events
-    return events, ext_findings
+    return events, ext_findings, _checks_performed(sections)

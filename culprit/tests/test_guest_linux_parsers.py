@@ -101,13 +101,14 @@ def test_full_output_sectioning_and_parsing():
         "---KERNELS---\nii  linux-image-5.15.0-91-generic\n5.15.0-91-generic\n\n"
         "---SUBMAN---\nOverall Status: Current\n"
     )
-    events, findings = parse_linux_output(stdout, vm_id="vm-1")
+    events, findings, checks_performed = parse_linux_output(stdout, vm_id="vm-1")
     kinds = {e.kind for e in events}
     assert "package_manager_log" in kinds
     assert "disk_usage" in kinds
     assert "lock_state" in kinds
     assert not any(e.kind == "repo_check" for e in events)  # 200 is silent
     assert findings == []  # no EXT_STATUS section in this fixture
+    assert "subscription-manager (entitlement) status" in checks_performed
 
 
 def test_ext_status_section_is_sliced_out_and_handed_to_the_shared_parser():
@@ -141,7 +142,7 @@ def test_ext_status_section_is_sliced_out_and_handed_to_the_shared_parser():
         "---EXT_VERSION---\n1.6.71\n\n"
         "---EXT_STATUS---\n" + status_json + "\n"
     )
-    events, findings = parse_linux_output(stdout, vm_id="vm-1")
+    events, findings, _ = parse_linux_output(stdout, vm_id="vm-1")
     assert any(e.kind == "patch_extension_status" for e in events)
     assert len(findings) == 1
     assert findings[0]["source"] == "guest_linux"
@@ -342,7 +343,7 @@ def test_full_output_sectioning_includes_the_new_log_sections():
         "---EXT_VERSION---\n\n"
         "---EXT_STATUS---\nNo status file found\n"
     )
-    events, _ = parse_linux_output(stdout, vm_id="vm-1")
+    events, _, checks_performed = parse_linux_output(stdout, vm_id="vm-1")
     kinds = {e.kind for e in events}
     raw_refs = {e.raw_ref for e in events}
     assert "waagent_log" in kinds
@@ -352,6 +353,8 @@ def test_full_output_sectioning_includes_the_new_log_sections():
     assert "journal_reboot" in kinds
     assert any(ref.startswith("guest:yum.log:") for ref in raw_refs)
     assert any(ref.startswith("guest:dnf.log:") for ref in raw_refs)
+    assert "Azure Linux Agent log" in checks_performed
+    assert "system journal / reboot and kernel error history" in checks_performed
 
 
 def test_repo_check_curl_format_ends_with_a_newline():
@@ -392,7 +395,7 @@ def test_allowed_linux_script_runs_cleanly_through_a_real_shell(tmp_path):
     ):
         assert f"---{marker}---" in stdout.splitlines(), f"{marker} marker missing or merged onto another line"
 
-    events, _ = parse_linux_output(stdout, vm_id="vm-1")
+    events, _, _ = parse_linux_output(stdout, vm_id="vm-1")
     assert not any(e.kind == "repo_check" for e in events), "a healthy repo check must not synthesize a finding"
 
 
@@ -462,7 +465,7 @@ def test_parse_linux_output_threads_the_window_into_its_parsers():
     """An integration-level check that parse_linux_output actually
     forwards window_start/window_end to the parsers that accept them."""
     stdout = "---DPKG_LOG---\n" + _DPKG_LOG_TIMESTAMPED_ONLY
-    events, _ = parse_linux_output(
+    events, _, _ = parse_linux_output(
         stdout, vm_id="vm-1",
         window_start=datetime(2020, 1, 1, tzinfo=timezone.utc),
         window_end=datetime(2020, 1, 1, 1, 0, tzinfo=timezone.utc),

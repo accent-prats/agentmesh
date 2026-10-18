@@ -125,6 +125,18 @@ class EvidenceBundle(BaseModel):
         "account of success/error/substatus, not inferred from OS package-manager logs. "
         "Evidence that WAS collected, unlike collection_gaps (evidence that could not be).",
     )
+    checks_performed: list[str] = Field(
+        default_factory=list,
+        description="Human-readable names of checks that were genuinely attempted this run "
+        "(the guest-side Run Command section's marker was present in stdout), regardless of "
+        "whether anything anomalous was found. Most guest parsers are anomaly-gated (no "
+        "finding = no TimelineEvent), which otherwise makes a check that ran and found "
+        "nothing indistinguishable - to both the model and a human reading the UI - from a "
+        "check that never ran at all. A real RCA cited a vague 'evidence gap' about "
+        "subscription-manager status even though that check runs unconditionally every scan; "
+        "this closes that gap. Populated only by collectors/guest_linux.py and "
+        "collectors/guest_windows.py today.",
+    )
 
     def timeline_sorted(self) -> list[TimelineEvent]:
         return sorted(self.timeline, key=lambda e: e.ts)

@@ -64,6 +64,19 @@ def test_patch_extension_status_is_accumulated_across_collectors():
     assert bundle.patch_extension_status == [{"source": "guest_linux", "status": "error", "message": "disk full"}]
 
 
+def test_checks_performed_is_accumulated_across_collectors():
+    """checks_performed (added 2026-10-19, see CollectionResult's own
+    docstring) - same accumulation treatment as patch_extension_status
+    above, for the same reason: a per-collector signal merge_bundle must
+    not silently drop."""
+    results = {
+        Source.AZURE_CONTROL_PLANE: CollectionResult(events=[], outcome=PatchOutcome(status="Failed")),
+        Source.GUEST_LINUX: CollectionResult(events=[], checks_performed=["disk usage", "subscription-manager (entitlement) status"]),
+    }
+    bundle = merge_bundle("run-1", _machine(), results)
+    assert bundle.checks_performed == ["disk usage", "subscription-manager (entitlement) status"]
+
+
 def test_duplicate_events_are_deduped():
     now = datetime.now(timezone.utc)
     ev = _ev(now, "same-ref")

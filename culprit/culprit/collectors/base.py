@@ -44,6 +44,18 @@ class CollectionResult:
     # structured finding - including the raw status JSON - not just the
     # one-line summary a TimelineEvent carries.
     patch_extension_status: list[dict] = field(default_factory=list)
+    # Found 2026-10-19: most guest-level parsers are anomaly-gated (no
+    # finding = no TimelineEvent = zero added prompt tokens), which means a
+    # check that ran and found nothing looks identical - to both the model
+    # and a human reading the UI - to a check that never ran at all. A real
+    # RCA cited a vague "evidence gap" about subscription-manager status,
+    # even though that check runs unconditionally every scan; there was no
+    # way to tell the model (or the user) it had already been checked and
+    # was healthy. This records the human-readable name of every section
+    # that was genuinely attempted, regardless of whether it found anything
+    # - only guest_linux.py/guest_windows.py populate it today, one entry
+    # per parsed section (e.g. "subscription-manager status").
+    checks_performed: list[str] = field(default_factory=list)
 
 
 class Collector(abc.ABC):

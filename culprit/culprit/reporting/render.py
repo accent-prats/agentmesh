@@ -227,7 +227,10 @@ def render_settings_html() -> str:
     return template.render(active="settings")
 
 
-def render_machine_html(cluster, member, result, outcome=None, collection_gaps=None, patch_extension_status=None, timeline=None, tz_name: str = "UTC") -> str:
+def render_machine_html(
+    cluster, member, result, outcome=None, collection_gaps=None, patch_extension_status=None, timeline=None,
+    checks_performed=None, tz_name: str = "UTC",
+) -> str:
     """The third report altitude (proposal Section 8): one machine's own
     timeline deviation from its cluster's representative, plus its own
     `PatchOutcome` (status, error, failed KB/package) when this run saved
@@ -265,7 +268,17 @@ def render_machine_html(cluster, member, result, outcome=None, collection_gaps=N
     built from, shown here for the first time so a human reviewer can see
     the same thing the model saw, not just its conclusion - see
     evidence_timeline_view.py for the display mapping. None for runs
-    diagnosed before this column existed, same as patch_extension_status."""
+    diagnosed before this column existed, same as patch_extension_status.
+
+    `checks_performed` (MachineOutcomeRecord.checks_performed_json, from
+    `EvidenceBundle.checks_performed` - added 2026-10-19) is the plain list
+    of checks genuinely attempted this run regardless of outcome. Shown as
+    its own card rather than cross-matched against `rca_missing_evidence`
+    text (deliberately not attempted: fuzzy-matching free-text evidence-gap
+    prose against a fixed label list is brittle and risks a false "this
+    gap is actually covered" suppression) - a human reviewer cross-checks
+    the two cards themselves, same as they already do for the sibling
+    evidence/gap cards above."""
     from culprit.reporting.azure_error_view import build_azure_error_views
     from culprit.reporting.evidence_gaps import parse_evidence_gaps
     from culprit.reporting.evidence_timeline_view import build_timeline_views
@@ -279,6 +292,7 @@ def render_machine_html(cluster, member, result, outcome=None, collection_gaps=N
         azure_error_details=build_azure_error_views(outcome.error_details if outcome else []),
         rca_missing_evidence=parse_evidence_gaps(result.missing_evidence if result else []),
         evidence_timeline=build_timeline_views(timeline or []),
+        checks_performed=checks_performed or [],
         active="console", nav_prefix="../../../",
     )
 

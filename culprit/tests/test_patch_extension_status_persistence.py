@@ -63,7 +63,7 @@ def test_patch_extension_status_round_trips_through_save_and_load():
         detail = repository.get_machine_detail(session, "run-1", "vm-1")
 
     assert detail is not None
-    _, _, _, _, _, patch_extension_status, _ = detail
+    _, _, _, _, _, patch_extension_status, _, _ = detail
     assert patch_extension_status == findings
 
 
@@ -109,7 +109,7 @@ def test_a_row_predating_the_column_reads_back_as_an_empty_list_not_none():
         detail = repository.get_machine_detail(session, "run-1", "vm-1")
 
     assert detail is not None
-    _, _, _, _, _, patch_extension_status, _ = detail
+    _, _, _, _, _, patch_extension_status, _, _ = detail
     assert patch_extension_status == []
 
 

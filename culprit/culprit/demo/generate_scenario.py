@@ -136,6 +136,11 @@ def _boot_full_bundle(i: int) -> EvidenceBundle:
         sources_attempted=[Source.AZURE_CONTROL_PLANE, Source.GUEST_LINUX, Source.DATADOG_METRIC, Source.DATADOG_MONITOR],
         sources_succeeded=[Source.AZURE_CONTROL_PLANE, Source.GUEST_LINUX, Source.DATADOG_METRIC, Source.DATADOG_MONITOR],
         patch_extension_status=patch_extension_status,
+        # A couple of checks this scenario's guest collection genuinely ran
+        # but found nothing wrong on - showcases the new "Checks performed,
+        # no issues found" card (machine.html.j2) alongside the anomalous
+        # findings above, same as a real collection run would report both.
+        checks_performed=["subscription-manager (entitlement) status", "dpkg lock holder"],
     )
 
 

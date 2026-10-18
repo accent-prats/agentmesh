@@ -163,6 +163,14 @@ class MachineOutcomeRecord(Base):
     # parser this session caps its own anomaly events, for the same
     # reason (bounded row size, bounded render time).
     timeline_json: Mapped[list] = mapped_column(JSON, default=list)
+    # Human-readable names of checks genuinely attempted this run, whether
+    # or not they found anything (models/evidence.py::EvidenceBundle.
+    # checks_performed - see its own docstring for why this exists: most
+    # guest parsers are anomaly-gated, so a healthy check and a never-run
+    # one otherwise look identical to a human reading this machine's page).
+    # Added 2026-10-19, same already-deployed-DB treatment via db/engine.py
+    # ::_ensure_columns as patch_extension_status_json/timeline_json above.
+    checks_performed_json: Mapped[list] = mapped_column(JSON, default=list)
 
     run: Mapped[RunRecord] = relationship(back_populates="machine_outcomes")
 

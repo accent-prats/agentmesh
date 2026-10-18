@@ -30,7 +30,7 @@ from typing import Any, Protocol
 from pydantic import ValidationError
 
 from culprit.models.cluster import Cluster
-from culprit.models.evidence import EvidenceBundle
+from culprit.models.evidence import EvidenceBundle, Source
 from culprit.models.rca import RCAResult, ResultOrigin, format_unverifiable_reason
 from culprit.models.taxonomy import CauseFamily
 
@@ -220,6 +220,23 @@ def _build_user_prompt(
     ]
     if representative.collection_gaps:
         parts += ["", "COLLECTION GAPS (evidence that could not be gathered):", *[f"- {g}" for g in representative.collection_gaps]]
+    if representative.checks_performed:
+        # Found 2026-10-19: most guest-level parsers are anomaly-gated (no
+        # finding = no timeline event), so a check that ran and found
+        # nothing healthy looked identical to one never attempted at all -
+        # a real RCA listed "check subscription-manager status" as a
+        # missing_evidence gap even though that check runs unconditionally
+        # every scan and found nothing wrong. Telling the model explicitly
+        # what was already checked (even when silent) stops it from citing
+        # an already-checked, healthy item as a gap, and from treating
+        # silence on a topic as grounds to guess from general knowledge
+        # rather than say so honestly.
+        parts += [
+            "",
+            "CHECKS PERFORMED WITH NO ISSUES FOUND (already checked this run - do not list these "
+            "under missing_evidence, and do not treat their silence as grounds to guess a cause):",
+            *[f"- {c}" for c in representative.checks_performed],
+        ]
     if near_misses:
         parts += ["", "RULES THAT ALMOST FIRED (and why they abstained):", *[f"- {n}" for n in near_misses]]
     if retrieval_context:
@@ -328,7 +345,7 @@ class DeepRCAAgent:
                 f"Fabricated evidence_refs: {bad_refs}",
             ))
 
-        return result
+        return _calibrate_confidence(result, representative)
 
 
 def _to_rca_result(cluster_id: str, data: dict[str, Any]) -> RCAResult:
@@ -354,6 +371,76 @@ def _to_rca_result(cluster_id: str, data: dict[str, Any]) -> RCAResult:
             phase2_rationale=data.get("phase2_rationale", ""),
         ),
     )
+
+
+# Found 2026-10-19 from a real user complaint: a cluster with only 2
+# generic Azure control-plane facts and a hedged causal-chain statement
+# ("suggesting an underlying issue with the system state or entitlement")
+# was labeled HIGH CONFIDENCE - a cited-but-real evidence_ref (so it passes
+# _fabricated_refs cleanly) doesn't mean the CONCLUSION drawn from it is
+# well-supported. The model's own `confidence` field is never independently
+# checked anywhere - it's taken at face value. Two deterministic, auditable
+# signals (not a prompt instruction the model can ignore) cap it down to
+# _LOW_CONFIDENCE_CEILING when either fires: (1) every cited evidence_ref
+# traces back to a single Source - no guest-level or secondary
+# corroboration behind a deep_rca conclusion; (2) any causal_chain
+# statement uses hedging language ("suggesting"/"may indicate"/etc.) - the
+# model's own wording admitting it's inferring, not reading a fact off the
+# evidence. Deliberately only ever lowers confidence, never raises it, and
+# only applies to deep_rca results - a rule_engine match is a deterministic
+# pattern hit, not a model's self-reported number, so this doesn't apply.
+_LOW_CONFIDENCE_CEILING = 0.6
+
+_HEDGE_PHRASES = (
+    "suggest", "may indicate", "could indicate", "implying", "implies",
+    "possibly", "potentially", "might be", "could be", "appears to",
+    "seems to", "likely due to", "may be", "it's possible",
+)
+
+
+def _cited_sources(result: RCAResult, bundle: EvidenceBundle) -> set[Source]:
+    ref_to_source = {e.raw_ref: e.source for e in bundle.timeline}
+    sources: set[Source] = set()
+    for step in result.causal_chain:
+        for ref in step.evidence_refs:
+            source = ref_to_source.get(ref)
+            if source is not None:
+                sources.add(source)
+    return sources
+
+
+def _uses_hedging_language(result: RCAResult) -> bool:
+    text = " ".join(step.statement.lower() for step in result.causal_chain)
+    return any(phrase in text for phrase in _HEDGE_PHRASES)
+
+
+def _calibrate_confidence(result: RCAResult, bundle: EvidenceBundle) -> RCAResult:
+    """Caps an over-confident deep_rca result - see the module-level
+    comment above _LOW_CONFIDENCE_CEILING for why this exists and what it
+    checks. A no-op for anything already at or below the ceiling, for a
+    result with an empty causal_chain (already heading toward UNRESOLVED,
+    nothing to calibrate), or for a non-deep_rca origin."""
+    if result.origin != ResultOrigin.DEEP_RCA or not result.causal_chain:
+        return result
+    if result.confidence <= _LOW_CONFIDENCE_CEILING:
+        return result
+
+    sources = _cited_sources(result, bundle)
+    low_diversity = len(sources) <= 1
+    hedging = _uses_hedging_language(result)
+    if not (low_diversity or hedging):
+        return result
+
+    reasons = []
+    if low_diversity:
+        reasons.append(f"only {len(sources)} evidence source(s) ({', '.join(s.value for s in sources) or 'none'}) back the causal chain")
+    if hedging:
+        reasons.append("the causal chain's own wording hedges ('suggesting'/'may indicate'/etc.) rather than stating a fact")
+    log.info(
+        "RCA confidence capped for cluster %s: %.2f -> %.2f (%s)",
+        result.cluster_id, result.confidence, _LOW_CONFIDENCE_CEILING, "; ".join(reasons),
+    )
+    return result.model_copy(update={"confidence": min(result.confidence, _LOW_CONFIDENCE_CEILING)})
 
 
 def _fabricated_refs(result: RCAResult, bundle: EvidenceBundle) -> list[str]:

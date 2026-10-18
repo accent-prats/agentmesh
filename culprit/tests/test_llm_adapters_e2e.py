@@ -81,5 +81,10 @@ def test_openai_compatible_client_produces_a_valid_rca_result(monkeypatch):
     result = agent.diagnose(cluster, bundle)
 
     assert result.cause_family.value == "configuration"
-    assert result.confidence == 0.8
+    # _bundle() has exactly one TimelineEvent (a single source) - 2026-10-19's
+    # confidence-calibration fix caps a deep_rca result's claimed 0.8 down
+    # to 0.6 whenever only one source backs the causal chain. This test's
+    # own purpose is end-to-end adapter wiring, not calibration behavior
+    # itself (see tests/test_rca_agent_confidence_calibration.py for that).
+    assert result.confidence == 0.6
     assert result.causal_chain[0].evidence_refs == ["ref-1"]

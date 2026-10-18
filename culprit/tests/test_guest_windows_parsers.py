@@ -91,7 +91,7 @@ def test_parse_wu_history_caps_at_the_shared_max():
 
 def test_parse_windows_output_wires_in_wu_history():
     stdout = "---WU_HISTORY---\n2026-10-18 03:04:00 ResultCode=4 Title=Failed update\n"
-    events, _ = parse_windows_output(stdout, vm_id="vm-1")
+    events, _, _ = parse_windows_output(stdout, vm_id="vm-1")
     assert any(e.kind == "wu_history" for e in events)
 
 
@@ -185,7 +185,7 @@ def test_parse_windows_output_wires_in_command_execution_log():
         "---COMMAND_EXECUTION_LOG---\n"
         "2026-10-18 03:04:00 ERROR Failed to launch patch extension: timed out\n"
     )
-    events, _ = parse_windows_output(stdout, vm_id="vm-1")
+    events, _, _ = parse_windows_output(stdout, vm_id="vm-1")
     assert any(e.kind == "extension_wrapper_log" for e in events)
 
 
@@ -277,7 +277,7 @@ def test_full_windows_output_sectioning():
         "---EXT_LOG---\n2026-10-16 03:04:00 ERROR Failed to reach Windows Update endpoint\n\n"
         "---EXT_STATUS---\nNo status file found\n"
     )
-    events, findings = parse_windows_output(stdout, vm_id="vm-1")
+    events, findings, checks_performed = parse_windows_output(stdout, vm_id="vm-1")
     kinds = {e.kind for e in events}
     raw_refs = {e.raw_ref for e in events}
     assert "wu_log" in kinds
@@ -291,6 +291,8 @@ def test_full_windows_output_sectioning():
     assert "vmagent_status" in kinds
     assert not any(e.kind == "agent_state" for e in events)  # Running is silent
     assert findings == []  # "No status file found" short-circuits, not a real finding
+    assert "Windows Update log" in checks_performed
+    assert "Azure VM Agent aggregate status" in checks_performed
 
 
 def test_ext_status_section_is_sliced_out_and_handed_to_the_shared_parser():
@@ -319,7 +321,7 @@ def test_ext_status_section_is_sliced_out_and_handed_to_the_shared_parser():
         "---EXT_VERSION---\n1.5.71\n\n"
         "---EXT_STATUS---\n" + status_json + "\n"
     )
-    events, findings = parse_windows_output(stdout, vm_id="vm-1")
+    events, findings, _ = parse_windows_output(stdout, vm_id="vm-1")
     assert any(e.kind == "patch_extension_status" for e in events)
     assert len(findings) == 1
     assert findings[0]["source"] == "guest_windows"
@@ -436,7 +438,7 @@ def test_parse_windows_output_threads_the_window_into_its_parsers():
         "---WU_LOG---\n"
         "2026-01-01 00:00:00:000  1  1 WU  WARNING: WU client failed Searching for updates with error 0x80244022\n"
     )
-    events, _ = parse_windows_output(
+    events, _, _ = parse_windows_output(
         stdout, vm_id="vm-1",
         window_start=datetime(2026, 10, 16, 0, 0, tzinfo=timezone.utc),
         window_end=datetime(2026, 10, 16, 6, 0, tzinfo=timezone.utc),

@@ -206,10 +206,10 @@ class GuestLinuxCollector(Collector):
                 return CollectionResult(events=[], error=f"Run Command failed: {exc}")
         log.info("guest_linux: Run Command on %s completed after %.1fs", request.machine.vm_name, time.monotonic() - started)
 
-        events, patch_extension_status = parse_linux_output(
+        events, patch_extension_status, checks_performed = parse_linux_output(
             stdout, vm_id=request.machine.vm_id, window_start=request.window_start, window_end=request.window_end,
         )
-        return CollectionResult(events=events, patch_extension_status=patch_extension_status)
+        return CollectionResult(events=events, patch_extension_status=patch_extension_status, checks_performed=checks_performed)
 
 
 _SECTION_RE = re.compile(r"^---(\w+)---$")
@@ -548,9 +548,43 @@ def _log_if_found(parser_name: str, events: list[TimelineEvent], vm_id: str) -> 
     return events
 
 
+# Found 2026-10-19: lets the RCA prompt and the UI tell "we checked this and
+# it's healthy" apart from "we never checked it" - see the long comment on
+# CollectionResult.checks_performed (collectors/base.py) for the full
+# rationale (a real RCA cited a vague "evidence gap" about
+# subscription-manager even though SUBMAN runs unconditionally every scan).
+# Keyed by the exact ---SECTION--- marker _split_sections() slices stdout on,
+# so "did this section's marker actually get printed this run" (genuinely
+# attempted, regardless of what it found) is the single source of truth -
+# not a second, independently-maintained list that could drift out of sync
+# with ALLOWED_LINUX_SCRIPT. EXT_VERSION/KERNELS/EXT_STATUS are deliberately
+# left out: they're context strings or already surfaced via
+# patch_extension_status's own structured findings, not a "check" a user
+# would plausibly wonder "was this looked at?" about.
+_SECTION_CHECK_LABELS: dict[str, str] = {
+    "DPKG_LOG": "dpkg package manager log",
+    "APT_HISTORY": "apt install/upgrade history",
+    "YUM_LOG": "yum package manager log",
+    "DNF_LOG": "dnf package manager log",
+    "DISK_USAGE": "disk usage",
+    "LOCK_HOLDER": "dpkg lock holder",
+    "REPO_CHECK": "package repository reachability (archive.ubuntu.com)",
+    "REPO_DIAGNOSTICS": "configured package repository DNS/HTTP reachability",
+    "SUBMAN": "subscription-manager (entitlement) status",
+    "WAAGENT_LOG": "Azure Linux Agent log",
+    "EXT_CORE_LOG": "patch extension core log",
+    "EXT_WRAPPER_LOG": "patch extension wrapper log",
+    "JOURNAL_REBOOT": "system journal / reboot and kernel error history",
+}
+
+
+def _checks_performed(sections: dict[str, str]) -> list[str]:
+    return [label for key, label in _SECTION_CHECK_LABELS.items() if key in sections]
+
+
 def parse_linux_output(
     stdout: str, vm_id: str, window_start: datetime | None = None, window_end: datetime | None = None,
-) -> tuple[list[TimelineEvent], list[dict]]:
+) -> tuple[list[TimelineEvent], list[dict], list[str]]:
     sections = _split_sections(stdout)
     events: list[TimelineEvent] = []
     events += parse_dpkg_log(sections.get("DPKG_LOG", ""), vm_id, window_start, window_end)
@@ -577,4 +611,4 @@ def parse_linux_output(
         extension_version=sections.get("EXT_VERSION", "").strip() or None,
     )
     events += ext_events
-    return events, ext_findings
+    return events, ext_findings, _checks_performed(sections)
