@@ -25,10 +25,16 @@ collecting anything new:
   - checks_performed / checks_unavailable - guest-OS sections genuinely
     attempted this run, healthy-and-silent or tool-not-installed
     (collectors/guest_linux.py, collectors/guest_windows.py)
-  - collection_gaps / sources_attempted - the non-guest sources (Azure
-    Monitor, Datadog), where the open question is different: not "did
-    this section find anything" but "was this source even configured for
-    this environment at all."
+  - collection_gaps / sources_attempted - whether the collector behind a
+    row was even dispatched this run at all. For non-guest sources (Azure
+    Monitor, Datadog) this answers "was this source even configured for
+    this environment" (optional collectors, see api/deps.py). For guest
+    rows this is normally a no-op on a real run (GUEST_LINUX/GUEST_WINDOWS
+    are always dispatched for a matching machine), but a demo/fixture
+    EvidenceBundle can legitimately narrow sources_attempted to test a
+    different scenario - found by review 2026-10-19 reproduced on 24 of 47
+    demo machines, where every guest row wrongly read "not collected"
+    (implying an attempt that found nothing) instead of "not attempted."
 
 This is presentation logic over already-collected/persisted data, not a
 new parsing pass - the same division of labor as extension_status_view.py/
@@ -50,6 +56,7 @@ _STATUS_DISPLAY: dict[str, tuple[str, str, str]] = {
     "unavailable": ("Not available on this VM", "gray", "circle-slash"),
     "not_collected": ("Not collected", "amber", "alert-triangle"),
     "not_configured": ("Not configured", "gray", "minus-circle"),
+    "not_attempted": ("Not attempted this run", "gray", "circle-dashed"),
 }
 
 
@@ -70,7 +77,7 @@ def _entry(label: str, status: str, reason: str) -> LogUsageEntry:
 
 def _guest_entries(
     os_family: OSFamily, checks_performed: list[str], checks_unavailable: list[str],
-    collection_gaps: list[str], checks_finding_counts: dict[str, int],
+    collection_gaps: list[str], sources_attempted: list[str], checks_finding_counts: dict[str, int],
 ) -> list[LogUsageEntry]:
     if os_family == OSFamily.LINUX:
         sources, collector_source = _LINUX_LOG_SOURCES, Source.GUEST_LINUX
@@ -78,6 +85,25 @@ def _guest_entries(
         sources, collector_source = _WINDOWS_LOG_SOURCES, Source.GUEST_WINDOWS
     else:
         return []  # unknown OS - neither script ever ran, nothing to reconcile
+
+    # Found by review 2026-10-19 (reproduced live on 24 of 47 demo
+    # machines, whose fixtures deliberately never dispatch a guest
+    # collector for a control-plane/Azure-Monitor-only scenario): without
+    # this check, EVERY guest row for such a machine fell through to the
+    # generic "not_collected" bucket below, wording that implies an
+    # attempt was made and came back empty - wrong when the collector was
+    # never even dispatched this run. On a real live run this can't
+    # happen (GUEST_LINUX/GUEST_WINDOWS are registered unconditionally in
+    # api/deps.py and filtered only by OS match, so a matching machine's
+    # own guest collector is always in sources_attempted), but a demo/
+    # fixture EvidenceBundle can legitimately narrow sources_attempted to
+    # test a different code path, and the UI must say so honestly rather
+    # than guess.
+    if collector_source.value not in sources_attempted:
+        return [
+            _entry(src.label, "not_attempted", "Guest log collection wasn't dispatched for this machine this run.")
+            for src in sources
+        ]
 
     collector_gap = next((g for g in collection_gaps if g.startswith(f"{collector_source.value}:")), None)
     entries = []
@@ -163,5 +189,5 @@ def build_log_usage_view(
     if not sources_attempted:
         return []
     counts = checks_finding_counts or {}
-    return _guest_entries(os_family, checks_performed, checks_unavailable, collection_gaps, counts) + \
+    return _guest_entries(os_family, checks_performed, checks_unavailable, collection_gaps, sources_attempted, counts) + \
         _non_guest_entries(collection_gaps, sources_attempted, counts)

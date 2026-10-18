@@ -74,6 +74,40 @@ def test_machine_page_shows_logs_used_and_not_used_inside_the_timeline_panel(cli
     assert "guest:df:" in html
 
 
+def test_entitlement_expired_demo_machine_shows_subman_as_used_not_collected(client):
+    """Found by review 2026-10-19: this demo bundle (vm-prd-rhel-0500, the
+    cluster whose own root cause IS a subscription-manager "Invalid"
+    reading) never had checks_finding_counts populated, so the page
+    claimed subscription-manager was "not collected" directly above the
+    "Full event-by-event timeline" entry showing the exact finding that
+    drove this cluster's own diagnosis - the identical contradiction this
+    whole feature exists to prevent, left unfixed in one demo fixture."""
+    resp = client.post("/runs/demo")
+    run_id = resp.json()["run"]["run_id"]
+
+    html = client.get(f"/runs/{run_id}/machines/vm-prd-rhel-0500.html").text
+    assert "subscription-manager (entitlement) status" in html
+    assert "Used in analysis" in html
+    # The real finding itself must still be visible in the raw timeline too.
+    assert "guest:subman:" in html
+
+
+def test_patch_mode_demo_machine_shows_guest_rows_as_not_attempted(client):
+    """Found by review 2026-10-19: this demo bundle (vm-prd-web-0200)
+    deliberately never dispatches a guest collector (it tests a
+    control-plane-only scenario) - every one of its 13 Linux guest rows
+    must read "not attempted," not the generic "not collected" wording
+    that implies a collection attempt came back empty."""
+    resp = client.post("/runs/demo")
+    run_id = resp.json()["run"]["run_id"]
+
+    html = client.get(f"/runs/{run_id}/machines/vm-prd-web-0200.html").text
+    assert "dpkg package manager log" in html
+    assert "Not attempted this run" in html
+    # Jinja autoescapes the apostrophe in "wasn't" as &#39; in raw HTML.
+    assert "dispatched for this machine this run" in html
+
+
 def test_the_old_standalone_checks_performed_card_is_gone(client):
     """Folded into the timeline panel per the user's explicit placement
     request - must not also still render as its own separate card."""

@@ -105,6 +105,27 @@ def test_guest_section_not_collected_when_the_whole_collector_failed():
     assert "timed out" in disk.reason
 
 
+def test_guest_rows_show_not_attempted_when_the_collector_was_never_dispatched():
+    """Found by review 2026-10-19, reproduced live on 24 of 47 demo
+    machines (scenarios that test a control-plane/Azure-Monitor-only path
+    and deliberately never dispatch a guest collector): without this
+    distinction, every guest row fell through to the generic "not
+    collected" bucket, which implies an attempt was made and came back
+    empty - wrong when the collector was never even dispatched this run.
+    This can't happen on a real live run (api/deps.py registers
+    GUEST_LINUX/GUEST_WINDOWS unconditionally for a matching machine), but
+    a demo/fixture EvidenceBundle can legitimately narrow sources_attempted
+    to exercise a different scenario, and the UI must say so honestly."""
+    entries = build_log_usage_view(
+        OSFamily.LINUX, checks_performed=[], checks_unavailable=[],
+        collection_gaps=[], sources_attempted=["azure_control_plane"],
+    )
+    guest_entries = [e for e in entries if "Azure" not in e.label and "Datadog" not in e.label]
+    assert guest_entries  # sanity: there genuinely are guest rows to check
+    assert all(e.status == "not_attempted" for e in guest_entries)
+    assert all("wasn't dispatched" in e.reason for e in guest_entries)
+
+
 def test_windows_vm_shows_no_linux_rows_and_vice_versa():
     entries = build_log_usage_view(
         OSFamily.WINDOWS, checks_performed=[], checks_unavailable=[],

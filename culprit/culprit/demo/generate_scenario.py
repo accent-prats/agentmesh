@@ -261,6 +261,18 @@ def _entitlement_expired_bundle(i: int) -> EvidenceBundle:
         collection_started_at=WINDOW_END, collection_completed_at=WINDOW_END,
         sources_attempted=[Source.AZURE_CONTROL_PLANE, Source.GUEST_LINUX],
         sources_succeeded=[Source.AZURE_CONTROL_PLANE, Source.GUEST_LINUX],
+        # The TRUE finding counts behind this bundle's own two timeline
+        # events above - found missing by review 2026-10-19: without this,
+        # "Logs reviewed this run" claimed subscription-manager was "not
+        # collected" directly above the "Full event-by-event timeline"
+        # entry showing the exact subscription-manager reading this
+        # cluster's own root cause was diagnosed from - the same
+        # contradiction this feature exists to prevent, just left
+        # unfixed in this one demo fixture.
+        checks_finding_counts={
+            "subscription-manager (entitlement) status": 1,
+            NON_GUEST_LOG_LABELS[Source.AZURE_CONTROL_PLANE]: 1,
+        },
     )
 
 
