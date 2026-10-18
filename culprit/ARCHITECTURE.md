@@ -258,6 +258,25 @@ showing stale or fabricated detail. `GET /runs.html` lists every run
 ever diagnosed (`repository.list_runs`) - "which update jobs is Culprit
 monitoring," the report's zeroth altitude.
 
+**The evidence timeline itself got the same treatment 2026-10-18**:
+`EvidenceBundle.timeline` (every `TimelineEvent` every collector produced)
+had the identical "vanishes when `Pipeline.run()` returns" problem as
+`PatchOutcome` once did - a human could never see the actual evidence the
+RCA agent reasoned from, only its conclusion. `MachineOutcomeRecord.timeline_json`
+persists a capped, chronological slice (`db/repository.py::_MAX_PERSISTED_TIMELINE_EVENTS`,
+same discipline as every collector parser's own anomaly-event cap - bounded
+row size, bounded render time) alongside the rest of the outcome, and the
+machine page's new "Evidence timeline" card (`reporting/evidence_timeline_view.py`)
+shows it collapsed behind the same `.eg-detail-toggle` affordance every
+other evidence card already uses - no new interaction pattern. Deliberately
+shows only `ts`/`source`/`summary`/`raw_ref` per event, never the richer
+`detail` dict - the same five fields `render_timeline_text()` itself
+renders into the RCA prompt, so this card is honest about showing exactly
+what the model saw, not a richer view invented for humans only. Runs
+diagnosed before this column existed simply have no timeline, same as
+`patch_extension_status` before it - the card is omitted entirely, not
+shown empty.
+
 ## The Phase 2 gate
 
 `models/verdict.py::compute_family_precision` tracks precision **per

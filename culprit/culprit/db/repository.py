@@ -102,6 +102,16 @@ def save_rca_result(session: Session, result: RCAResult, consecutive_cycles: int
     return record
 
 
+# Caps how much of EvidenceBundle.timeline gets persisted per machine -
+# same reasoning as every new collector parser's own
+# MAX_ANOMALY_EVENTS_PER_SECTION cap this session (bounded row size,
+# bounded machine-page render time), applied once more at the point this
+# data crosses from transient to persisted. The most recent N by
+# timestamp, not the first N - closer to the failure is generally the
+# more relevant end of a long timeline.
+_MAX_PERSISTED_TIMELINE_EVENTS = 50
+
+
 def save_machine_outcomes(session: Session, run_id: str, cluster_key: str, bundles: list[EvidenceBundle]) -> None:
     """Upserts one row per bundle, keyed on MachineOutcomeRecord's real
     composite primary key (run_id, vm_id) - the same get-or-create shape
@@ -129,6 +139,9 @@ def save_machine_outcomes(session: Session, run_id: str, cluster_key: str, bundl
         record.collection_gaps_json = bundle.collection_gaps
         record.patch_extension_status_json = bundle.patch_extension_status
         record.error_details_json = [d.model_dump() for d in bundle.outcome.error_details]
+        record.timeline_json = [
+            e.model_dump(mode="json") for e in bundle.timeline_sorted()[-_MAX_PERSISTED_TIMELINE_EVENTS:]
+        ]
     session.commit()
 
 
@@ -483,9 +496,15 @@ def get_machine_detail(session: Session, run_id: str, vm_name: str):
     `PatchOutcome`/collection gaps/patch extension status if this run saved
     one (see MachineOutcomeRecord - runs diagnosed before that table
     existed won't have one; `outcome` is None in that case, not an error).
-    Returns a 6-tuple (cluster, member, result, outcome, collection_gaps,
-    patch_extension_status), or None if the run, or a member with this
-    vm_name inside it, doesn't exist.
+    Returns a 7-tuple (cluster, member, result, outcome, collection_gaps,
+    patch_extension_status, timeline), or None if the run, or a member
+    with this vm_name inside it, doesn't exist. `timeline` is the capped,
+    chronological slice of raw TimelineEvent dicts save_machine_outcomes
+    persisted (see MAX_PERSISTED_TIMELINE_EVENTS there) - left as raw
+    dicts, not reconstructed into TimelineEvent objects, matching
+    collection_gaps/patch_extension_status's own untyped-dict convention;
+    reporting/evidence_timeline_view.py is the one place that interprets
+    their shape for display.
 
     Keyed by vm_name rather than vm_id (a full Azure resource ID, which
     contains slashes and can't be a clean URL path segment) - the same
@@ -513,7 +532,7 @@ def get_machine_detail(session: Session, run_id: str, vm_name: str):
         result = RCAResult.model_validate(cr.rca_result.result_json) if cr.rca_result else None
 
         outcome_record = session.get(MachineOutcomeRecord, (run_id, member["vm_id"]))
-        outcome, collection_gaps, patch_extension_status = None, [], []
+        outcome, collection_gaps, patch_extension_status, timeline = None, [], [], []
         if outcome_record is not None:
             outcome = PatchOutcome(
                 status=outcome_record.status,
@@ -536,8 +555,9 @@ def get_machine_detail(session: Session, run_id: str, vm_name: str):
             # module, so it's normalized here rather than trusting every
             # future consumer to re-derive the same `or []` guard.
             patch_extension_status = outcome_record.patch_extension_status_json or []
+            timeline = outcome_record.timeline_json or []
 
-        return cluster, ClusterMember(**member), result, outcome, collection_gaps, patch_extension_status
+        return cluster, ClusterMember(**member), result, outcome, collection_gaps, patch_extension_status, timeline
 
     return None
 

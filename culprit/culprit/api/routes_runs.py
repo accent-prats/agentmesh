@@ -242,5 +242,5 @@ def get_machine_html(run_id: str, vm_name: str):
         tz_name = repository.load_display_timezone_settings(session).timezone
     if detail is None:
         raise HTTPException(status_code=404, detail=f"Machine {vm_name} not found in run {run_id}")
-    cluster, member, result, outcome, collection_gaps, patch_extension_status = detail
-    return HTMLResponse(render_machine_html(cluster, member, result, outcome, collection_gaps, patch_extension_status, tz_name=tz_name))
+    cluster, member, result, outcome, collection_gaps, patch_extension_status, timeline = detail
+    return HTMLResponse(render_machine_html(cluster, member, result, outcome, collection_gaps, patch_extension_status, timeline, tz_name=tz_name))

@@ -227,7 +227,7 @@ def render_settings_html() -> str:
     return template.render(active="settings")
 
 
-def render_machine_html(cluster, member, result, outcome=None, collection_gaps=None, patch_extension_status=None, tz_name: str = "UTC") -> str:
+def render_machine_html(cluster, member, result, outcome=None, collection_gaps=None, patch_extension_status=None, timeline=None, tz_name: str = "UTC") -> str:
     """The third report altitude (proposal Section 8): one machine's own
     timeline deviation from its cluster's representative, plus its own
     `PatchOutcome` (status, error, failed KB/package) when this run saved
@@ -257,9 +257,18 @@ def render_machine_html(cluster, member, result, outcome=None, collection_gaps=N
     15%-confidence machine showed nothing explaining what was thin about
     it) even though `result` already carries it - reuses the same
     parse_evidence_gaps/evidence_gap_card the fleet report's own
-    equivalent section already uses, same display, same data."""
+    equivalent section already uses, same display, same data.
+
+    `timeline` (MachineOutcomeRecord.timeline_json, a capped slice of
+    `EvidenceBundle.timeline` persisted by save_machine_outcomes - added
+    2026-10-18) is the raw evidence the RCA agent's prompt was actually
+    built from, shown here for the first time so a human reviewer can see
+    the same thing the model saw, not just its conclusion - see
+    evidence_timeline_view.py for the display mapping. None for runs
+    diagnosed before this column existed, same as patch_extension_status."""
     from culprit.reporting.azure_error_view import build_azure_error_views
     from culprit.reporting.evidence_gaps import parse_evidence_gaps
+    from culprit.reporting.evidence_timeline_view import build_timeline_views
     from culprit.reporting.extension_status_view import build_extension_finding_views
 
     template = _env(tz_name).get_template("machine.html.j2")
@@ -269,6 +278,7 @@ def render_machine_html(cluster, member, result, outcome=None, collection_gaps=N
         extension_findings=build_extension_finding_views(patch_extension_status or []),
         azure_error_details=build_azure_error_views(outcome.error_details if outcome else []),
         rca_missing_evidence=parse_evidence_gaps(result.missing_evidence if result else []),
+        evidence_timeline=build_timeline_views(timeline or []),
         active="console", nav_prefix="../../../",
     )
 

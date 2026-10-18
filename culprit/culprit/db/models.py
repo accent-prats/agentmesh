@@ -131,6 +131,18 @@ class MachineOutcomeRecord(Base):
     # _ensure_column for how an already-deployed DB predating this column
     # picks it up without a real migration tool.
     patch_extension_status_json: Mapped[list] = mapped_column(JSON, default=list)
+    # A capped, chronological slice of the EvidenceBundle.timeline this
+    # outcome was diagnosed from (models/evidence.py::TimelineEvent, each
+    # dumped via model_dump(mode="json")) - added 2026-10-18 so the
+    # machine page can show a human the same evidence the RCA agent
+    # reasoned over, not just its conclusion. Previously this was
+    # discarded entirely once Pipeline.run() returned (see this class's
+    # own docstring on why PatchOutcome itself was added for the same
+    # reason). Deliberately NOT the full bundle - repository.py's
+    # save_machine_outcomes caps it the same way every new collector
+    # parser this session caps its own anomaly events, for the same
+    # reason (bounded row size, bounded render time).
+    timeline_json: Mapped[list] = mapped_column(JSON, default=list)
 
     run: Mapped[RunRecord] = relationship(back_populates="machine_outcomes")
 

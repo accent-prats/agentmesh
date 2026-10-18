@@ -68,7 +68,7 @@ def test_error_details_round_trips_through_save_and_load():
         detail = repository.get_machine_detail(session, "run-1", "vm-1")
 
     assert detail is not None
-    _, _, _, loaded_outcome, _, _ = detail
+    _, _, _, loaded_outcome, _, _, _ = detail
     assert len(loaded_outcome.error_details) == 1
     assert loaded_outcome.error_details[0].code == "Error"
     assert "no enough time left" in loaded_outcome.error_details[0].message
@@ -110,7 +110,7 @@ def test_a_row_predating_the_column_reads_back_as_an_empty_list_not_none():
         detail = repository.get_machine_detail(session, "run-1", "vm-1")
 
     assert detail is not None
-    _, _, _, loaded_outcome, _, _ = detail
+    _, _, _, loaded_outcome, _, _, _ = detail
     assert loaded_outcome.error_details == []
 
 
