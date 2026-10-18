@@ -28,18 +28,41 @@ log = logging.getLogger(__name__)
 _HEARTBEAT_INTERVAL_SECONDS = 30.0
 
 
-def _safe_exc_summary(exc: BaseException) -> str:
+_MAX_LOGGED_BODY_CHARS = 500
+
+
+def _safe_exc_summary(exc: BaseException, *, secret: str = "") -> str:
     """A short, provably-secret-free description of an exception for a log
-    line - just the exception class, plus an HTTP status code when one is
-    actually available. Deliberately never `str(exc)`: `httpx.HTTPStatusError`'s
-    own string representation embeds the full request URL, which for this
-    client carries the real API key in its query string - str(exc) would
-    re-leak exactly the secret this module's own logging redacts via
-    safe_url, just through the exception message instead of a log argument."""
+    line - the exception class, an HTTP status code when one is actually
+    available, and (found 2026-10-18, a real immediate 4xx with otherwise
+    zero information about *why*) a truncated copy of the response body
+    when there is one - the provider's own error message, the one piece
+    of information that actually explains an immediate failure. Deliberately
+    never `str(exc)`: `httpx.HTTPStatusError`'s own string representation
+    embeds the full request URL, which for this client carries the real
+    API key in its query string - str(exc) would re-leak exactly the
+    secret this module's own logging redacts via safe_url, just through
+    the exception message instead of a log argument. The body text itself
+    comes from the server, not the request, so it isn't the same leak path
+    - but `secret` (the real api_key, when the caller has one) is still
+    scrubbed out of it defensively, in case some proxy/WAF-generated error
+    page echoes back the request URL it blocked."""
     status = getattr(getattr(exc, "response", None), "status_code", None)
-    if status is not None:
-        return f"{type(exc).__name__}(status={status})"
-    return type(exc).__name__
+    if status is None:
+        return type(exc).__name__
+    summary = f"{type(exc).__name__}(status={status})"
+    body = getattr(exc.response, "text", None)
+    if body:
+        # A short "secret" (e.g. a test's throwaway placeholder, or in
+        # principle a very short real token) risks matching ordinary
+        # substrings of the message itself (a one-character "secret" like
+        # "k" also matches the "k" in "blocked") and mangling it instead of
+        # protecting anything real - so only redact when it's long enough
+        # to plausibly be a genuine credential rather than common text.
+        if secret and len(secret) >= 8:
+            body = body.replace(secret, "[REDACTED]")
+        summary += f": {body[:_MAX_LOGGED_BODY_CHARS]}"
+    return summary
 
 
 class _MessagesNamespace:
@@ -151,7 +174,7 @@ class GeminiClient:
         except Exception as exc:
             log.warning(
                 "GeminiClient: call to %s failed after %.1fs (%s)",
-                safe_url, time.monotonic() - started, _safe_exc_summary(exc),
+                safe_url, time.monotonic() - started, _safe_exc_summary(exc, secret=self.api_key),
             )
             raise
         log.info("GeminiClient: %s fully responded (%s) after %.1fs", safe_url, response.status_code, time.monotonic() - started)

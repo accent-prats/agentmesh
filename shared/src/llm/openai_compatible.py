@@ -26,20 +26,43 @@ log = logging.getLogger(__name__)
 _HEARTBEAT_INTERVAL_SECONDS = 30.0
 
 
-def _safe_exc_summary(exc: BaseException) -> str:
+_MAX_LOGGED_BODY_CHARS = 500
+
+
+def _safe_exc_summary(exc: BaseException, *, secret: str = "") -> str:
     """A short, provably-secret-free description of an exception for a log
-    line - just the exception class, plus an HTTP status code when one is
-    actually available (`httpx.HTTPStatusError.response.status_code`).
-    Deliberately never `str(exc)`: `httpx.HTTPStatusError`'s own string
-    representation embeds the full request URL - for an Azure deployment
-    the API key is a header, not the URL, so that specific leak path
-    doesn't apply here, but staying off `str(exc)` entirely keeps this
-    safe regardless of what any given provider's error body/message might
-    ever embed."""
+    line - the exception class, an HTTP status code when one is actually
+    available (`httpx.HTTPStatusError.response.status_code`), and (found
+    2026-10-18, a real immediate 400/403 with otherwise zero information
+    about *why*) a truncated copy of the response body when there is one -
+    the provider's own error message (e.g. "maximum context length
+    exceeded", a schema-validation complaint), the one piece of
+    information that actually explains an immediate 4xx. Deliberately
+    never `str(exc)`: `httpx.HTTPStatusError`'s own string representation
+    embeds the full request URL - for an Azure deployment the API key is a
+    header, not the URL, so that specific leak path doesn't apply here,
+    but staying off `str(exc)` entirely keeps this safe regardless of what
+    any given provider's error body/message might ever embed. The body
+    text itself comes from the server, not the request, so it's not the
+    same leak path - but `secret` (the real api_key, when the caller has
+    one) is still scrubbed out of it defensively, in case some
+    proxy/WAF-generated error page echoes back the request it blocked."""
     status = getattr(getattr(exc, "response", None), "status_code", None)
-    if status is not None:
-        return f"{type(exc).__name__}(status={status})"
-    return type(exc).__name__
+    if status is None:
+        return type(exc).__name__
+    summary = f"{type(exc).__name__}(status={status})"
+    body = getattr(exc.response, "text", None)
+    if body:
+        # A short "secret" (e.g. a test's throwaway placeholder, or in
+        # principle a very short real token) risks matching ordinary
+        # substrings of the message itself (a one-character "secret" like
+        # "k" also matches the "k" in "blocked") and mangling it instead of
+        # protecting anything real - so only redact when it's long enough
+        # to plausibly be a genuine credential rather than common text.
+        if secret and len(secret) >= 8:
+            body = body.replace(secret, "[REDACTED]")
+        summary += f": {body[:_MAX_LOGGED_BODY_CHARS]}"
+    return summary
 
 
 _DEFAULT_AZURE_API_VERSION = "2024-08-01-preview"
@@ -179,7 +202,7 @@ class OpenAICompatibleClient:
         except Exception as exc:
             log.warning(
                 "OpenAICompatibleClient: call to %s failed after %.1fs (%s)",
-                url, time.monotonic() - started, _safe_exc_summary(exc),
+                url, time.monotonic() - started, _safe_exc_summary(exc, secret=self.api_key),
             )
             raise
         log.info("OpenAICompatibleClient: %s fully responded (%s) after %.1fs", url, response.status_code, time.monotonic() - started)

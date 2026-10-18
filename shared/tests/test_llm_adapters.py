@@ -427,6 +427,89 @@ class TestOpenAICompatibleClient:
         assert any("sent response headers" in m for m in messages)
         assert any(r.levelname == "WARNING" and "failed after" in r.message for r in caplog.records)
 
+    def test_an_immediate_4xx_logs_the_response_body(self, monkeypatch, caplog):
+        """Found 2026-10-18 from a real production run: two different
+        providers each failed fast (400, 403) with no further information
+        at all - the bare status code alone gives no way to tell "prompt
+        too long" from "a schema the provider's strict mode rejects" from
+        "the gateway blocked the request outright". The response body is
+        the provider's own explanation and is the single most useful
+        thing still missing from this log line."""
+        def fake_stream(method, url, *, headers, json, timeout):
+            request = httpx.Request("POST", url)
+            response = httpx.Response(
+                400, request=request,
+                json={"error": {"message": "maximum context length exceeded", "type": "invalid_request_error"}},
+            )
+            return FakeStream(response)
+
+        monkeypatch.setattr("shared.src.llm.openai_compatible.httpx.stream", fake_stream)
+        client = OpenAICompatibleClient(api_key="k", base_url="https://api.openai.com/v1")
+
+        with caplog.at_level("WARNING"):
+            try:
+                client.messages.create(model="gpt-5", max_tokens=10, thinking=None, system="s", tools=[_TOOL_SCHEMA], messages=[])
+                raised = None
+            except httpx.HTTPStatusError as exc:
+                raised = exc
+
+        assert raised is not None
+        messages = [r.message for r in caplog.records]
+        assert any("maximum context length exceeded" in m for m in messages)
+
+    def test_the_api_key_is_redacted_even_from_an_echoed_error_body(self, monkeypatch, caplog):
+        """Defensive, not just theoretical: a proxy/WAF-generated error page
+        can echo back the request it blocked, including a header value, in
+        its own error body - unlikely for OpenAICompatibleClient (the key
+        lives in a header, not the URL this client logs), but the same
+        redaction is applied here regardless, on the same "never trust a
+        provider's output to be secret-free" principle this module already
+        applies to the request side."""
+        real_key = "sk-secret-dont-log-me"
+
+        def fake_stream(method, url, *, headers, json, timeout):
+            request = httpx.Request("POST", url)
+            response = httpx.Response(403, request=request, json={"error": f"blocked request with key {real_key}"})
+            return FakeStream(response)
+
+        monkeypatch.setattr("shared.src.llm.openai_compatible.httpx.stream", fake_stream)
+        client = OpenAICompatibleClient(api_key=real_key, base_url="https://api.openai.com/v1")
+
+        with caplog.at_level("WARNING"):
+            try:
+                client.messages.create(model="gpt-5", max_tokens=10, thinking=None, system="s", tools=[_TOOL_SCHEMA], messages=[])
+            except httpx.HTTPStatusError:
+                pass
+
+        messages = [r.message for r in caplog.records]
+        assert any("blocked request with key" in m for m in messages)
+        assert not any(real_key in m for m in messages)
+        assert any("[REDACTED]" in m for m in messages)
+
+    def test_a_trivially_short_api_key_does_not_mangle_unrelated_text(self, monkeypatch, caplog):
+        """Found while writing this very feature's own tests: a one-letter
+        api_key like "k" (a common throwaway test placeholder, and in
+        principle a pathologically short real one) also matches the "k" in
+        ordinary words like "blocked" - blindly replacing every occurrence
+        would corrupt the message instead of protecting anything real."""
+        def fake_stream(method, url, *, headers, json, timeout):
+            request = httpx.Request("POST", url)
+            response = httpx.Response(403, request=request, json={"error": "request blocked by policy"})
+            return FakeStream(response)
+
+        monkeypatch.setattr("shared.src.llm.openai_compatible.httpx.stream", fake_stream)
+        client = OpenAICompatibleClient(api_key="k", base_url="https://api.openai.com/v1")
+
+        with caplog.at_level("WARNING"):
+            try:
+                client.messages.create(model="gpt-5", max_tokens=10, thinking=None, system="s", tools=[_TOOL_SCHEMA], messages=[])
+            except httpx.HTTPStatusError:
+                pass
+
+        messages = [r.message for r in caplog.records]
+        assert any("request blocked by policy" in m for m in messages)
+        assert not any("[REDACTED]" in m for m in messages)
+
 
 # ── GeminiClient ────────────────────────────────────────────────────────────
 
@@ -647,3 +730,52 @@ class TestGeminiClient:
 
         messages = [r.message for r in caplog.records]
         assert not any("sent response headers" in m for m in messages)
+
+    def test_an_immediate_4xx_logs_the_response_body(self, monkeypatch, caplog):
+        """Same gap as OpenAICompatibleClient's own version of this test -
+        found 2026-10-18 from a real production run where a deepseek call
+        through this same adapter family failed fast with a bare 403 and
+        no further information about why."""
+        def fake_stream(method, url, *, json, timeout):
+            request = httpx.Request("POST", url)
+            response = httpx.Response(403, request=request, json={"error": "request blocked by policy"})
+            return FakeStream(response)
+
+        monkeypatch.setattr("shared.src.llm.gemini.httpx.stream", fake_stream)
+        client = GeminiClient(api_key="k", base_url="https://generativelanguage.googleapis.com/v1beta")
+
+        with caplog.at_level("WARNING"):
+            try:
+                client.messages.create(model="gemini-2.5-pro", max_tokens=10, thinking=None, system="s", tools=[_TOOL_SCHEMA], messages=[])
+            except httpx.HTTPStatusError:
+                pass
+
+        messages = [r.message for r in caplog.records]
+        assert any("request blocked by policy" in m for m in messages)
+
+    def test_the_api_key_is_redacted_even_from_an_echoed_error_body(self, monkeypatch, caplog):
+        """Defensive: unlike the URL (already redacted via safe_url), a
+        proxy/WAF-generated error page could in principle echo the blocked
+        request's full URL - including the key living in its query string
+        - back in its own error body. The same redaction applied to every
+        other log line here must also cover this one."""
+        real_key = "AIzaSecretDontLogMe"
+
+        def fake_stream(method, url, *, json, timeout):
+            request = httpx.Request("POST", url)
+            response = httpx.Response(403, request=request, json={"error": f"blocked url with key {real_key}"})
+            return FakeStream(response)
+
+        monkeypatch.setattr("shared.src.llm.gemini.httpx.stream", fake_stream)
+        client = GeminiClient(api_key=real_key, base_url="https://generativelanguage.googleapis.com/v1beta")
+
+        with caplog.at_level("WARNING"):
+            try:
+                client.messages.create(model="gemini-2.5-pro", max_tokens=10, thinking=None, system="s", tools=[_TOOL_SCHEMA], messages=[])
+            except httpx.HTTPStatusError:
+                pass
+
+        messages = [r.message for r in caplog.records]
+        assert any("blocked url with key" in m for m in messages)
+        assert not any(real_key in m for m in messages)
+        assert any("[REDACTED]" in m for m in messages)
