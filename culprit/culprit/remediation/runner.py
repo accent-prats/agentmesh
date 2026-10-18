@@ -18,6 +18,7 @@ constant.
 from __future__ import annotations
 
 import threading
+import time
 
 from culprit.models.evidence import OSFamily
 from culprit.remediation.scripts import (
@@ -27,6 +28,16 @@ from culprit.remediation.scripts import (
 )
 
 try:  # pragma: no cover
+    from azure.core.exceptions import ResourceExistsError
+except ImportError:  # pragma: no cover
+    class ResourceExistsError(Exception):
+        """See the matching class/comment in guest_windows.py - same
+        fallback, same reasoning (a separate try/except so a successfully-
+        imported real ResourceExistsError never gets shadowed by this
+        dummy one if azure-mgmt-compute/azure-identity are missing but
+        azure-core itself is present)."""
+
+try:  # pragma: no cover
     from azure.identity import DefaultAzureCredential
     from azure.mgmt.compute import ComputeManagementClient
     from azure.mgmt.compute.models import RunCommandInput, RunCommandInputParameter
@@ -34,6 +45,17 @@ try:  # pragma: no cover
     _COMPUTE_SDK_AVAILABLE = True
 except ImportError:  # pragma: no cover
     _COMPUTE_SDK_AVAILABLE = False
+
+# Found 2026-10-18 by the review of the matching collector fix (guest_
+# windows.py/guest_linux.py): this module has the exact same un-retried
+# single-attempt Run Command bug - a VM with Azure Update Manager's own
+# patch extension still running would fail disk-cleanup remediation with
+# ResourceExistsError (HTTP 409, "another Run Command execution is already
+# in progress") on the very first attempt, even though that condition
+# resolves itself once the other execution finishes. Same fix, same
+# constants - see guest_windows.py's own comment for the full story.
+_RUN_COMMAND_CONFLICT_RETRY_INTERVAL_SECONDS = 15
+_RUN_COMMAND_TIMEOUT_SECONDS = 60
 
 # Defense in depth: `mount` ultimately comes from stored diagnosis data
 # (RemediationPlaybook.automation_params), not a live, untrusted caller -
@@ -81,19 +103,31 @@ class RemediationRunner:
 
         try:
             client = self._client_for(subscription_id)
-            poller = client.virtual_machines.begin_run_command(
-                resource_group,
-                vm_name,
-                RunCommandInput(
-                    command_id=command_id,
-                    script=[script],
-                    parameters=[RunCommandInputParameter(name=param_name, value=mount or default_mount)],
-                ),
-            )
-            result = poller.result(timeout=60)
-            stdout = result.value[0].message if result.value else ""
-        except Exception as exc:  # noqa: BLE001 - mirrors guest_linux.py's own blanket transport-error handling
+        except Exception as exc:  # noqa: BLE001 - e.g. the SDK not installed; same failure shape as any other Run Command failure
             return {"status": "failed", "message": f"Run Command failed: {exc}", "free_bytes_after": None}
+        started = time.monotonic()
+        deadline = started + _RUN_COMMAND_TIMEOUT_SECONDS
+        while True:
+            remaining = max(1, round(deadline - time.monotonic()))
+            try:
+                poller = client.virtual_machines.begin_run_command(
+                    resource_group,
+                    vm_name,
+                    RunCommandInput(
+                        command_id=command_id,
+                        script=[script],
+                        parameters=[RunCommandInputParameter(name=param_name, value=mount or default_mount)],
+                    ),
+                )
+                result = poller.result(timeout=remaining)
+                stdout = result.value[0].message if result.value else ""
+                break
+            except ResourceExistsError as exc:
+                if deadline - time.monotonic() <= _RUN_COMMAND_CONFLICT_RETRY_INTERVAL_SECONDS:
+                    return {"status": "failed", "message": f"Run Command failed: {exc}", "free_bytes_after": None}
+                time.sleep(_RUN_COMMAND_CONFLICT_RETRY_INTERVAL_SECONDS)
+            except Exception as exc:  # noqa: BLE001 - mirrors guest_linux.py's own blanket transport-error handling
+                return {"status": "failed", "message": f"Run Command failed: {exc}", "free_bytes_after": None}
 
         parsed = parse_remediation_result(stdout)
         if parsed["status"] == "success":

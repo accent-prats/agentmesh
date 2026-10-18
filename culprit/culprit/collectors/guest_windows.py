@@ -26,6 +26,22 @@ from culprit.observability import safe_exc_summary
 log = logging.getLogger(__name__)
 
 try:  # pragma: no cover
+    from azure.core.exceptions import ResourceExistsError
+except ImportError:  # pragma: no cover
+    class ResourceExistsError(Exception):
+        """Fallback so `except ResourceExistsError` below stays valid even
+        when azure-core itself isn't installed - collect() already raises
+        before reaching that point in that case (_client_for), so this is
+        never actually matched against a real exception, only kept
+        importable. Deliberately a separate try/except from the one below:
+        azure-core is almost always present even when the heavier
+        azure-mgmt-compute/azure-identity packages aren't (it's a shared
+        base dependency), and binding the real class here first - not
+        inside that block's `except ImportError` - avoids silently
+        shadowing a successfully-imported real ResourceExistsError with
+        this dummy one."""
+
+try:  # pragma: no cover
     from azure.identity import DefaultAzureCredential
     from azure.mgmt.compute import ComputeManagementClient
     from azure.mgmt.compute.models import RunCommandInput
@@ -102,6 +118,30 @@ if ($latestStatusFile) {
 """
 
 
+# How long to wait before retrying a Run Command that failed because
+# another execution is already in progress on this VM (ResourceExistsError,
+# HTTP 409) - a time-bound condition (Azure Update Manager's own patch
+# extension still finishing up, or a prior invocation still running), not a
+# real failure. Found 2026-10-18 from real production logs/screenshots:
+# this conflict fired on effectively every Windows (and Linux) machine a
+# fleet scan touched, always within under a second (the conflict check is
+# synchronous - no poller is even created), and since nothing retried,
+# EVERY guest-side log for those machines (CBS.log, WindowsUpdate.log, the
+# patch extension's own log, the Windows Event Log, etc.) was silently
+# missing from every RCA - the agent was left reasoning from the two Azure
+# control-plane events alone, routinely landing on "Insufficient evidence
+# for a confident root cause" and even citing evidence that doesn't exist
+# in the collected timeline. Module-level so tests can shrink it.
+_RUN_COMMAND_CONFLICT_RETRY_INTERVAL_SECONDS = 15
+
+# The two timeouts below were inline literals until the retry loop above
+# needed tests to shrink the whole collection window (not just the retry
+# interval) to keep a "retries until it finally gives up" test from taking
+# a real ~60s - behavior is unchanged (still 60/180 by default).
+_FIRST_PASS_TIMEOUT_SECONDS = 60
+_RECOLLECT_TIMEOUT_SECONDS = 180
+
+
 class GuestWindowsCollector(Collector):
     source_name = "guest_windows"
 
@@ -136,23 +176,43 @@ class GuestWindowsCollector(Collector):
         # wasn't enough once (found 2026-10-15: this was hardcoded to 60
         # regardless of pass, so a VM still busy/unresponsive at the end
         # of the first attempt's window just failed again the same way).
-        timeout = 180 if request.only else 60
+        timeout = _RECOLLECT_TIMEOUT_SECONDS if request.only else _FIRST_PASS_TIMEOUT_SECONDS
         log.info("guest_windows: running Run Command on %s (timeout=%ds)", request.machine.vm_name, timeout)
         started = time.monotonic()
-        try:
-            poller = client.virtual_machines.begin_run_command(
-                request.machine.resource_group,
-                request.machine.vm_name,
-                RunCommandInput(command_id="RunPowerShellScript", script=[ALLOWED_WINDOWS_SCRIPT]),
-            )
-            result = poller.result(timeout=timeout)
-            stdout = result.value[0].message if result.value else ""
-        except Exception as exc:  # noqa: BLE001
-            log.warning(
-                "guest_windows: Run Command on %s failed after %.1fs (%s)",
-                request.machine.vm_name, time.monotonic() - started, safe_exc_summary(exc),
-            )
-            return CollectionResult(events=[], error=f"Run Command failed: {exc}")
+        deadline = started + timeout
+        attempt = 0
+        while True:
+            attempt += 1
+            remaining = max(1, round(deadline - time.monotonic()))
+            try:
+                poller = client.virtual_machines.begin_run_command(
+                    request.machine.resource_group,
+                    request.machine.vm_name,
+                    RunCommandInput(command_id="RunPowerShellScript", script=[ALLOWED_WINDOWS_SCRIPT]),
+                )
+                result = poller.result(timeout=remaining)
+                stdout = result.value[0].message if result.value else ""
+                break
+            except ResourceExistsError as exc:
+                if deadline - time.monotonic() <= _RUN_COMMAND_CONFLICT_RETRY_INTERVAL_SECONDS:
+                    log.warning(
+                        "guest_windows: Run Command on %s still conflicted with another execution in progress "
+                        "after %d attempt(s) over %.1fs - giving up (%s)",
+                        request.machine.vm_name, attempt, time.monotonic() - started, safe_exc_summary(exc),
+                    )
+                    return CollectionResult(events=[], error=f"Run Command failed: {exc}")
+                log.info(
+                    "guest_windows: Run Command on %s conflicted with another execution in progress "
+                    "(attempt %d) - retrying in %ds",
+                    request.machine.vm_name, attempt, _RUN_COMMAND_CONFLICT_RETRY_INTERVAL_SECONDS,
+                )
+                time.sleep(_RUN_COMMAND_CONFLICT_RETRY_INTERVAL_SECONDS)
+            except Exception as exc:  # noqa: BLE001
+                log.warning(
+                    "guest_windows: Run Command on %s failed after %.1fs (%s)",
+                    request.machine.vm_name, time.monotonic() - started, safe_exc_summary(exc),
+                )
+                return CollectionResult(events=[], error=f"Run Command failed: {exc}")
         log.info("guest_windows: Run Command on %s completed after %.1fs", request.machine.vm_name, time.monotonic() - started)
 
         events, patch_extension_status = parse_windows_output(stdout, vm_id=request.machine.vm_id)

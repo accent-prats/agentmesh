@@ -138,3 +138,127 @@ def test_a_failed_run_command_is_traced_but_still_returns_a_collection_gap(monke
         r.levelname == "WARNING" and f"{label}: Run Command on vm-1 failed" in r.message and "TimeoutError" in r.message
         for r in caplog.records
     )
+
+
+class _FakeConflictingComputeClient:
+    """Raises ResourceExistsError (Azure's "another Run Command execution
+    is already in progress on this VM" 409) a fixed number of times, then
+    succeeds - models the real production symptom (found 2026-10-18): the
+    conflicting extension (Update Manager's own patch install, or a prior
+    invocation) finishes eventually, so a retry within the existing
+    timeout budget should recover rather than giving up on the very first
+    attempt."""
+
+    def __init__(self, recorder, fail_times):
+        self._recorder = recorder
+        self._fail_times = fail_times
+        self._calls = 0
+        self.virtual_machines = self
+
+    def begin_run_command(self, resource_group, vm_name, run_command_input):
+        self._calls += 1
+        self._recorder.append(self._calls)
+        if self._calls <= self._fail_times:
+            from azure.core.exceptions import ResourceExistsError
+
+            raise ResourceExistsError("Run command extension execution is in progress.")
+        return _FakePoller(self._recorder)
+
+
+@pytest.mark.parametrize("collector_cls,os_family,label,module", [
+    (GuestWindowsCollector, OSFamily.WINDOWS, "guest_windows", "culprit.collectors.guest_windows"),
+    (GuestLinuxCollector, OSFamily.LINUX, "guest_linux", "culprit.collectors.guest_linux"),
+])
+def test_a_run_command_conflict_is_retried_and_recovers(monkeypatch, caplog, collector_cls, os_family, label, module):
+    """The real bug: Run Command conflicts (409) were never retried, so
+    every guest-side log (CBS.log, WindowsUpdate.log, the patch extension's
+    own log, etc.) silently vanished from the RCA for any machine still
+    running another Run Command when Culprit's own collection fired."""
+    import importlib
+
+    mod = importlib.import_module(module)
+    monkeypatch.setattr(mod, "_RUN_COMMAND_CONFLICT_RETRY_INTERVAL_SECONDS", 0.01)
+    monkeypatch.setattr(mod, "_FIRST_PASS_TIMEOUT_SECONDS", 1)
+
+    recorder = []
+    collector = collector_cls(credential=object())
+    monkeypatch.setattr(collector, "_client_for", lambda sub_id: _FakeConflictingComputeClient(recorder, fail_times=2))
+    monkeypatch.setattr(mod, "RunCommandInput", lambda **kw: kw, raising=False)
+
+    request = CollectionRequest(
+        machine=_machine(os_family), window_start=datetime.now(timezone.utc) - timedelta(hours=3),
+        window_end=datetime.now(timezone.utc), run_id="run-1", only=[],
+    )
+
+    with caplog.at_level("INFO"):
+        result = collector.collect(request)
+
+    # _FakePoller.result() shares the same recorder (it logs the timeout it
+    # was given) - so this is 3 begin_run_command call-counts (two
+    # conflicts, then the successful third attempt) plus one trailing
+    # poller.result() timeout from that successful attempt.
+    assert recorder[:3] == [1, 2, 3]
+    assert len(recorder) == 4
+    assert result.error is None
+    assert sum(
+        1 for r in caplog.records
+        if r.levelname == "INFO" and f"{label}: Run Command on vm-1 conflicted" in r.message
+    ) == 2
+
+
+@pytest.mark.parametrize("collector_cls,os_family,label,module", [
+    (GuestWindowsCollector, OSFamily.WINDOWS, "guest_windows", "culprit.collectors.guest_windows"),
+    (GuestLinuxCollector, OSFamily.LINUX, "guest_linux", "culprit.collectors.guest_linux"),
+])
+def test_a_persistent_run_command_conflict_eventually_gives_up(monkeypatch, caplog, collector_cls, os_family, label, module):
+    """If the conflicting execution never finishes within the collection
+    window, this must still degrade to a collection gap (not hang the
+    pipeline forever) - same graceful-degradation contract as any other
+    Run Command failure."""
+    import importlib
+
+    mod = importlib.import_module(module)
+    monkeypatch.setattr(mod, "_RUN_COMMAND_CONFLICT_RETRY_INTERVAL_SECONDS", 0.01)
+    monkeypatch.setattr(mod, "_FIRST_PASS_TIMEOUT_SECONDS", 0.1)
+
+    recorder = []
+    collector = collector_cls(credential=object())
+    # Always conflicts - fail_times larger than any plausible attempt count
+    # within the tiny monkeypatched timeout below.
+    monkeypatch.setattr(collector, "_client_for", lambda sub_id: _FakeConflictingComputeClient(recorder, fail_times=10_000))
+    monkeypatch.setattr(mod, "RunCommandInput", lambda **kw: kw, raising=False)
+
+    request = CollectionRequest(
+        machine=_machine(os_family), window_start=datetime.now(timezone.utc) - timedelta(hours=3),
+        window_end=datetime.now(timezone.utc), run_id="run-1", only=[],
+    )
+
+    with caplog.at_level("WARNING"):
+        result = collector.collect(request)
+
+    assert "Run Command failed:" in result.error
+    assert any(
+        r.levelname == "WARNING" and f"{label}: Run Command on vm-1 still conflicted" in r.message
+        for r in caplog.records
+    )
+
+
+def test_a_different_exception_type_is_not_retried_as_a_conflict(monkeypatch):
+    """Only the specific 409 conflict is worth retrying - any other
+    failure (auth, network, a real crash) must still fail immediately,
+    exactly as before, rather than burning the collection window on
+    retries that can't possibly succeed."""
+    recorder = []
+    collector = GuestWindowsCollector(credential=object())
+    monkeypatch.setattr(collector, "_client_for", lambda sub_id: _FakeExplodingComputeClient())
+    monkeypatch.setattr(
+        __import__(GuestWindowsCollector.__module__, fromlist=["RunCommandInput"]), "RunCommandInput", lambda **kw: kw, raising=False
+    )
+
+    request = CollectionRequest(
+        machine=_machine(OSFamily.WINDOWS), window_start=datetime.now(timezone.utc) - timedelta(hours=3),
+        window_end=datetime.now(timezone.utc), run_id="run-1", only=[],
+    )
+
+    result = collector.collect(request)
+    assert result.error == "Run Command failed: WinRM unreachable"

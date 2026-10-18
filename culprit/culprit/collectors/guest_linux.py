@@ -31,6 +31,16 @@ from culprit.observability import safe_exc_summary
 log = logging.getLogger(__name__)
 
 try:  # pragma: no cover
+    from azure.core.exceptions import ResourceExistsError
+except ImportError:  # pragma: no cover
+    class ResourceExistsError(Exception):
+        """See the matching class/comment in guest_windows.py - same
+        fallback, same reasoning (a separate try/except so a successfully-
+        imported real ResourceExistsError never gets shadowed by this
+        dummy one if azure-mgmt-compute/azure-identity are missing but
+        azure-core itself is present)."""
+
+try:  # pragma: no cover
     from azure.identity import DefaultAzureCredential
     from azure.mgmt.compute import ComputeManagementClient
     from azure.mgmt.compute.models import RunCommandInput
@@ -107,6 +117,17 @@ ALLOWED_LINUX_SCRIPT = (
 )
 
 
+# See the matching constant in guest_windows.py - same reasoning, same
+# value, kept as a separate module-level constant (not shared) to match
+# this codebase's existing guest_linux.py/guest_windows.py duplication
+# convention rather than introducing a new shared module for one constant.
+_RUN_COMMAND_CONFLICT_RETRY_INTERVAL_SECONDS = 15
+
+# See the matching comment in guest_windows.py - same reasoning.
+_FIRST_PASS_TIMEOUT_SECONDS = 60
+_RECOLLECT_TIMEOUT_SECONDS = 180
+
+
 class GuestLinuxCollector(Collector):
     source_name = "guest_linux"
 
@@ -145,23 +166,43 @@ class GuestLinuxCollector(Collector):
         # non-empty request.only is the deliberate recollect_targeted
         # second pass, worth a longer timeout than the first attempt's
         # identical 60s window that already wasn't enough once.
-        timeout = 180 if request.only else 60
+        timeout = _RECOLLECT_TIMEOUT_SECONDS if request.only else _FIRST_PASS_TIMEOUT_SECONDS
         log.info("guest_linux: running Run Command on %s (timeout=%ds)", request.machine.vm_name, timeout)
         started = time.monotonic()
-        try:
-            poller = client.virtual_machines.begin_run_command(
-                request.machine.resource_group,
-                request.machine.vm_name,
-                RunCommandInput(command_id="RunShellScript", script=[ALLOWED_LINUX_SCRIPT]),
-            )
-            result = poller.result(timeout=timeout)
-            stdout = result.value[0].message if result.value else ""
-        except Exception as exc:  # noqa: BLE001
-            log.warning(
-                "guest_linux: Run Command on %s failed after %.1fs (%s)",
-                request.machine.vm_name, time.monotonic() - started, safe_exc_summary(exc),
-            )
-            return CollectionResult(events=[], error=f"Run Command failed: {exc}")
+        deadline = started + timeout
+        attempt = 0
+        while True:
+            attempt += 1
+            remaining = max(1, round(deadline - time.monotonic()))
+            try:
+                poller = client.virtual_machines.begin_run_command(
+                    request.machine.resource_group,
+                    request.machine.vm_name,
+                    RunCommandInput(command_id="RunShellScript", script=[ALLOWED_LINUX_SCRIPT]),
+                )
+                result = poller.result(timeout=remaining)
+                stdout = result.value[0].message if result.value else ""
+                break
+            except ResourceExistsError as exc:
+                if deadline - time.monotonic() <= _RUN_COMMAND_CONFLICT_RETRY_INTERVAL_SECONDS:
+                    log.warning(
+                        "guest_linux: Run Command on %s still conflicted with another execution in progress "
+                        "after %d attempt(s) over %.1fs - giving up (%s)",
+                        request.machine.vm_name, attempt, time.monotonic() - started, safe_exc_summary(exc),
+                    )
+                    return CollectionResult(events=[], error=f"Run Command failed: {exc}")
+                log.info(
+                    "guest_linux: Run Command on %s conflicted with another execution in progress "
+                    "(attempt %d) - retrying in %ds",
+                    request.machine.vm_name, attempt, _RUN_COMMAND_CONFLICT_RETRY_INTERVAL_SECONDS,
+                )
+                time.sleep(_RUN_COMMAND_CONFLICT_RETRY_INTERVAL_SECONDS)
+            except Exception as exc:  # noqa: BLE001
+                log.warning(
+                    "guest_linux: Run Command on %s failed after %.1fs (%s)",
+                    request.machine.vm_name, time.monotonic() - started, safe_exc_summary(exc),
+                )
+                return CollectionResult(events=[], error=f"Run Command failed: {exc}")
         log.info("guest_linux: Run Command on %s completed after %.1fs", request.machine.vm_name, time.monotonic() - started)
 
         events, patch_extension_status = parse_linux_output(stdout, vm_id=request.machine.vm_id)
