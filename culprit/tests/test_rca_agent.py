@@ -237,18 +237,24 @@ def test_prompt_surfaces_which_evidence_sources_were_attempted_and_succeeded():
     assert "guest_linux" not in prompt.split("succeeded:")[1].split("\n")[0]
 
 
-def _assert_every_object_requires_every_property(schema: Any, path: str = "$") -> None:
+def _assert_object_schema_satisfies_strict_mode(schema: Any, path: str = "$") -> None:
     """OpenAI's strict function-calling mode (Culprit's own tool schema has
-    `"strict": True`) rejects any object schema whose `required` doesn't
-    list every key in `properties` - "optional" there is expressed by the
-    model supplying an empty/default value, not by omitting the key from
-    `required`. Found 2026-10-18 from a real production 400 Bad Request:
-    both `ruled_out`'s and `immediate_fix_steps`'s item schemas had a
-    property (`evidence_refs`, `expected_result` respectively) missing
-    from `required`, and nothing caught it until a live OpenAI call
-    rejected it outright. Walks the whole schema recursively so any future
-    edit that reintroduces this - anywhere, not just these two fields -
-    fails a test instead of a live run."""
+    `"strict": True`) imposes two independent constraints on every object
+    schema, both found the hard way: (1 - found 2026-10-18 from a real
+    production 400 Bad Request) `required` must list every key in
+    `properties` - "optional" there is expressed by the model supplying an
+    empty/default value, not by omitting the key from `required` - both
+    `ruled_out`'s and `immediate_fix_steps`'s item schemas had a property
+    (`evidence_refs`, `expected_result` respectively) missing from
+    `required`, and nothing caught it until a live OpenAI call rejected it
+    outright; and (2 - found in review of that same fix, before it ever
+    caused a real failure) every object schema must set
+    `"additionalProperties": false` - true everywhere in the schema today,
+    but the first version of this test only checked constraint 1, so a
+    future object added without this would have passed the test and still
+    400'd live, defeating the point of having the test at all. Walks the
+    whole schema recursively so any future edit that reintroduces either
+    violation - anywhere - fails a test instead of a live run."""
     if not isinstance(schema, dict):
         return
     if schema.get("type") == "object" and "properties" in schema:
@@ -256,12 +262,14 @@ def _assert_every_object_requires_every_property(schema: Any, path: str = "$") -
         required = set(schema.get("required", []))
         missing = properties - required
         assert not missing, f"{path}: required is missing {missing} (strict mode needs every property required)"
+        assert schema.get("additionalProperties") is False, f"{path}: must set additionalProperties: false for strict mode"
         for key, subschema in schema["properties"].items():
-            _assert_every_object_requires_every_property(subschema, f"{path}.properties.{key}")
+            _assert_object_schema_satisfies_strict_mode(subschema, f"{path}.properties.{key}")
     if schema.get("type") == "array" and "items" in schema:
-        _assert_every_object_requires_every_property(schema["items"], f"{path}.items")
+        _assert_object_schema_satisfies_strict_mode(schema["items"], f"{path}.items")
 
 
 def test_tool_schema_satisfies_openai_strict_mode_everywhere():
     assert _RCA_TOOL_SCHEMA["strict"] is True
-    _assert_every_object_requires_every_property(_RCA_TOOL_SCHEMA["input_schema"])
+    assert _RCA_TOOL_SCHEMA["input_schema"]["type"] == "object"
+    _assert_object_schema_satisfies_strict_mode(_RCA_TOOL_SCHEMA["input_schema"])
