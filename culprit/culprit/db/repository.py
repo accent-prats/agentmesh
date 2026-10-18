@@ -46,8 +46,12 @@ from culprit.models.verdict import Verdict, VerdictValue
 # the usual ALTER-TABLE-has-no-data-side-default gotcha, same as
 # patch_extension_status_json/timeline_json before it. Every query below
 # that means "most recently triggered" uses this, not `started_at` alone -
-# `historical_cluster_keys()` is the one deliberate exception, since it's
-# genuinely comparing evidence-window chronology, not trigger order.
+# including `historical_cluster_keys()`, which was originally left as a
+# deliberate exception under the (incorrect) theory that it's comparing
+# evidence-window chronology rather than trigger order; a 2026-10-18 review
+# caught that its caller (advisor.compute_recurrence()) needs genuine
+# trigger-order "previous cycles," so it was switched to this too - see
+# that function's own docstring for the full story.
 _RUN_RECENCY = func.coalesce(RunRecord.created_at, RunRecord.started_at)
 
 
@@ -171,15 +175,29 @@ def save_machine_outcomes(session: Session, run_id: str, cluster_key: str, bundl
 
 
 def historical_cluster_keys(session: Session, before_run_id: str, limit: int = 12) -> list[list[str]]:
-    """Cluster keys seen in previous runs, most-recent-first - what
-    advisor.compute_recurrence() needs to detect a repeat offender."""
+    """Cluster keys seen in previous runs, most-recent-*triggered*-first -
+    what advisor.compute_recurrence() needs to detect a repeat offender.
+
+    Was deliberately ordered/filtered by bare `started_at` (the evidence-
+    collection window's start) until 2026-10-18 review caught that this
+    doesn't hold up: compute_recurrence() walks this list counting
+    *consecutive triggered cycles* ("a cause that vanished for two cycles
+    and came back is a new incident, not a running streak") - a genuinely
+    trigger-order concept, same as every other "most recent run(s)" query
+    in this file. Given a large "Hours back" window on `run` itself (the
+    exact scenario _RUN_RECENCY exists for), bare `started_at` pushes
+    `run.started_at` far into the past, which would wrongly exclude
+    genuinely more-recent prior runs from `WHERE started_at < run.started_at`
+    entirely - silently breaking repeat-offender detection for the same
+    trigger condition _RUN_RECENCY was built to fix everywhere else."""
     run = session.get(RunRecord, before_run_id)
     if run is None:
         return []
+    run_recency = run.created_at or run.started_at
     stmt = (
         select(RunRecord)
-        .where(RunRecord.started_at < run.started_at)
-        .order_by(RunRecord.started_at.desc())
+        .where(_RUN_RECENCY < run_recency)
+        .order_by(_RUN_RECENCY.desc())
         .limit(limit)
     )
     prior_runs = session.execute(stmt).scalars().all()

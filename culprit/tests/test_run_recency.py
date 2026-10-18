@@ -130,6 +130,77 @@ def test_a_pre_migration_row_with_no_created_at_falls_back_to_started_at_for_ord
     assert [r.run_id for r in runs] == ["run-legacy-newer", "run-legacy-older"]
 
 
+def _save_cluster(session, run_id, cluster_key):
+    """Minimal ClusterRecord - historical_cluster_keys() only ever reads
+    run_id/cluster_key, nothing else about the cluster."""
+    from culprit.models.cluster import Cluster, ClusterMember, Fingerprint
+    from culprit.models.evidence import OSFamily
+
+    member = ClusterMember(vm_id=f"vm-{run_id}-{cluster_key}", vm_name=f"vm-{run_id}-{cluster_key}")
+    cluster = Cluster(
+        cluster_id=f"{run_id}-{cluster_key}", run_id=run_id, cluster_key=cluster_key,
+        fingerprint=Fingerprint(error_code_normalized="x", os_family=OSFamily.LINUX, failing_target=""),
+        members=[member], representative_vm_id=member.vm_id,
+    )
+    repository.save_cluster(session, cluster)
+
+
+def test_historical_cluster_keys_excludes_prior_runs_by_trigger_recency_not_window_start(session_factory):
+    """Found by a 2026-10-18 review: historical_cluster_keys() was
+    deliberately left ordering/filtering by bare started_at under the
+    theory it's comparing evidence-window chronology, not trigger order -
+    but its only caller, advisor.compute_recurrence(), needs genuine
+    "previous triggered cycles" (consecutive-streak detection). A current
+    run given a large "Hours back" window has a started_at pushed far into
+    the past, which would wrongly exclude a genuinely-prior run (one
+    actually triggered earlier, with a normal, more recent started_at)
+    from the historical set entirely - silently breaking repeat-offender
+    detection for the exact scenario _RUN_RECENCY exists to fix."""
+    with session_factory() as session:
+        _make_run(session, "run-earlier", "scope-a", datetime(2026, 10, 17, tzinfo=timezone.utc))
+        _save_cluster(session, "run-earlier", "cause-x")
+
+        # Triggered second (real wall-clock time), but a 200-hour window
+        # pushes its own started_at more than a week before run-earlier's.
+        _make_run(session, "run-current", "scope-a", datetime(2026, 10, 18, tzinfo=timezone.utc) - timedelta(hours=200))
+
+        history = repository.historical_cluster_keys(session, "run-current")
+
+    assert history == [["cause-x"]]
+
+
+def test_historical_cluster_keys_orders_most_recently_triggered_first(session_factory):
+    with session_factory() as session:
+        _make_run(session, "run-1", "scope-a", datetime(2026, 1, 1, tzinfo=timezone.utc))
+        _save_cluster(session, "run-1", "cause-a")
+        _make_run(session, "run-2", "scope-a", datetime(2026, 1, 2, tzinfo=timezone.utc))
+        _save_cluster(session, "run-2", "cause-b")
+        _make_run(session, "run-3", "scope-a", datetime(2026, 1, 3, tzinfo=timezone.utc))
+
+        history = repository.historical_cluster_keys(session, "run-3")
+
+    assert history == [["cause-b"], ["cause-a"]]  # most recently triggered first
+
+
+def test_historical_cluster_keys_falls_back_to_started_at_for_legacy_rows(session_factory):
+    """Backward compatibility: a pre-migration row with created_at=None
+    must still work via the started_at fallback, same as every other
+    _RUN_RECENCY consumer."""
+    with session_factory() as session:
+        _make_run(session, "run-legacy", "scope-a", datetime(2026, 1, 1, tzinfo=timezone.utc))
+        _save_cluster(session, "run-legacy", "cause-a")
+        session.get(RunRecord, "run-legacy").created_at = None
+        session.commit()
+
+        _make_run(session, "run-current", "scope-a", datetime(2026, 1, 2, tzinfo=timezone.utc))
+        session.get(RunRecord, "run-current").created_at = None
+        session.commit()
+
+        history = repository.historical_cluster_keys(session, "run-current")
+
+    assert history == [["cause-a"]]
+
+
 def test_chat_latest_report_prefers_trigger_recency_over_window_start(session_factory):
     """routes_chat.py::_latest_report is a third "most recent run" query,
     found missed by an independent review of this fix - without this
