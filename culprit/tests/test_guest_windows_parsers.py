@@ -1,8 +1,11 @@
 from __future__ import annotations
 
+import inspect
+import re
 from datetime import datetime, timezone
 
 from culprit.collectors.guest_windows import (
+    ALLOWED_WINDOWS_SCRIPT,
     parse_cbs_log,
     parse_command_execution_log,
     parse_disk_usage,
@@ -290,3 +293,27 @@ def test_ext_status_section_is_sliced_out_and_handed_to_the_shared_parser():
     assert findings[0]["source"] == "guest_windows"
     assert findings[0]["extension_version"] == "1.5.71"  # from EXT_VERSION, not the status JSON's own "version": "1.0"
     assert "Reboot required" in findings[0]["message"]
+
+
+_SECTION_MARKER_RE = re.compile(r'Write-Output\s+"---(\w+)---"')
+_SECTION_GET_RE = re.compile(r'sections\.get\("(\w+)"')
+
+
+def test_every_script_section_is_consumed_and_vice_versa():
+    """Found by review 2026-10-18: guest_linux.py has
+    test_allowed_linux_script_runs_cleanly_through_a_real_shell, which
+    actually executes the real script via bash and would catch a marker
+    typo immediately - PowerShell has no equivalent interpreter available
+    in this cross-platform test suite, so every existing Windows section
+    test instead hand-constructs its stdout fixture, completely decoupled
+    from ALLOWED_WINDOWS_SCRIPT's own `Write-Output "---X---"` text. A
+    typo in either place (the script's marker, or a `sections.get(...)`
+    key) would silently drop that section's data with no test catching it
+    - this is the static equivalent of the Linux side's real-shell test,
+    cross-checking the two independently-written text blobs against each
+    other instead of against a third, equally-typable hand fixture."""
+    produced = set(_SECTION_MARKER_RE.findall(ALLOWED_WINDOWS_SCRIPT))
+    consumed = set(_SECTION_GET_RE.findall(inspect.getsource(parse_windows_output)))
+
+    assert consumed - produced == set(), f"parse_windows_output reads section(s) the script never writes: {consumed - produced}"
+    assert produced - consumed == set(), f"the script writes section(s) nothing ever reads: {produced - consumed}"
