@@ -15,6 +15,7 @@ from culprit.collectors.guest_windows import (
     parse_vmagent_status,
     parse_windows_output,
     parse_wsus_connectivity,
+    parse_wu_history,
     parse_wu_log,
     parse_wuauserv_state,
 )
@@ -61,6 +62,37 @@ def test_parse_wuauserv_state_flags_non_running():
 
 def test_parse_wuauserv_state_running_is_silent():
     assert parse_wuauserv_state("Running\n", vm_id="vm-1") == []
+
+
+# ── Windows Update Agent install-history (found 2026-10-18 auditing
+# against the "recommended evidence" spreadsheet's row 7 - "Windows Update
+# records" is the structured per-update outcome record, distinct from the
+# WU_LOG trace file already collected) ──────────────────────────────────
+
+def test_parse_wu_history_flags_a_failed_update():
+    text = "2026-10-18 03:04:00 ResultCode=4 Title=2026-10 Cumulative Update for Windows Server (KB5126655)\n"
+    events = parse_wu_history(text, vm_id="vm-1")
+    assert len(events) == 1
+    assert "ResultCode=4" in events[0].summary
+    assert "KB5126655" in events[0].summary
+    assert events[0].kind == "wu_history"
+
+
+def test_parse_wu_history_ignores_successful_updates():
+    text = "2026-10-18 03:04:00 ResultCode=2 Title=Some update that installed fine\n"
+    assert parse_wu_history(text, vm_id="vm-1") == []
+
+
+def test_parse_wu_history_caps_at_the_shared_max():
+    text = "\n".join(f"2026-10-{10+i:02d} 03:04:00 ResultCode=4 Title=Failed update {i}" for i in range(MAX_ANOMALY_EVENTS_PER_SECTION + 5))
+    events = parse_wu_history(text, vm_id="vm-1")
+    assert len(events) == MAX_ANOMALY_EVENTS_PER_SECTION
+
+
+def test_parse_windows_output_wires_in_wu_history():
+    stdout = "---WU_HISTORY---\n2026-10-18 03:04:00 ResultCode=4 Title=Failed update\n"
+    events, _ = parse_windows_output(stdout, vm_id="vm-1")
+    assert any(e.kind == "wu_history" for e in events)
 
 
 def test_parse_disk_usage_flags_low_free_drive():

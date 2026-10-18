@@ -60,6 +60,17 @@ Write-Output "---PENDING_REBOOT---"
 Test-Path "HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Component Based Servicing\RebootPending"
 Write-Output "---WUAUSERV---"
 (Get-Service wuauserv -ErrorAction SilentlyContinue).Status
+Write-Output "---WU_HISTORY---"
+try {
+    $wuSession = New-Object -ComObject Microsoft.Update.Session
+    $wuSearcher = $wuSession.CreateUpdateSearcher()
+    $wuHistoryCount = $wuSearcher.GetTotalHistoryCount()
+    if ($wuHistoryCount -gt 0) {
+        $wuSearcher.QueryHistory(0, [Math]::Min($wuHistoryCount, 20)) | ForEach-Object {
+            "$($_.Date.ToString('yyyy-MM-dd HH:mm:ss')) ResultCode=$($_.ResultCode) Title=$($_.Title)"
+        }
+    }
+} catch {}
 Write-Output "---DISK_USAGE---"
 Get-PSDrive -PSProvider FileSystem | ForEach-Object { "$($_.Name) $($_.Free) $($_.Used)" }
 Write-Output "---WSUS_CONNECTIVITY---"
@@ -321,6 +332,46 @@ def parse_wuauserv_state(text: str, vm_id: str) -> list[TimelineEvent]:
     ]
 
 
+# Windows Update Agent's own IUpdateHistoryEntry.ResultCode enum
+# (orcNotStarted=0, orcInProgress=1, orcSucceeded=2, orcSucceededWithErrors=3,
+# orcFailed=4, orcAborted=5) - 3/4/5 are the "this update didn't cleanly
+# install" outcomes worth surfacing.
+_WU_HISTORY_LINE_RE = re.compile(r"^(?P<date>\S+ \S+) ResultCode=(?P<code>\d+) Title=(?P<title>.*)$")
+_WU_HISTORY_FAILURE_CODES = {"3", "4", "5"}
+
+
+def parse_wu_history(text: str, vm_id: str) -> list[TimelineEvent]:
+    """The local Windows Update Agent's own install-history record
+    (`(New-Object -ComObject Microsoft.Update.Session).CreateUpdateSearcher().
+    QueryHistory()`) - found 2026-10-18 auditing against the user-supplied
+    "recommended evidence" spreadsheet: row 7's Windows column
+    ("Windows Update records") is distinct from the separate WindowsUpdate.log
+    trace file row (already collected as WU_LOG) - it's the structured
+    per-update outcome record, the Windows analogue of Linux's dpkg/yum/dnf
+    logs ("repository/package-specific download/install failures"). Only
+    ResultCode values indicating a non-clean outcome are surfaced - a
+    machine with a long, entirely successful update history would
+    otherwise emit one event per line for no diagnostic value. No
+    live-verified real sample of this API's exact Title/Date formatting -
+    same honesty caveat already applied to this file's other new parsers."""
+    events: list[TimelineEvent] = []
+    for i, line in enumerate(text.splitlines()):
+        m = _WU_HISTORY_LINE_RE.match(line.strip())
+        if not m or m.group("code") not in _WU_HISTORY_FAILURE_CODES:
+            continue
+        events.append(
+            TimelineEvent(
+                ts=parse_leading_timestamp(m.group("date")) or datetime.now(timezone.utc),
+                source=Source.GUEST_WINDOWS,
+                kind="wu_history",
+                summary=f"Windows Update history: ResultCode={m.group('code')} for {m.group('title').strip()}"[:600],
+                detail={"result_code": m.group("code")},
+                raw_ref=f"guest:wu_history:{vm_id}:{i}",
+            )
+        )
+    return events[:MAX_ANOMALY_EVENTS_PER_SECTION]
+
+
 _PSDRIVE_LINE_RE = re.compile(r"^(?P<name>\w):?\s+(?P<free>\d+)\s+(?P<used>\d+)$")
 
 
@@ -517,6 +568,7 @@ def parse_windows_output(stdout: str, vm_id: str) -> tuple[list[TimelineEvent], 
     events += parse_cbs_log(sections.get("CBS_LOG", ""), vm_id)
     events += parse_pending_reboot(sections.get("PENDING_REBOOT", ""), vm_id)
     events += parse_wuauserv_state(sections.get("WUAUSERV", ""), vm_id)
+    events += _log_if_found("parse_wu_history", parse_wu_history(sections.get("WU_HISTORY", ""), vm_id), vm_id)
     events += parse_disk_usage(sections.get("DISK_USAGE", ""), vm_id)
     events += _log_if_found("parse_wsus_connectivity", parse_wsus_connectivity(sections.get("WSUS_CONNECTIVITY", ""), vm_id), vm_id)
     events += _log_if_found("parse_vmagent_status", parse_vmagent_status(sections.get("VMAGENT_STATUS", ""), vm_id), vm_id)
