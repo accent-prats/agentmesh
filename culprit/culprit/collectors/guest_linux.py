@@ -214,6 +214,16 @@ class GuestLinuxCollector(Collector):
 
 _SECTION_RE = re.compile(r"^---(\w+)---$")
 
+# Shared by parse_lock_holder/_checks_performed below (found by review
+# 2026-10-19) - recognizes a shell's own "command not found" text, which
+# LOCK_HOLDER/SUBMAN can both surface in their section content since their
+# commands merge stderr into stdout via `2>&1` (so the parser can read
+# specific output text, not just success/failure). Matches both bash's
+# "command not found" and dash/sh's "<prog>: not found" (and "sh: 1: foo:
+# not found", which also embeds a line number - a real, demonstrated
+# false-positive source for parse_lock_holder's own PID regex below).
+_COMMAND_UNAVAILABLE_RE = re.compile(r"command not found|:\s*not found\b", re.IGNORECASE)
+
 
 def _split_sections(stdout: str) -> dict[str, str]:
     sections: dict[str, list[str]] = {}
@@ -326,6 +336,20 @@ def parse_lock_holder(text: str, vm_id: str) -> list[TimelineEvent]:
     text = text.strip()
     if not text or "Permission denied" in text:
         return []
+    # Found by review 2026-10-19: fuser (psmisc) isn't guaranteed installed
+    # on a minimal/container image, and dash/sh's own "not found" text
+    # (e.g. "sh: 1: fuser: not found") embeds a line number - without this
+    # guard, that digit was matched by the PID regex below and fabricated
+    # a false "dpkg lock held by pid 1" anomaly on a VM where fuser simply
+    # never ran at all.
+    if _COMMAND_UNAVAILABLE_RE.search(text):
+        return []
+    # Found by review 2026-10-19: fuser (psmisc) isn't guaranteed installed
+    # on a minimal/container image, and dash/sh's own "not found" text
+    # (e.g. "sh: 1: fuser: not found") embeds a line number - without this
+    # guard, that digit was matched by the PID regex below and fabricated
+    # a false "dpkg lock held by pid 1" anomaly on a VM where fuser simply
+    # never ran at all.
     pid_match = re.search(r"(\d+)", text)
     if not pid_match:
         return []
@@ -577,9 +601,30 @@ _SECTION_CHECK_LABELS: dict[str, str] = {
     "JOURNAL_REBOOT": "system journal / reboot and kernel error history",
 }
 
+# Found by review 2026-10-19 - a real, demonstrated gap in the fix above:
+# marker presence alone isn't "genuinely attempted." LOCK_HOLDER (`fuser ...
+# 2>&1`) and SUBMAN (`subscription-manager status 2>&1`) both merge stderr
+# into their section's own content so their parsers can read specific
+# output text - but neither parser recognizes a shell "command not found"
+# as anything other than "no anomaly," so a VM simply missing the fuser
+# binary (psmisc isn't always installed) or subscription-manager (any
+# non-RHEL box - this script already runs unconditionally against every
+# Linux distro) would silently claim "checked, healthy" for a tool that
+# was never actually available to check anything - reintroducing, one
+# layer down, the exact false-confidence problem checks_performed exists
+# to prevent. Every other section either redirects its command's own
+# stderr to /dev/null (so a missing binary just yields empty output, read
+# as "checked, nothing found" - a softer, already-accepted ambiguity, not
+# a false *positive* claim) or explicitly branches with `&&`/`||` so a
+# failure reports as a real, correctly-labeled negative (REPO_DIAGNOSTICS).
+# See `_COMMAND_UNAVAILABLE_RE` (module-level, shared with parse_lock_holder).
+
 
 def _checks_performed(sections: dict[str, str]) -> list[str]:
-    return [label for key, label in _SECTION_CHECK_LABELS.items() if key in sections]
+    return [
+        label for key, label in _SECTION_CHECK_LABELS.items()
+        if key in sections and not _COMMAND_UNAVAILABLE_RE.search(sections[key])
+    ]
 
 
 def parse_linux_output(

@@ -71,6 +71,16 @@ def test_parse_lock_holder_empty_when_no_lock():
     assert parse_lock_holder("/var/lib/dpkg/lock-frontend: Permission denied", vm_id="vm-1") == []
 
 
+def test_parse_lock_holder_does_not_fabricate_a_pid_from_command_not_found_text():
+    """Found by review 2026-10-19: dash/sh's own "not found" message embeds
+    a line number (e.g. "sh: 1: fuser: not found") - without a guard, the
+    bare PID regex below matched that "1" and fabricated a false "dpkg
+    lock held by pid 1" anomaly on a VM where fuser (psmisc) was never
+    even installed, let alone actually holding the lock."""
+    assert parse_lock_holder("sh: 1: fuser: not found", vm_id="vm-1") == []
+    assert parse_lock_holder("bash: fuser: command not found", vm_id="vm-1") == []
+
+
 def test_parse_repo_check_flags_non_200():
     events = parse_repo_check("000", vm_id="vm-1")
     assert events[0].detail["repo_unreachable"] is True
@@ -471,3 +481,44 @@ def test_parse_linux_output_threads_the_window_into_its_parsers():
         window_end=datetime(2020, 1, 1, 1, 0, tzinfo=timezone.utc),
     )
     assert not any(e.kind == "package_manager_log" for e in events)
+
+
+# ── checks_performed must not claim a check ran when its command simply
+# isn't installed (found by review 2026-10-19: SUBMAN/LOCK_HOLDER both
+# merge stderr into their own section content via `2>&1`, so a VM missing
+# subscription-manager or fuser gets a literal "command not found" string
+# in that section - neither parser recognizes that as anything but "no
+# anomaly," so checks_performed was silently claiming "checked, healthy"
+# for a tool that was never actually available) ──────────────────────────
+
+def test_checks_performed_excludes_subman_when_the_binary_is_missing():
+    """The exact real-world shape on any non-RHEL box (this script already
+    runs unconditionally against every Linux distro, Debian/Ubuntu
+    included) - subscription-manager doesn't exist, so bash's own "command
+    not found" text lands in the SUBMAN section via the script's `2>&1`."""
+    stdout = (
+        "---DPKG_LOG---\n\n"
+        "---SUBMAN---\nbash: subscription-manager: command not found\n"
+    )
+    events, _, checks_performed = parse_linux_output(stdout, vm_id="vm-1")
+    assert not any(e.kind == "entitlement_state" for e in events)
+    assert "subscription-manager (entitlement) status" not in checks_performed
+
+
+def test_checks_performed_excludes_lock_holder_when_fuser_is_missing():
+    """Same bug class as SUBMAN above - fuser (psmisc) isn't guaranteed
+    installed on a minimal/container Linux image, and LOCK_HOLDER also
+    merges stderr via `2>&1`."""
+    stdout = "---LOCK_HOLDER---\nsh: 1: fuser: not found\n"
+    events, _, checks_performed = parse_linux_output(stdout, vm_id="vm-1")
+    assert not any(e.kind == "lock_state" for e in events)
+    assert "dpkg lock holder" not in checks_performed
+
+
+def test_checks_performed_still_includes_subman_when_it_genuinely_ran():
+    """The positive case: a real, healthy subscription-manager response
+    must still be reported as performed - the fix must only exclude actual
+    command-not-found text, not legitimate output."""
+    stdout = "---SUBMAN---\nOverall Status: Current\n"
+    _, _, checks_performed = parse_linux_output(stdout, vm_id="vm-1")
+    assert "subscription-manager (entitlement) status" in checks_performed

@@ -24,6 +24,7 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 import time
 from typing import Any, Protocol
 
@@ -397,6 +398,25 @@ _HEDGE_PHRASES = (
     "seems to", "likely due to", "may be", "it's possible",
 )
 
+# Found by review 2026-10-19: a plain `phrase in text` substring check
+# matches a hedge phrase *inside* an unrelated word too - e.g. "appears to"
+# is a literal substring of "disappears to", so a perfectly factual
+# statement like "free disk space disappears to zero after each upgrade"
+# would spuriously trip the hedging signal. A leading `\b` on each phrase
+# prevents that while still matching the phrase wherever it genuinely
+# starts a word. "suggest" deliberately gets no trailing `\b` - it's a
+# stem meant to also catch "suggesting"/"suggests"/"suggested" (the
+# original, intentional substring behavior for this one entry only); every
+# other phrase is a complete word/phrase, so it gets a trailing `\b` too to
+# avoid matching into a longer, unrelated word.
+_HEDGE_PATTERN = re.compile(
+    "|".join(
+        rf"\b{re.escape(phrase)}" + ("" if phrase == "suggest" else r"\b")
+        for phrase in _HEDGE_PHRASES
+    ),
+    re.IGNORECASE,
+)
+
 
 def _cited_sources(result: RCAResult, bundle: EvidenceBundle) -> set[Source]:
     ref_to_source = {e.raw_ref: e.source for e in bundle.timeline}
@@ -410,8 +430,8 @@ def _cited_sources(result: RCAResult, bundle: EvidenceBundle) -> set[Source]:
 
 
 def _uses_hedging_language(result: RCAResult) -> bool:
-    text = " ".join(step.statement.lower() for step in result.causal_chain)
-    return any(phrase in text for phrase in _HEDGE_PHRASES)
+    text = " ".join(step.statement for step in result.causal_chain)
+    return bool(_HEDGE_PATTERN.search(text))
 
 
 def _calibrate_confidence(result: RCAResult, bundle: EvidenceBundle) -> RCAResult:

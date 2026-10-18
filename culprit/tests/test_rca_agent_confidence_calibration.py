@@ -143,6 +143,23 @@ def test_high_confidence_is_capped_when_the_wording_hedges_even_with_multiple_so
     assert result.confidence == _LOW_CONFIDENCE_CEILING
 
 
+def test_a_hedge_phrase_embedded_inside_an_unrelated_word_does_not_false_positive():
+    """Found by review 2026-10-19: a plain substring check would match
+    "appears to" inside "disappears to" - a purely factual statement, not
+    hedging - and wrongly cap a well-supported, multi-source conclusion.
+    Word-boundary matching must not trigger here."""
+    bundle = _multi_source_bundle()
+    causal_chain = [
+        {
+            "order": 1,
+            "statement": "Free disk space on /boot disappears to zero after each kernel upgrade.",
+            "evidence_refs": ["ref-install", "ref-disk"],
+        },
+    ]
+    result = _diagnose(bundle, causal_chain, confidence=0.9)
+    assert result.confidence == 0.9
+
+
 def test_already_low_confidence_is_never_raised():
     """Calibration only ever lowers confidence - a model that already
     reported low confidence for a single-source result must not have its
