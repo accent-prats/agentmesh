@@ -52,11 +52,26 @@ except ImportError:  # pragma: no cover
     _COMPUTE_SDK_AVAILABLE = False
 
 
+# Section ORDER and per-section size below were both reworked 2026-10-19
+# for the same reason and in the same way as guest_linux.py's identical
+# comment on its own ALLOWED_LINUX_SCRIPT - see that comment for the full
+# root-cause writeup (a live production VM's combined Run Command output
+# exceeded Azure's documented ~4KB `instanceView` output cap, which keeps
+# the LAST bytes written, not the first, silently discarding everything
+# before that point with no error). Every `-Tail 200`/`-MaxEvents 100`
+# dropped to a much smaller window, and EXT_STATUS's own 8192-character
+# cap (nearly double Azure's entire output budget by itself) dropped to
+# 3072; sections reordered so EXT_STATUS/EXT_VERSION/EXT_LOG/
+# COMMAND_EXECUTION_LOG (patch-extension-level evidence) and
+# WSUS_CONNECTIVITY (the Windows analogue of guest_linux.py's
+# REPO_DIAGNOSTICS, confirmed real root-cause evidence in production) sit
+# last, while the generic, lowest-specificity raw-log tails (WU_LOG,
+# CBS_LOG) move to the front, most likely to be sacrificed.
 ALLOWED_WINDOWS_SCRIPT = r"""
 Write-Output "---WU_LOG---"
-Get-Content "$env:windir\WindowsUpdate.log" -Tail 200 -ErrorAction SilentlyContinue
+Get-Content "$env:windir\WindowsUpdate.log" -Tail 20 -ErrorAction SilentlyContinue
 Write-Output "---CBS_LOG---"
-Get-Content "$env:windir\Logs\CBS\CBS.log" -Tail 200 -ErrorAction SilentlyContinue
+Get-Content "$env:windir\Logs\CBS\CBS.log" -Tail 20 -ErrorAction SilentlyContinue
 Write-Output "---PENDING_REBOOT---"
 Test-Path "HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Component Based Servicing\RebootPending"
 Write-Output "---WUAUSERV---"
@@ -74,6 +89,17 @@ try {
 } catch {}
 Write-Output "---DISK_USAGE---"
 Get-PSDrive -PSProvider FileSystem | ForEach-Object { "$($_.Name) $($_.Free) $($_.Used)" }
+Write-Output "---VMAGENT_STATUS---"
+if (Test-Path "C:\WindowsAzure\Logs\AggregateStatus" -PathType Leaf) {
+    Get-Content "C:\WindowsAzure\Logs\AggregateStatus" -Tail 20 -ErrorAction SilentlyContinue
+} elseif (Test-Path "C:\WindowsAzure\Logs\AggregateStatus") {
+    $aggStatusFile = Get-ChildItem "C:\WindowsAzure\Logs\AggregateStatus" -Filter *.json -ErrorAction SilentlyContinue |
+        Sort-Object LastWriteTime -Descending | Select-Object -First 1
+    if ($aggStatusFile) { Get-Content $aggStatusFile.FullName -Tail 20 -ErrorAction SilentlyContinue }
+}
+Write-Output "---SYSTEM_EVENTLOG---"
+Get-WinEvent -FilterHashtable @{LogName='System'; Level=1,2,3; StartTime=(Get-Date).AddHours(-6)} -MaxEvents 20 -ErrorAction SilentlyContinue |
+    ForEach-Object { "$($_.TimeCreated.ToString('yyyy-MM-dd HH:mm:ss')) [$($_.LevelDisplayName)] Id=$($_.Id) $($_.Message)" }
 Write-Output "---WSUS_CONNECTIVITY---"
 $wsusServer = (Get-ItemProperty "HKLM:\SOFTWARE\Policies\Microsoft\Windows\WindowsUpdate" -ErrorAction SilentlyContinue).WUServer
 if ($wsusServer) {
@@ -93,32 +119,21 @@ if ($wsusHost) {
     $wsusTest = Test-NetConnection -ComputerName $wsusHost -Port 443 -WarningAction SilentlyContinue -ErrorAction SilentlyContinue
     Write-Output "tcp_reachable=$(if ($wsusTest -and $wsusTest.TcpTestSucceeded) {'yes'} else {'no'})"
 }
-Write-Output "---VMAGENT_STATUS---"
-if (Test-Path "C:\WindowsAzure\Logs\AggregateStatus" -PathType Leaf) {
-    Get-Content "C:\WindowsAzure\Logs\AggregateStatus" -Tail 200 -ErrorAction SilentlyContinue
-} elseif (Test-Path "C:\WindowsAzure\Logs\AggregateStatus") {
-    $aggStatusFile = Get-ChildItem "C:\WindowsAzure\Logs\AggregateStatus" -Filter *.json -ErrorAction SilentlyContinue |
-        Sort-Object LastWriteTime -Descending | Select-Object -First 1
-    if ($aggStatusFile) { Get-Content $aggStatusFile.FullName -Tail 200 -ErrorAction SilentlyContinue }
-}
-Write-Output "---SYSTEM_EVENTLOG---"
-Get-WinEvent -FilterHashtable @{LogName='System'; Level=1,2,3; StartTime=(Get-Date).AddHours(-6)} -MaxEvents 100 -ErrorAction SilentlyContinue |
-    ForEach-Object { "$($_.TimeCreated.ToString('yyyy-MM-dd HH:mm:ss')) [$($_.LevelDisplayName)] Id=$($_.Id) $($_.Message)" }
 $extRoot = "C:\Packages\Plugins\Microsoft.CPlat.Core.WindowsPatchExtension"
 $latestVersionDir = Get-ChildItem -Path $extRoot -Directory -ErrorAction SilentlyContinue |
     Sort-Object { [version]$_.Name } -Descending -ErrorAction SilentlyContinue | Select-Object -First 1
-Write-Output "---EXT_VERSION---"
-if ($latestVersionDir) { Write-Output $latestVersionDir.Name }
-Write-Output "---EXT_LOG---"
-if ($latestVersionDir) {
-    $extLogPath = "C:\WindowsAzure\Logs\Plugins\Microsoft.CPlat.Core.WindowsPatchExtension\$($latestVersionDir.Name)\WindowsPatchExtension.log"
-    Get-Content $extLogPath -Tail 200 -ErrorAction SilentlyContinue
-}
 Write-Output "---COMMAND_EXECUTION_LOG---"
 if ($latestVersionDir) {
     $cmdExecLogPath = "C:\WindowsAzure\Logs\Plugins\Microsoft.CPlat.Core.WindowsPatchExtension\$($latestVersionDir.Name)\CommandExecution.log"
-    Get-Content $cmdExecLogPath -Tail 200 -ErrorAction SilentlyContinue
+    Get-Content $cmdExecLogPath -Tail 20 -ErrorAction SilentlyContinue
 }
+Write-Output "---EXT_LOG---"
+if ($latestVersionDir) {
+    $extLogPath = "C:\WindowsAzure\Logs\Plugins\Microsoft.CPlat.Core.WindowsPatchExtension\$($latestVersionDir.Name)\WindowsPatchExtension.log"
+    Get-Content $extLogPath -Tail 20 -ErrorAction SilentlyContinue
+}
+Write-Output "---EXT_VERSION---"
+if ($latestVersionDir) { Write-Output $latestVersionDir.Name }
 Write-Output "---EXT_STATUS---"
 $latestStatusFile = $null
 if ($latestVersionDir) {
@@ -127,7 +142,7 @@ if ($latestVersionDir) {
 }
 if ($latestStatusFile) {
     $extStatusContent = Get-Content $latestStatusFile.FullName -Raw -ErrorAction SilentlyContinue
-    if ($extStatusContent.Length -gt 8192) { $extStatusContent = $extStatusContent.Substring(0, 8192) }
+    if ($extStatusContent.Length -gt 3072) { $extStatusContent = $extStatusContent.Substring(0, 3072) }
     Write-Output $extStatusContent
 } else {
     Write-Output "No status file found"

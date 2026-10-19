@@ -75,24 +75,60 @@ except ImportError:  # pragma: no cover
 # No write, no delete, no arbitrary argument interpolation - the allow-
 # listed commands below are the entire guest-side attack surface; extending
 # them requires an explicit code review, not a config change.
+#
+# Section ORDER and per-section size below were both reworked 2026-10-19
+# (option 3 of three remediations offered for a real production bug: a
+# live tcx-tenant VM's "logs reviewed this run" showed 11 of 13 Linux
+# sections as "not collected" with a healthy, non-erroring Run Command
+# completion). Root cause, confirmed against Microsoft's own documented
+# behavior: Azure VM Run Command's `instanceView` output is hard-capped at
+# roughly the LAST 4KB of combined stdout - not the first - with no error,
+# no truncation marker, nothing; whatever was written earliest in a
+# combined script is silently discarded once the script's total output
+# exceeds that cap. This script had grown (across many rounds this
+# session) to the point where a verbose VM's real output plausibly exceeds
+# it. Two changes, both pure mitigation (no new Azure infrastructure,
+# unlike the "redirect to a storage blob" alternative that actually
+# removes the cap - a decision the user explicitly deferred):
+#   1. Every `tail -n 200`/`-n 100` dropped to a much smaller window
+#      (`-n 20`), and EXT_STATUS's `head -c 8192` (which, alone, is nearly
+#      double Azure's entire output budget - risking the extension's own
+#      status JSON being sliced mid-object and failing to parse) dropped
+#      to `head -c 3072`. These are still anomaly-keyword scans over
+#      *recent* lines, not exact-format parses, so a smaller window is a
+#      deliberate, bounded trade-off (a real anomaly further back than the
+#      new window would be missed), not a change in what's being looked for.
+#   2. Sections reordered so the most diagnostically valuable ones are
+#      LAST, since Azure keeps the tail: EXT_STATUS (the extension's own
+#      authoritative account) and EXT_VERSION stay last (as before);
+#      REPO_DIAGNOSTICS and SUBMAN (both confirmed, in this exact
+#      production incident and the entitlement-expired demo cluster, to be
+#      genuine root-cause evidence) move up near the end; the
+#      OS-family-specific, mutually-exclusive package-manager logs
+#      (DPKG_LOG/APT_HISTORY/YUM_LOG/DNF_LOG - only one pair is ever
+#      non-empty on a given distro) and the still-unparsed KERNELS context
+#      line move to the front, the most likely to be sacrificed.
 ALLOWED_LINUX_SCRIPT = (
-    "echo ---DPKG_LOG---; tail -n 200 /var/log/dpkg.log 2>/dev/null; "
-    "echo ---APT_HISTORY---; tail -n 200 /var/log/apt/history.log 2>/dev/null; "
-    "echo ---YUM_LOG---; tail -n 200 /var/log/yum.log 2>/dev/null; "
-    "echo ---DNF_LOG---; tail -n 200 /var/log/dnf.log 2>/dev/null; "
-    "echo ---DISK_USAGE---; df -h --output=target,pcent,avail 2>/dev/null; "
-    "echo ---LOCK_HOLDER---; fuser /var/lib/dpkg/lock-frontend 2>&1; "
-    "echo ---REPO_CHECK---; timeout 5 curl -o /dev/null -s -w \"%{http_code}\\n\" http://archive.ubuntu.com 2>&1; "
     "echo ---KERNELS---; dpkg -l 'linux-image-*' 2>/dev/null | grep ^ii; uname -r; "
-    "echo ---SUBMAN---; timeout 5 subscription-manager status 2>&1; "
-    "echo ---WAAGENT_LOG---; tail -n 200 /var/log/waagent.log 2>/dev/null; "
-    "echo ---EXT_CORE_LOG---; "
-    "LATESTCORE=$(ls -t /var/log/azure/Microsoft.CPlat.Core.LinuxPatchExtension/*.core.log 2>/dev/null | head -1); "
-    "if [ -n \"$LATESTCORE\" ]; then tail -n 200 \"$LATESTCORE\"; fi; "
+    "echo ---DNF_LOG---; tail -n 20 /var/log/dnf.log 2>/dev/null; "
+    "echo ---YUM_LOG---; tail -n 20 /var/log/yum.log 2>/dev/null; "
+    "echo ---APT_HISTORY---; tail -n 20 /var/log/apt/history.log 2>/dev/null; "
+    "echo ---DPKG_LOG---; tail -n 20 /var/log/dpkg.log 2>/dev/null; "
+    "echo ---REPO_CHECK---; timeout 5 curl -o /dev/null -s -w \"%{http_code}\\n\" http://archive.ubuntu.com 2>&1; "
+    "echo ---LOCK_HOLDER---; fuser /var/lib/dpkg/lock-frontend 2>&1; "
     "echo ---EXT_WRAPPER_LOG---; "
     "LATESTWRAPPER=$(ls -t /var/log/azure/Microsoft.CPlat.Core.LinuxPatchExtension/*_Enable.ext.log "
     "/var/log/azure/Microsoft.CPlat.Core.LinuxPatchExtension/*.ext.log 2>/dev/null | head -1); "
-    "if [ -n \"$LATESTWRAPPER\" ]; then tail -n 200 \"$LATESTWRAPPER\"; fi; "
+    "if [ -n \"$LATESTWRAPPER\" ]; then tail -n 20 \"$LATESTWRAPPER\"; fi; "
+    "echo ---EXT_CORE_LOG---; "
+    "LATESTCORE=$(ls -t /var/log/azure/Microsoft.CPlat.Core.LinuxPatchExtension/*.core.log 2>/dev/null | head -1); "
+    "if [ -n \"$LATESTCORE\" ]; then tail -n 20 \"$LATESTCORE\"; fi; "
+    "echo ---WAAGENT_LOG---; tail -n 20 /var/log/waagent.log 2>/dev/null; "
+    "echo ---DISK_USAGE---; df -h --output=target,pcent,avail 2>/dev/null; "
+    "echo ---JOURNAL_REBOOT---; "
+    "journalctl --list-boots 2>/dev/null | tail -5; "
+    "journalctl -k -p err -n 20 2>/dev/null; "
+    "echo ---SUBMAN---; timeout 5 subscription-manager status 2>&1; "
     "echo ---REPO_DIAGNOSTICS---; "
     "REPOHOST=$(grep -h -oE '^deb[[:space:]]+https?://[^/[:space:]]+' /etc/apt/sources.list "
     "/etc/apt/sources.list.d/*.list 2>/dev/null | head -1 | sed -E 's#^deb[[:space:]]+https?://##'); "
@@ -104,9 +140,6 @@ ALLOWED_LINUX_SCRIPT = (
     "echo \"https_proxy=$https_proxy\"; "
     "getent hosts \"$REPOHOST\" >/dev/null 2>&1 && echo dns_resolved=yes || echo dns_resolved=no; "
     "timeout 5 curl -o /dev/null -s -w \"http_status=%{http_code}\\n\" \"http://$REPOHOST\" 2>/dev/null || echo http_status=unreachable; "
-    "echo ---JOURNAL_REBOOT---; "
-    "journalctl --list-boots 2>/dev/null | tail -5; "
-    "journalctl -k -p err -n 100 2>/dev/null; "
     "EXTDIR=$(find /var/lib/waagent -maxdepth 1 -type d "
     "-name 'Microsoft.CPlat.Core.LinuxPatchExtension-*' 2>/dev/null | sort -V | tail -1); "
     "echo ---EXT_VERSION---; "
@@ -114,7 +147,7 @@ ALLOWED_LINUX_SCRIPT = (
     "echo ---EXT_STATUS---; "
     "LATEST=; "
     "if [ -n \"$EXTDIR\" ]; then LATEST=$(ls -t \"$EXTDIR\"/status/*.status 2>/dev/null | head -1); fi; "
-    "if [ -n \"$LATEST\" ]; then head -c 8192 \"$LATEST\"; else echo 'No status file found'; fi"
+    "if [ -n \"$LATEST\" ]; then head -c 3072 \"$LATEST\"; else echo 'No status file found'; fi"
 )
 
 

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import re
 import shutil
 import subprocess
 from datetime import datetime, timezone
@@ -407,6 +408,48 @@ def test_allowed_linux_script_runs_cleanly_through_a_real_shell(tmp_path):
 
     events, _, _, _, _ = parse_linux_output(stdout, vm_id="vm-1")
     assert not any(e.kind == "repo_check" for e in events), "a healthy repo check must not synthesize a finding"
+
+
+# ── Section order and per-section size (found 2026-10-19 from a real
+# production incident: a VM's combined Run Command output exceeded Azure's
+# documented ~4KB `instanceView` output cap - which silently keeps only
+# the LAST bytes written - so 11 of 13 Linux sections read "not
+# collected" despite a healthy, non-erroring Run Command completion).
+# These two tests guard the mitigation itself, not just that it was
+# applied once: a future edit that adds a new section at the front, or
+# reintroduces a `-n 200`/`-c 8192`-sized tail, should fail one of these. ──
+
+def test_the_most_diagnostically_valuable_sections_are_ordered_last():
+    """Azure keeps the TAIL of a combined script's output when it's too
+    large, not the head - so the sections most likely to carry genuine
+    root-cause evidence must be the last ones written, not wherever they
+    happened to land historically."""
+    markers_in_order = re.findall(r"---(\w+)---", ALLOWED_LINUX_SCRIPT)
+    position = {m: i for i, m in enumerate(markers_in_order)}
+
+    # EXT_STATUS (the patch extension's own authoritative account) must be
+    # the very last section in the script.
+    assert markers_in_order[-1] == "EXT_STATUS"
+    # SUBMAN and REPO_DIAGNOSTICS - both confirmed, in a real production
+    # incident and the entitlement-expired demo cluster, to be genuine
+    # root-cause evidence - must come after the OS-family-specific,
+    # mutually-exclusive package-manager logs (only one pair of
+    # DPKG_LOG/APT_HISTORY vs. YUM_LOG/DNF_LOG is ever non-empty on a
+    # given distro, making them the least valuable per byte).
+    for low_value in ("KERNELS", "DPKG_LOG", "APT_HISTORY", "YUM_LOG", "DNF_LOG"):
+        assert position[low_value] < position["SUBMAN"]
+        assert position[low_value] < position["REPO_DIAGNOSTICS"]
+
+
+def test_every_tail_window_was_shrunk_from_the_original_200_lines():
+    """The original `-n 200`/`-c 8192` sizes were themselves a real
+    contributor to the production incident this guards against - a
+    regression back to them would reopen it even with the reordering
+    above intact."""
+    assert "-n 200" not in ALLOWED_LINUX_SCRIPT
+    assert "-c 8192" not in ALLOWED_LINUX_SCRIPT
+    assert "-n 20 " in ALLOWED_LINUX_SCRIPT
+    assert "-c 3072" in ALLOWED_LINUX_SCRIPT
 
 
 # ── Window filtering (found 2026-10-18, same real-world gap as

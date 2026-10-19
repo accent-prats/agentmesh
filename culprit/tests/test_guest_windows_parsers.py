@@ -357,6 +357,31 @@ def test_every_script_section_is_consumed_and_vice_versa():
     assert produced - consumed == set(), f"the script writes section(s) nothing ever reads: {produced - consumed}"
 
 
+# ── Section order and per-section size (found 2026-10-19, same real
+# production incident as guest_linux.py's identical tests - see that
+# file's own comment for the full root-cause writeup: Azure Run Command's
+# combined output is capped at ~4KB, keeping the LAST bytes written, not
+# the first) ─────────────────────────────────────────────────────────────
+
+def test_the_most_diagnostically_valuable_sections_are_ordered_last():
+    markers_in_order = _SECTION_MARKER_RE.findall(ALLOWED_WINDOWS_SCRIPT)
+    position = {m: i for i, m in enumerate(markers_in_order)}
+
+    assert markers_in_order[-1] == "EXT_STATUS"
+    for low_value in ("WU_LOG", "CBS_LOG"):
+        assert position[low_value] < position["WSUS_CONNECTIVITY"]
+        assert position[low_value] < position["EXT_LOG"]
+
+
+def test_every_tail_window_was_shrunk_from_the_original_200_lines():
+    assert "-Tail 200" not in ALLOWED_WINDOWS_SCRIPT
+    assert "-MaxEvents 100" not in ALLOWED_WINDOWS_SCRIPT
+    assert "-gt 8192" not in ALLOWED_WINDOWS_SCRIPT
+    assert "-Tail 20 " in ALLOWED_WINDOWS_SCRIPT
+    assert "-MaxEvents 20 " in ALLOWED_WINDOWS_SCRIPT
+    assert "-gt 3072" in ALLOWED_WINDOWS_SCRIPT
+
+
 # ── Window filtering (found 2026-10-18 from a real user-shared RCA: a VM's
 # genuine failure produced zero guest evidence two days later because
 # every parser here scanned whatever a fixed -Tail 200 happened to return,
