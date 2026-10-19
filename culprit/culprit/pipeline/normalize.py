@@ -124,9 +124,11 @@ def merge_recollection(original: EvidenceBundle, new_results: dict[Source, Colle
     guest_windows.py run the identical fixed script regardless of
     `request.only` (it only ever changes the Run Command timeout), and
     azure_control_plane.py's collect() doesn't filter its queries by it
-    either. So a source present in `new_results` fully supersedes whatever
-    that same source contributed to `original`, for EVERY per-source field
-    - including `timeline`, not just the summary fields. A first-draft
+    either. So a source that SUCCEEDS in `new_results` fully supersedes
+    whatever that same source contributed to `original`, for EVERY
+    per-source field - including `timeline`, not just the summary fields
+    (a source whose fresh attempt errored is handled differently - see the
+    "errored retry" paragraph below). A first-draft
     version of this function treated `timeline` as purely additive (keep
     every old event, append new ones, dedup by exact key) on the theory
     that evidence is only ever gained, never lost - but that's inconsistent
@@ -144,28 +146,51 @@ def merge_recollection(original: EvidenceBundle, new_results: dict[Source, Colle
     collected" - indistinguishable from the retry having found nothing -
     because save_machine_outcomes() only ever persisted the pre-
     recollection bundle; the recollected events only ever reached the RCA
-    agent's own second-pass prompt, never the UI or the DB."""
+    agent's own second-pass prompt, never the UI or the DB.
+
+    Only a source whose fresh attempt actually SUCCEEDED replaces its prior
+    contribution - found by review 2026-10-19: recollect_targeted() blasts
+    EVERY applicable collector on every recollection pass, not just the one
+    named in missing_evidence (e.g. a gap about guest_windows evidence
+    still re-dispatches azure_control_plane/azure_monitor/datadog too). A
+    first version of this function treated every key in `new_results` as
+    superseding, unconditionally - so an unrelated, transient failure
+    (a 429, a timeout) on a source that had ALREADY succeeded in the
+    original pass would wipe that source's real, already-persisted
+    evidence and replace it with nothing plus a fresh error note. An
+    errored retry proves nothing about whether the original finding is
+    still true, so it must leave that source's prior contribution alone
+    entirely - this is strictly worse than the pre-fix bug (which could at
+    worst leave the second RCA prompt slightly thinner, but could never
+    corrupt the DB) if left unhandled."""
     owners = _label_owners()
+    # Only a source that actually succeeded this pass gets to replace its
+    # prior contribution - see the docstring's "errored retry" paragraph.
+    # `recollected` (every attempted source, success or not) is still used
+    # below for `sources_attempted` and to decide whether to append a FRESH
+    # collection_gaps note, since an attempt - successful or not - is still
+    # worth recording as having happened.
     recollected = set(new_results.keys())
+    superseding = {s for s, r in new_results.items() if not r.error}
 
-    def _owned_by_recollected(label: str) -> bool:
-        return owners.get(label) in recollected
+    def _owned_by_superseding(label: str) -> bool:
+        return owners.get(label) in superseding
 
-    gaps = [g for g in original.collection_gaps if not any(g.startswith(f"{s.value}:") for s in recollected)]
-    attempted = set(original.sources_attempted)
-    succeeded = set(original.sources_succeeded) - recollected
+    gaps = [g for g in original.collection_gaps if not any(g.startswith(f"{s.value}:") for s in superseding)]
+    attempted = set(original.sources_attempted) | recollected
+    succeeded = set(original.sources_succeeded) - superseding
     # Only guest_linux.py/guest_windows.py ever populate patch_extension_
     # status, and a machine only ever has one applicable guest source - if
-    # that source is being recollected, its fresh (possibly now-empty)
-    # value must fully replace the original's, the same as every other
-    # field below. Checking membership rather than `if result.patch_
-    # extension_status:` specifically avoids silently keeping a stale,
-    # non-empty value just because the fresh pass legitimately found none.
+    # that source's fresh attempt succeeded, its (possibly now-empty) value
+    # must fully replace the original's, the same as every other field
+    # below. Checking membership rather than `if result.patch_extension_
+    # status:` specifically avoids silently keeping a stale, non-empty
+    # value just because the fresh pass legitimately found none.
     patch_extension_status = original.patch_extension_status
     outcome = original.outcome
-    checks_performed = {c for c in original.checks_performed if not _owned_by_recollected(c)}
-    checks_unavailable = {c for c in original.checks_unavailable if not _owned_by_recollected(c)}
-    checks_finding_counts = {k: v for k, v in original.checks_finding_counts.items() if not _owned_by_recollected(k)}
+    checks_performed = {c for c in original.checks_performed if not _owned_by_superseding(c)}
+    checks_unavailable = {c for c in original.checks_unavailable if not _owned_by_superseding(c)}
+    checks_finding_counts = {k: v for k, v in original.checks_finding_counts.items() if not _owned_by_superseding(k)}
     # A recollected dispatch key isn't always the only Source value that
     # collector's own events carry (datadog_collector.py is registered
     # under the single key DATADOG_METRIC but tags events with
@@ -176,16 +201,21 @@ def merge_recollection(original: EvidenceBundle, new_results: dict[Source, Colle
     # pass didn't reproduce it, the same "additive, not replaced" bug this
     # whole function exists to avoid, just for one collector's secondary
     # event types.
-    recollected_event_sources = {es for key in recollected for es in event_sources_for(key)}
-    timeline = [ev for ev in original.timeline if ev.source not in recollected_event_sources]
+    superseding_event_sources = {es for key in superseding for es in event_sources_for(key)}
+    timeline = [ev for ev in original.timeline if ev.source not in superseding_event_sources]
 
     new_events: list[TimelineEvent] = []
     for source, result in new_results.items():
-        attempted.add(source)
         if result.error:
-            gaps.append(f"{source.value}: {result.error}")
-        else:
-            succeeded.add(source)
+            # Deliberately does not touch gaps/checks_*/timeline/patch_
+            # extension_status/outcome for this source at all - see the
+            # docstring. A fresh error is still worth recording as its own
+            # note (distinct from the original's gap, if any, which is
+            # left untouched above) so an operator can see the retry itself
+            # also failed, without it looking like evidence vanished.
+            gaps.append(f"{source.value}: recollection attempt failed: {result.error}")
+            continue
+        succeeded.add(source)
         new_events.extend(result.events)
         if source in (Source.GUEST_LINUX, Source.GUEST_WINDOWS):
             patch_extension_status = result.patch_extension_status

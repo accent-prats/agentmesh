@@ -121,14 +121,45 @@ def test_a_source_that_succeeds_on_retry_clears_its_old_collection_gap():
     assert Source.GUEST_LINUX in merged.sources_succeeded
 
 
-def test_a_source_that_fails_again_on_retry_gets_a_fresh_gap_not_the_stale_one():
+def test_a_source_that_fails_again_on_retry_keeps_the_original_gap_and_adds_the_fresh_one():
+    """An errored retry doesn't supersede anything (see the "errored
+    retry" docstring paragraph) - the original gap is left exactly as it
+    was, and the fresh failure is recorded as its own, separate note."""
     original = _original()
     new_results = {Source.GUEST_LINUX: CollectionResult(events=[], error="Run Command timed out after 180s")}
 
     merged = merge_recollection(original, new_results)
 
-    assert merged.collection_gaps == ["guest_linux: Run Command timed out after 180s"]
+    assert merged.collection_gaps == [
+        "guest_linux: Run Command timed out after 60s",
+        "guest_linux: recollection attempt failed: Run Command timed out after 180s",
+    ]
     assert Source.GUEST_LINUX not in merged.sources_succeeded
+
+
+def test_an_unrelated_sources_transient_recollection_failure_does_not_wipe_its_prior_good_evidence():
+    """Found by review 2026-10-19: recollect_targeted() blasts EVERY
+    applicable collector on every recollection pass, not just the one
+    named in missing_evidence - so a recollection triggered by a
+    guest_windows evidence gap also re-dispatches azure_control_plane,
+    azure_monitor, and datadog. A first version of this function treated
+    every key in new_results as superseding, unconditionally - so a
+    transient, unrelated failure (a 429, a timeout) on a source that had
+    ALREADY succeeded in the original pass wiped that source's real,
+    already-persisted evidence. This is strictly worse than the bug this
+    whole function exists to fix (which could never touch the DB)."""
+    original = _original()  # azure_control_plane already has a real finding
+    new_results = {
+        Source.AZURE_CONTROL_PLANE: CollectionResult(events=[], error="429 Too Many Requests"),  # unrelated hiccup
+        Source.GUEST_LINUX: CollectionResult(events=[]),  # the actually-targeted source, succeeds cleanly
+    }
+
+    merged = merge_recollection(original, new_results)
+
+    assert merged.checks_finding_counts[_CONTROL_PLANE_LABEL] == 1  # the real finding survives
+    assert any(ev.raw_ref == "resourcegraph:install:vm-1" for ev in merged.timeline)  # the real event survives
+    assert Source.AZURE_CONTROL_PLANE in merged.sources_succeeded  # its original success is untouched
+    assert "azure_control_plane: recollection attempt failed: 429 Too Many Requests" in merged.collection_gaps
 
 
 def test_checks_performed_and_unavailable_are_replaced_per_recollected_source():
