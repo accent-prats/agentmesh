@@ -116,3 +116,43 @@ def test_client_acquisition_failure_still_returns_the_same_failure_shape(monkeyp
     assert result["status"] == "failed"
     assert "not installed" in result["message"]
     assert result["free_bytes_after"] is None
+
+
+class _FakeStdoutPoller:
+    def __init__(self, stdout):
+        self._stdout = stdout
+
+    def result(self, timeout):
+        return _FakeRunCommandResult(self._stdout)
+
+
+class _FakeStdoutComputeClient:
+    def __init__(self, stdout):
+        self._stdout = stdout
+        self.virtual_machines = self
+
+    def begin_run_command(self, resource_group, vm_name, run_command_input):
+        return _FakeStdoutPoller(self._stdout)
+
+
+def test_run_disk_cleanup_logs_output_byte_count_and_whether_the_result_marker_was_found(monkeypatch, caplog):
+    """Added 2026-10-19 - same reasoning/pattern as the matching fix in
+    guest_linux.py/guest_windows.py::collect() (found by review of that
+    fix): this module's own Run Command call has the identical Azure
+    output-cap exposure, and parse_remediation_result's "no result block
+    found" reason alone can't tell "the cap ate the whole budget before
+    the always-last RESULT_MARKER line" apart from "the script crashed
+    early." Pins that run_disk_cleanup always logs the byte count (true
+    encoded bytes, not code-point length - see the matching collector fix
+    for why that distinction matters) plus whether the marker was found."""
+    _patch_run_command_input(monkeypatch)
+    runner = RemediationRunner(credential=object())
+    stdout = "noisy cleanup output\n"  # no ---REMEDIATION_RESULT--- marker at all
+    monkeypatch.setattr(runner, "_client_for", lambda sub_id: _FakeStdoutComputeClient(stdout))
+
+    with caplog.at_level("INFO"):
+        result = runner.run_disk_cleanup("sub-1", "rg", "vm-1", OSFamily.LINUX, mount="/")
+
+    assert result["status"] == "failed"  # unchanged pre-existing behavior
+    expected = f"remediation: Run Command on vm-1 returned {len(stdout.encode('utf-8'))} byte(s) of output, result marker NOT FOUND"
+    assert any(r.levelname == "INFO" and expected in r.message for r in caplog.records)

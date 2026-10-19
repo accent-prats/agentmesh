@@ -17,6 +17,7 @@ constant.
 """
 from __future__ import annotations
 
+import logging
 import threading
 import time
 
@@ -24,8 +25,11 @@ from culprit.models.evidence import OSFamily
 from culprit.remediation.scripts import (
     ALLOWED_LINUX_CLEANUP_SCRIPT,
     ALLOWED_WINDOWS_CLEANUP_SCRIPT,
+    RESULT_MARKER,
     parse_remediation_result,
 )
+
+log = logging.getLogger(__name__)
 
 try:  # pragma: no cover
     from azure.core.exceptions import ResourceExistsError
@@ -129,6 +133,23 @@ class RemediationRunner:
             except Exception as exc:  # noqa: BLE001 - mirrors guest_linux.py's own blanket transport-error handling
                 return {"status": "failed", "message": f"Run Command failed: {exc}", "free_bytes_after": None}
 
+        # Added 2026-10-19 - same reasoning as the matching fix in
+        # guest_linux.py/guest_windows.py::collect(), found by review while
+        # diagnosing a real production case where a Run Command completed
+        # cleanly but the agent's own ---SECTION----style result marker was
+        # entirely missing from stdout. This script writes its one
+        # ---REMEDIATION_RESULT--- marker LAST specifically so it survives
+        # Azure's ~4KB output-cap truncation (which keeps the tail), but
+        # parse_remediation_result's own "no result block found" reason
+        # can't by itself distinguish that cap being hit (a noisy early
+        # step, e.g. apt-get autoremove/DISM output, ate the whole budget
+        # before the result line) from the script crashing early - logs
+        # only a byte count and whether the marker was found, never any
+        # cleanup-script output content.
+        log.info(
+            "remediation: Run Command on %s returned %d byte(s) of output, result marker %s",
+            vm_name, len(stdout.encode("utf-8", "surrogatepass")), "found" if RESULT_MARKER in stdout else "NOT FOUND",
+        )
         parsed = parse_remediation_result(stdout)
         if parsed["status"] == "success":
             return {

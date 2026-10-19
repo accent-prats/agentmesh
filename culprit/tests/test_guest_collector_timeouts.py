@@ -396,6 +396,40 @@ def test_collect_logs_output_byte_count_and_recognized_sections(monkeypatch, cap
     assert any(r.levelname == "INFO" and expected in r.message for r in caplog.records)
 
 
+@pytest.mark.parametrize("collector_cls,os_family,label", [
+    (GuestWindowsCollector, OSFamily.WINDOWS, "guest_windows"),
+    (GuestLinuxCollector, OSFamily.LINUX, "guest_linux"),
+])
+def test_collect_logs_the_true_encoded_byte_count_not_code_point_length(monkeypatch, caplog, collector_cls, os_family, label):
+    """Added 2026-10-19 by review of the byte-count logging fix above: the
+    first version used len(stdout), Python's code-point length, which
+    understates Azure's actual ~4KB cap (measured in encoded bytes) for any
+    non-ASCII content - plausible here since this exact script reads
+    Get-WinEvent .Message text and other localized Windows log lines. A
+    single multi-byte character is enough to make the two counts diverge,
+    which this fixture pins directly rather than relying on an ASCII-only
+    fixture that can't tell the two implementations apart."""
+    recorder = []
+    collector = collector_cls(credential=object())
+    stdout = "---DISK_USAGE---\nC: 100 GB free\n"  # U+00A0 (non-breaking space) is 1 code point, 2 UTF-8 bytes
+    assert len(stdout) != len(stdout.encode("utf-8"))  # sanity: the fixture actually exercises the divergence
+    monkeypatch.setattr(collector, "_client_for", lambda sub_id: _FakeStdoutComputeClient(recorder, stdout))
+    monkeypatch.setattr(
+        __import__(collector_cls.__module__, fromlist=["RunCommandInput"]), "RunCommandInput", lambda **kw: kw, raising=False
+    )
+
+    request = CollectionRequest(
+        machine=_machine(os_family), window_start=datetime.now(timezone.utc) - timedelta(hours=3),
+        window_end=datetime.now(timezone.utc), run_id="run-1", only=[],
+    )
+
+    with caplog.at_level("INFO"):
+        collector.collect(request)
+
+    expected = f"{label}: Run Command on vm-1 returned {len(stdout.encode('utf-8'))} byte(s) of output"
+    assert any(r.levelname == "INFO" and expected in r.message for r in caplog.records)
+
+
 class _FakeStdoutComputeClient:
     def __init__(self, recorder, stdout):
         self._recorder = recorder

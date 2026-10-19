@@ -270,9 +270,17 @@ class GuestWindowsCollector(Collector):
         # a byte count and the recognized marker names (fixed labels,
         # never guest log content) - safe to leave on permanently.
         sections_found = sorted(_split_sections(stdout).keys())
+        # len(stdout) would be Python's code-point length, not the encoded
+        # byte length Azure's ~4KB cap actually measures - found by review
+        # 2026-10-19: understates the real count for any non-ASCII content,
+        # which is especially plausible here given this exact script reads
+        # Get-WinEvent .Message text and other localized Windows log lines
+        # - weakening the whole point of this line being an unambiguous
+        # truncation signal.
+        stdout_bytes = len(stdout.encode("utf-8", "surrogatepass"))
         log.info(
             "guest_windows: Run Command on %s returned %d byte(s) of output, recognized %d section marker(s): %s",
-            request.machine.vm_name, len(stdout), len(sections_found), sections_found,
+            request.machine.vm_name, stdout_bytes, len(sections_found), sections_found,
         )
 
         events, patch_extension_status, checks_performed, checks_unavailable, checks_finding_counts = parse_windows_output(
