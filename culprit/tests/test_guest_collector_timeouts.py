@@ -361,3 +361,56 @@ def test_collect_forwards_the_requests_own_window_to_the_parser_linux(monkeypatc
     )
     result = collector.collect(in_window_request)
     assert any(e.kind == "package_manager_log" for e in result.events)
+
+
+@pytest.mark.parametrize("collector_cls,os_family,label", [
+    (GuestWindowsCollector, OSFamily.WINDOWS, "guest_windows"),
+    (GuestLinuxCollector, OSFamily.LINUX, "guest_linux"),
+])
+def test_collect_logs_output_byte_count_and_recognized_sections(monkeypatch, caplog, collector_cls, os_family, label):
+    """Added 2026-10-19 after a real production Windows VM showed every
+    tracked guest section as "not collected" with no error at all - there
+    was no byte-level signal to tell truncation (Azure's ~4KB instanceView
+    output cap, see ALLOWED_WINDOWS_SCRIPT/ALLOWED_LINUX_SCRIPT's module
+    comments) apart from total collection failure or a parsing bug. Pins
+    that collect() always logs the raw byte count plus which section
+    markers survived, so the next occurrence is diagnosable from logs
+    alone instead of re-litigated from UI screenshots."""
+    recorder = []
+    collector = collector_cls(credential=object())
+    stdout = "---DISK_USAGE---\nC 1000 2000\n---SOME_OTHER_MARKER---\nignored\n"
+    monkeypatch.setattr(collector, "_client_for", lambda sub_id: _FakeStdoutComputeClient(recorder, stdout))
+    monkeypatch.setattr(
+        __import__(collector_cls.__module__, fromlist=["RunCommandInput"]), "RunCommandInput", lambda **kw: kw, raising=False
+    )
+
+    request = CollectionRequest(
+        machine=_machine(os_family), window_start=datetime.now(timezone.utc) - timedelta(hours=3),
+        window_end=datetime.now(timezone.utc), run_id="run-1", only=[],
+    )
+
+    with caplog.at_level("INFO"):
+        collector.collect(request)
+
+    expected = f"{label}: Run Command on vm-1 returned {len(stdout)} byte(s) of output, recognized 2 section marker(s): ['DISK_USAGE', 'SOME_OTHER_MARKER']"
+    assert any(r.levelname == "INFO" and expected in r.message for r in caplog.records)
+
+
+class _FakeStdoutComputeClient:
+    def __init__(self, recorder, stdout):
+        self._recorder = recorder
+        self._stdout = stdout
+        self.virtual_machines = self
+
+    def begin_run_command(self, resource_group, vm_name, run_command_input):
+        return _FakeStdoutPoller(self._recorder, self._stdout)
+
+
+class _FakeStdoutPoller:
+    def __init__(self, recorder, stdout):
+        self._recorder = recorder
+        self._stdout = stdout
+
+    def result(self, timeout):
+        self._recorder.append(timeout)
+        return _FakeRunCommandResult(self._stdout)

@@ -254,6 +254,26 @@ class GuestWindowsCollector(Collector):
                 )
                 return CollectionResult(events=[], error=f"Run Command failed: {exc}")
         log.info("guest_windows: Run Command on %s completed after %.1fs", request.machine.vm_name, time.monotonic() - started)
+        # Added 2026-10-19 - see the identical comment in guest_linux.py's
+        # collect(). A production Windows VM showed *every* tracked guest
+        # section as "not collected" with no error, including DISK_USAGE
+        # (which cannot legitimately be empty - every VM has a C: drive)
+        # and WSUS_CONNECTIVITY/EXT_* near the end of the script (the
+        # cluster the 2026-10-19 reorder was specifically meant to
+        # protect). Without the raw byte count there was no way to tell
+        # whether Azure's ~4KB output cap (see ALLOWED_WINDOWS_SCRIPT's
+        # module comment) ate the whole output, or something else did -
+        # Windows diagnostic text (CBS.log/WindowsUpdate.log lines, and
+        # especially Get-WinEvent .Message text) runs far longer per
+        # record than Linux's typically compact log lines, so even
+        # -Tail 20/-MaxEvents 20 may not be enough per section. Logs only
+        # a byte count and the recognized marker names (fixed labels,
+        # never guest log content) - safe to leave on permanently.
+        sections_found = sorted(_split_sections(stdout).keys())
+        log.info(
+            "guest_windows: Run Command on %s returned %d byte(s) of output, recognized %d section marker(s): %s",
+            request.machine.vm_name, len(stdout), len(sections_found), sections_found,
+        )
 
         events, patch_extension_status, checks_performed, checks_unavailable, checks_finding_counts = parse_windows_output(
             stdout, vm_id=request.machine.vm_id, window_start=request.window_start, window_end=request.window_end,

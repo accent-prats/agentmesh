@@ -254,6 +254,22 @@ class GuestLinuxCollector(Collector):
                 )
                 return CollectionResult(events=[], error=f"Run Command failed: {exc}")
         log.info("guest_linux: Run Command on %s completed after %.1fs", request.machine.vm_name, time.monotonic() - started)
+        # Added 2026-10-19 after a production run showed *every* tracked
+        # Linux section as "not collected" with no error - there was no way
+        # to tell, after the fact, whether Azure's ~4KB output cap (see the
+        # module-level comment on ALLOWED_LINUX_SCRIPT) ate the whole
+        # combined script's output or something else entirely happened.
+        # Logs only a byte count and the recognized `---SECTION---` marker
+        # names (fixed labels, never guest log content) - safe to leave on
+        # permanently, and the next occurrence of this symptom will show
+        # directly in this line whether it's bytes-budget truncation (small
+        # byte count, few/no markers) or something else (large byte count,
+        # markers present but parsers still found nothing of interest).
+        sections_found = sorted(_split_sections(stdout).keys())
+        log.info(
+            "guest_linux: Run Command on %s returned %d byte(s) of output, recognized %d section marker(s): %s",
+            request.machine.vm_name, len(stdout), len(sections_found), sections_found,
+        )
 
         events, patch_extension_status, checks_performed, checks_unavailable, checks_finding_counts = parse_linux_output(
             stdout, vm_id=request.machine.vm_id, window_start=request.window_start, window_end=request.window_end,
