@@ -28,6 +28,7 @@ from culprit.api.routes_runs import router as runs_router
 from culprit.api.routes_settings import router as settings_router
 from culprit.api.routes_verdicts import router as verdicts_router
 from culprit.reporting.render import render_console_html, render_login_html, render_runs_html, render_settings_html
+from culprit.observability import RedactSensitiveQueryParamsFilter
 from culprit.scheduler.events import router as events_router
 
 # Found in review 2026-10-16: with no handler configured anywhere, every
@@ -57,6 +58,20 @@ from culprit.scheduler.events import router as events_router
 # only fills the gap, never fights a deliberate setup.
 logging.basicConfig(level=logging.WARNING)
 logging.getLogger("culprit").setLevel(logging.INFO)
+
+# Found 2026-10-19 from a real deployment's own logs (tcx-tenant): the one-
+# time Portal SSO handoff (api/auth_middleware.py) necessarily carries a
+# real JWT in `?auth_token=<jwt>` on its first request, and uvicorn's own
+# access logger - separate from anything this app logs itself - printed
+# that full URL, token included, in plaintext, on every single request that
+# still carried the query string (which, per auth_middleware.py's own
+# comment, is only the very first navigation - but that is still a real,
+# repeatable leak into whatever aggregates this container's stdout).
+# `getLogger(name)` always returns the same process-wide Logger object
+# regardless of import order relative to uvicorn's own logging setup, so
+# this is safe whether this module is imported before or after uvicorn
+# configures its own loggers.
+logging.getLogger("uvicorn.access").addFilter(RedactSensitiveQueryParamsFilter())
 
 log = logging.getLogger(__name__)
 

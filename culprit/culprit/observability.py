@@ -14,6 +14,48 @@ sixth independent copy.
 """
 from __future__ import annotations
 
+import logging
+import re
+
+# The one confirmed real leak (found 2026-10-19 from a real deployment's own
+# logs, tcx-tenant): api/auth_middleware.py's one-time Portal SSO handoff
+# necessarily carries a real JWT in `?auth_token=<jwt>` on its first
+# request, and uvicorn's own access logger (distinct from anything this app
+# logs itself - confirmed by grepping the whole app for any other place the
+# full request URL/query string is logged, and finding none) prints that
+# full URL, token included, in plaintext. Keyed by name rather than a single
+# constant so a future sensitive query param can be added here without a new
+# regex, but only `auth_token` is a confirmed leak today - nothing else is
+# added speculatively.
+_SENSITIVE_QUERY_PARAMS = ("auth_token",)
+_SENSITIVE_QUERY_PARAM_RE = re.compile(
+    r"(" + "|".join(re.escape(p) for p in _SENSITIVE_QUERY_PARAMS) + r")=[^&\s\"']+"
+)
+
+
+class RedactSensitiveQueryParamsFilter(logging.Filter):
+    """Install on `uvicorn.access` (see api/main.py) to stop a sensitive
+    query-string value from ever reaching that logger's output, in
+    plaintext, in every real deployment.
+
+    Rewrites `record.args` rather than `record.msg`: uvicorn's access
+    logger formats its line via positional %-style args (client_addr,
+    method, full_path, http_version, status_code) - the request's raw
+    path, query string included, lives in one of those args, not in the
+    literal format string, so redacting `record.msg` alone would do
+    nothing. A dict-style `record.args` (not used by uvicorn's access
+    logger today, but not guaranteed to stay that way) is left untouched
+    rather than guessed at."""
+
+    def filter(self, record: logging.LogRecord) -> bool:
+        if isinstance(record.args, tuple):
+            record.args = tuple(
+                _SENSITIVE_QUERY_PARAM_RE.sub(lambda m: f"{m.group(1)}=[REDACTED]", arg)
+                if isinstance(arg, str) else arg
+                for arg in record.args
+            )
+        return True
+
 
 def safe_exc_summary(exc: BaseException) -> str:
     """A short, provably-secret-free description of an exception for a log

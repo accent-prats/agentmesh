@@ -27,7 +27,17 @@
    `logging.basicConfig(level=logging.INFO)`, reintroducing exactly the
    same noise pattern fix #2 eliminated for the main app the moment this
    script's scope grows (it already posts to Slack/Teams webhooks via
-   httpx when configured). Scoped the same way as api/main.py."""
+   httpx when configured). Scoped the same way as api/main.py.
+
+4. (2026-10-19, found in a real deployment's own logs) uvicorn's own
+   access logger - entirely separate from anything above, which is all
+   about this app's own `log.info(...)` calls - printed a real Portal SSO
+   JWT in plaintext via the one-time `?auth_token=<jwt>` handoff
+   (api/auth_middleware.py). Fixed with observability.py::
+   RedactSensitiveQueryParamsFilter, installed on `uvicorn.access` at
+   import time. demo/run_demo.py doesn't serve HTTP at all (confirmed:
+   no uvicorn/FastAPI reference anywhere in it), so it has no access
+   logger and needs no matching fix."""
 from __future__ import annotations
 
 import logging
@@ -81,3 +91,21 @@ def test_demo_entrypoint_has_the_same_scoped_logging_as_the_main_app():
     result = subprocess.run([sys.executable, "-c", script], capture_output=True, text=True, timeout=30)
     assert result.returncode == 0, result.stderr
     assert result.stdout.strip() == "True False"
+
+
+def test_importing_the_app_redacts_auth_token_from_the_access_log():
+    """Fresh-subprocess, end-to-end: importing api/main.py wires the
+    redaction filter onto the real `uvicorn.access` logger, and a log
+    call shaped exactly like uvicorn's own access-log call never lets the
+    real token reach stdout."""
+    script = (
+        "import logging, sys, culprit.api.main\n"
+        "logger = logging.getLogger('uvicorn.access')\n"
+        "logger.setLevel(logging.INFO)\n"  # what uvicorn itself does when it actually runs
+        "logger.addHandler(logging.StreamHandler(sys.stdout))\n"
+        "logger.info('%s - \"%s %s HTTP/%s\" %d', '172.18.0.2:1', 'GET', '/?auth_token=REAL.JWT.SECRET', '1.1', 200)\n"
+    )
+    result = subprocess.run([sys.executable, "-c", script], capture_output=True, text=True, timeout=30)
+    assert result.returncode == 0, result.stderr
+    assert "REAL.JWT.SECRET" not in result.stdout
+    assert "auth_token=[REDACTED]" in result.stdout
