@@ -96,7 +96,18 @@ def test_parse_repo_check_missing_curl_is_not_read_as_a_repo_failure():
     curl command uses 2>&1 (merges stderr in), so a VM simply missing curl
     produces shell's own "command not found" text here - previously read
     as a genuine "repo unreachable" anomaly on every machine missing the
-    binary, the same bug class already fixed once for parse_lock_holder."""
+    binary, the same bug class already fixed once for parse_lock_holder.
+
+    "curl: command not found" is the EXACT text ALLOWED_LINUX_SCRIPT's own
+    `command -v curl` guard now emits (found by a second review the same
+    day: the original fix's `timeout 5 curl ...` wrapping meant a missing
+    curl actually produced timeout's own "timeout: failed to run command
+    'curl': No such file or directory" - a different shape this parser's
+    guard never matched, making the first version of this fix dead code
+    for the real scenario). The other two variants are kept to confirm the
+    regex still generalizes to a plain, un-timeout-wrapped shell's own
+    phrasing too, not just this script's own controlled text."""
+    assert parse_repo_check("curl: command not found", vm_id="vm-1") == []
     assert parse_repo_check("bash: line 1: curl: command not found", vm_id="vm-1") == []
     assert parse_repo_check("sh: 1: curl: not found", vm_id="vm-1") == []
 
@@ -434,6 +445,61 @@ def test_allowed_linux_script_runs_cleanly_through_a_real_shell(tmp_path):
     assert not any(e.kind == "repo_check" for e in events), "a healthy repo check must not synthesize a finding"
 
 
+def _path_without(*binaries: str) -> str:
+    """A PATH string covering every directory on the real $PATH that does
+    NOT contain any of the given executables - the only reliable way to
+    make `command -v <binary>` genuinely fail inside a real subprocess,
+    as opposed to a hand-typed fixture string that can't prove anything
+    about the script's own bash logic."""
+    import os
+
+    dirs = os.environ.get("PATH", "").split(os.pathsep)
+    kept = [d for d in dirs if not any(shutil.which(b, path=d) for b in binaries)]
+    return os.pathsep.join(kept)
+
+
+@pytest.mark.skipif(shutil.which("bash") is None, reason="requires a real bash to execute the actual Run Command script")
+def test_allowed_linux_script_reports_missing_curl_and_subman_honestly(tmp_path):
+    """Found by review 2026-10-19 of the first version of this fix: a unit
+    test feeding a hand-typed "command not found" fixture string into the
+    PARSER can pass even when the real SCRIPT could never actually produce
+    that text - which is exactly what happened here. REPO_CHECK's and
+    SUBMAN's curl/subscription-manager calls were both `timeout`-wrapped
+    (`timeout 5 curl ...`), and a missing binary there produces GNU
+    coreutils' OWN wording ("timeout: failed to run command 'curl': No
+    such file or directory"), not a plain shell "command not found" - a
+    different shape the parsers' guards never matched, making them dead
+    code for the real scenario. This test actually executes the real
+    script in a real shell with curl and subscription-manager genuinely
+    absent from $PATH (not simulated via a fixture) and asserts the
+    captured section text is exactly what the script's `command -v` guard
+    is supposed to produce - the only way to catch this bug class again if
+    a future edit reintroduces a bare `timeout <optional-tool>` anywhere."""
+    script_path = tmp_path / "script.sh"
+    script_path.write_text(ALLOWED_LINUX_SCRIPT, encoding="utf-8")
+    stripped_path = _path_without("curl", "subscription-manager")
+    assert stripped_path, "could not construct a PATH with curl/subscription-manager excluded in this environment"
+
+    result = subprocess.run(
+        ["bash", str(script_path)], capture_output=True, text=True, timeout=30,
+        env={"PATH": stripped_path},
+    )
+    stdout = result.stdout
+
+    def _section(marker: str, next_marker: str) -> str:
+        start = stdout.index(f"---{marker}---") + len(f"---{marker}---")
+        end = stdout.index(f"---{next_marker}---", start)
+        return stdout[start:end].strip()
+
+    assert _section("REPO_CHECK", "LOCK_HOLDER") == "curl: command not found"
+    assert _section("SUBMAN", "REPO_DIAGNOSTICS") == "subscription-manager: command not found"
+
+    events, _, checks_performed, checks_unavailable, _ = parse_linux_output(stdout, vm_id="vm-1")
+    assert not any(e.kind in ("repo_check", "entitlement_state") for e in events)
+    assert "package repository reachability (archive.ubuntu.com)" in checks_unavailable
+    assert "subscription-manager (entitlement) status" in checks_unavailable
+
+
 # ── Section order and per-section size (found 2026-10-19 from a real
 # production incident: a VM's combined Run Command output exceeded Azure's
 # documented ~4KB `instanceView` output cap - which silently keeps only
@@ -561,10 +627,20 @@ def test_checks_performed_excludes_subman_when_the_binary_is_missing():
     """The exact real-world shape on any non-RHEL box (this script already
     runs unconditionally against every Linux distro, Debian/Ubuntu
     included) - subscription-manager doesn't exist, so bash's own "command
-    not found" text lands in the SUBMAN section via the script's `2>&1`."""
+    not found" text lands in the SUBMAN section via the script's `2>&1`.
+
+    "subscription-manager: command not found" is the EXACT text ALLOWED_
+    LINUX_SCRIPT's own `command -v subscription-manager` guard now emits -
+    found by a later review the same day that the ORIGINAL `timeout 5
+    subscription-manager status 2>&1` wrapping meant a missing binary
+    actually produced timeout's own "timeout: failed to run command
+    'subscription-manager': No such file or directory", a shape this
+    guard never matched - this test's fixture predates that correction
+    and happened to still pass since it never reflected the real script's
+    output in the first place."""
     stdout = (
         "---DPKG_LOG---\n\n"
-        "---SUBMAN---\nbash: subscription-manager: command not found\n"
+        "---SUBMAN---\nsubscription-manager: command not found\n"
     )
     events, _, checks_performed, checks_unavailable, _ = parse_linux_output(stdout, vm_id="vm-1")
     assert not any(e.kind == "entitlement_state" for e in events)
@@ -597,8 +673,13 @@ def test_checks_performed_excludes_repo_check_when_curl_is_missing():
     a round later): REPO_CHECK also merges stderr via `2>&1`, and its
     parser had no command-unavailable guard at all until this fix - a VM
     missing curl got a fabricated "repo unreachable" finding, not an
-    honest "not available" label."""
-    stdout = "---REPO_CHECK---\nbash: line 1: curl: command not found\n"
+    honest "not available" label.
+
+    "curl: command not found" is the EXACT text the script's own
+    `command -v curl` guard emits (a later review found the original
+    `timeout 5 curl ...` wrapping meant this never actually matched a
+    real missing-curl VM - see parse_repo_check's own docstring)."""
+    stdout = "---REPO_CHECK---\ncurl: command not found\n"
     events, _, checks_performed, checks_unavailable, _ = parse_linux_output(stdout, vm_id="vm-1")
     assert not any(e.kind == "repo_check" for e in events)
     assert "package repository reachability (archive.ubuntu.com)" not in checks_performed

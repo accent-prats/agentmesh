@@ -130,7 +130,24 @@ ALLOWED_LINUX_SCRIPT = (
     "echo ---YUM_LOG---; tail -n 20 /var/log/yum.log 2>/dev/null; "
     "echo ---APT_HISTORY---; tail -n 20 /var/log/apt/history.log 2>/dev/null; "
     "echo ---DPKG_LOG---; tail -n 20 /var/log/dpkg.log 2>/dev/null; "
-    "echo ---REPO_CHECK---; timeout 5 curl -o /dev/null -s -w \"%{http_code}\\n\" http://archive.ubuntu.com 2>&1; "
+    # Found by review 2026-10-19 of the REPO_DIAGNOSTICS fix (same day):
+    # `timeout 5 curl ...` only LOOKS like it would surface a plain shell
+    # "command not found" when curl is missing, the same shape every other
+    # guarded section produces - it does not. `timeout`'s first argv word
+    # is `timeout` itself (which exists), so bash execs it successfully;
+    # it is `timeout`'s OWN child-exec failure that reports the error, in
+    # GNU coreutils' own wording: "timeout: failed to run command 'curl':
+    # No such file or directory" - confirmed directly against a real shell
+    # with curl removed from PATH. That text doesn't match
+    # _COMMAND_UNAVAILABLE_RE, so the parser guard added alongside this
+    # comment was dead code for the real missing-curl scenario on this
+    # section specifically. Same `command -v` guard as REPO_DIAGNOSTICS
+    # now used here too, so a missing curl always produces exactly
+    # "curl: command not found" regardless of timeout's own wrapping.
+    "echo ---REPO_CHECK---; "
+    "if command -v curl >/dev/null 2>&1; then "
+    "timeout 5 curl -o /dev/null -s -w \"%{http_code}\\n\" http://archive.ubuntu.com 2>&1; "
+    "else echo 'curl: command not found'; fi; "
     "echo ---LOCK_HOLDER---; fuser /var/lib/dpkg/lock-frontend 2>&1; "
     "echo ---WAAGENT_LOG---; tail -n 20 /var/log/waagent.log 2>/dev/null; "
     "echo ---EXT_WRAPPER_LOG---; "
@@ -144,7 +161,16 @@ ALLOWED_LINUX_SCRIPT = (
     "journalctl --list-boots 2>/dev/null | tail -5; "
     "journalctl -k -p err -n 20 2>/dev/null; "
     "echo ---DISK_USAGE---; df -h --output=target,pcent,avail 2>/dev/null; "
-    "echo ---SUBMAN---; timeout 5 subscription-manager status 2>&1; "
+    # Same `timeout`-wrapping defect as REPO_CHECK above, confirmed the
+    # same way: a VM genuinely missing subscription-manager produces
+    # "timeout: failed to run command 'subscription-manager': No such
+    # file or directory" here, not shell's own "command not found" - the
+    # checks_unavailable-introducing commit that first guarded this
+    # section cited it as already correctly handled; it was not.
+    "echo ---SUBMAN---; "
+    "if command -v subscription-manager >/dev/null 2>&1; then "
+    "timeout 5 subscription-manager status 2>&1; "
+    "else echo 'subscription-manager: command not found'; fi; "
     "echo ---REPO_DIAGNOSTICS---; "
     "REPOHOST=$(grep -h -oE '^deb[[:space:]]+https?://[^/[:space:]]+' /etc/apt/sources.list "
     "/etc/apt/sources.list.d/*.list 2>/dev/null | head -1 | sed -E 's#^deb[[:space:]]+https?://##'); "
@@ -460,6 +486,17 @@ def parse_repo_check(text: str, vm_id: str) -> list[TimelineEvent]:
     # anomaly on every single machine missing the binary. Same bug class,
     # same guard, as the earlier fix to parse_lock_holder/_checks_
     # unavailable - a missing tool must never be read as a real finding.
+    #
+    # CORRECTION (found by a later review, same day): this section's
+    # script-level command used to be `timeout 5 curl ... 2>&1` - adding
+    # this guard alone was NOT enough, because `timeout`'s first argv word
+    # is `timeout` itself (which exists), so a missing curl actually
+    # produced timeout's own wording ("timeout: failed to run command
+    # 'curl': No such file or directory"), which this regex never matched
+    # - this guard was dead code for the real scenario until ALLOWED_
+    # LINUX_SCRIPT's REPO_CHECK section was changed to check `command -v
+    # curl` before ever invoking `timeout`, so a missing curl now always
+    # produces real, controlled "curl: command not found" text instead.
     if not text or text == "200" or _COMMAND_UNAVAILABLE_RE.search(text):
         return []
     return [
@@ -742,14 +779,30 @@ def _checks_performed(sections: dict[str, str]) -> list[str]:
 # Linux distro) would silently claim "checked, healthy" for a tool that
 # was never actually available to check anything - reintroducing, one
 # layer down, the exact false-confidence problem checks_performed exists
-# to prevent. Every other section either redirects its command's own
-# stderr to /dev/null (so a missing binary just yields empty output, read
-# as "checked, nothing found" - a softer, already-accepted ambiguity, not
-# a false *positive* claim) or explicitly branches with `&&`/`||` so a
-# failure reports as a real, correctly-labeled negative (REPO_DIAGNOSTICS).
-# Rather than silently dropping these (the original fix), they're now kept
-# as their own list so the "logs not used" view can honestly show them
-# as "not available" with a real reason, instead of making them vanish.
+# to prevent. Rather than silently dropping these (the original fix), they're
+# now kept as their own list so the "logs not used" view can honestly show
+# them as "not available" with a real reason, instead of making them vanish.
+#
+# CORRECTION (found by a later review, same day, 2026-10-19): this
+# comment originally claimed SUBMAN and REPO_DIAGNOSTICS were already
+# safe without any further guard - SUBMAN because its `2>&1` merge was
+# assumed equivalent to LOCK_HOLDER's, REPO_DIAGNOSTICS because it
+# "explicitly branches with &&/|| so a failure reports as a real,
+# correctly-labeled negative." Both claims were wrong. SUBMAN's command
+# was `timeout 5 subscription-manager status 2>&1` - `timeout`'s own
+# argv0 exists, so bash execs it fine, and it's `timeout`'s OWN
+# child-exec failure that reports the error ("timeout: failed to run
+# command 'subscription-manager': No such file or directory"), not
+# shell's "command not found" - a VM missing the binary still claimed
+# "checked, healthy." REPO_DIAGNOSTICS's &&/|| branching was real, but
+# both of its branches (genuinely unreachable vs. curl missing) collapsed
+# to the identical `http_status=unreachable` text - the branching
+# couldn't tell the two apart, it just couldn't see the difference to
+# report one over the other. Both now use the same `command -v <tool>`
+# guard before ever invoking `timeout`/the tool itself (see ALLOWED_
+# LINUX_SCRIPT's REPO_CHECK/SUBMAN/REPO_DIAGNOSTICS sections), so a
+# missing tool always produces real, controlled "command not found" text
+# regardless of how it's wrapped.
 def _checks_unavailable(sections: dict[str, str]) -> list[str]:
     return [
         src.label for src in GUEST_LOG_SOURCES
