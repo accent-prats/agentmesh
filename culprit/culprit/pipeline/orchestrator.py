@@ -19,21 +19,27 @@ from typing import Callable
 
 from sqlalchemy.orm import sessionmaker
 
+from culprit.collectors.base import CollectionResult
 from culprit.db import repository
 from culprit.db.models import RunStage
 from culprit.models.cluster import Cluster
-from culprit.models.evidence import EvidenceBundle
+from culprit.models.evidence import EvidenceBundle, Source
 from culprit.models.patch_run import PatchRun
 from culprit.models.rca import RCAResult
 from culprit.pipeline.advisor import RecurrenceInfo, advise
 from culprit.pipeline.fingerprint import cluster_run
+from culprit.pipeline.normalize import merge_recollection
 from culprit.pipeline.rca_agent import DeepRCAAgent
 from culprit.pipeline.rules import evaluate_rules
 from culprit.retrieval.store import RetrievalStore
 
 log = logging.getLogger(__name__)
 
-RecollectFn = Callable[[EvidenceBundle, list[str]], list]  # (bundle, missing_evidence) -> list[TimelineEvent]
+# (bundle, missing_evidence) -> {source: CollectionResult} - every applicable
+# collector's full, fresh result for this one targeted recollection pass,
+# not just a flattened events list (see pipeline/collection.py::
+# recollect_targeted's own docstring for why the full shape matters).
+RecollectFn = Callable[[EvidenceBundle, list[str]], dict[Source, CollectionResult]]
 
 
 @dataclass
@@ -78,7 +84,12 @@ class Pipeline:
                 diagnosed: list[DiagnosedCluster] = []
                 for cluster in clusters:
                     representative = bundle_by_vm[cluster.representative_vm_id]
-                    result = self._diagnose_one(cluster, representative)
+                    result, representative = self._diagnose_one(cluster, representative)
+                    # A recollection pass (see _diagnose_one) only ever targets the
+                    # cluster's representative machine - update the shared dict so
+                    # both the persisted outcome below and anything else reading it
+                    # this run see the augmented bundle, not the pre-recollection one.
+                    bundle_by_vm[cluster.representative_vm_id] = representative
                     result, recurrence = advise(result, cluster.cluster_key, history)
                     repository.save_rca_result(session, result, consecutive_cycles=recurrence.consecutive_cycles)
                     member_bundles = [bundle_by_vm[m.vm_id] for m in cluster.members]
@@ -110,10 +121,17 @@ class Pipeline:
 
         return PipelineOutput(run=patch_run, diagnosed=diagnosed)
 
-    def _diagnose_one(self, cluster: Cluster, representative: EvidenceBundle) -> RCAResult:
+    def _diagnose_one(self, cluster: Cluster, representative: EvidenceBundle) -> tuple[RCAResult, EvidenceBundle]:
+        """Returns the RCAResult AND the representative's bundle, which a
+        recollection pass below may have augmented - the caller (run())
+        must persist THIS returned bundle, not the one it passed in, or a
+        recollection pass's real findings never reach save_machine_
+        outcomes() (found 2026-10-19 from a real production run - see
+        normalize.py::merge_recollection's own docstring for the full
+        story)."""
         rule_result = evaluate_rules(cluster, representative)
         if rule_result is not None:
-            return rule_result
+            return rule_result, representative
 
         if self.rca_agent is None:
             from culprit.models.rca import ResultOrigin
@@ -127,7 +145,7 @@ class Pipeline:
                 causal_chain=[],
                 confidence=0.0,
                 missing_evidence=["Deep RCA agent not configured for this pipeline run"],
-            )
+            ), representative
 
         near_misses = _describe_near_misses(cluster, representative)
         query = f"{cluster.fingerprint.error_code_normalized} {cluster.fingerprint.failing_target} {cluster.fingerprint.os_family.value}"
@@ -136,12 +154,12 @@ class Pipeline:
         result = self.rca_agent.diagnose(cluster, representative, near_misses, retrieval_context)
 
         if result.missing_evidence and self.recollect_fn is not None:
-            new_events = self.recollect_fn(representative, result.missing_evidence)
-            if new_events:
-                augmented = representative.model_copy(update={"timeline": representative.timeline + list(new_events)})
-                result = self.rca_agent.diagnose(cluster, augmented, near_misses, retrieval_context)
+            new_results = self.recollect_fn(representative, result.missing_evidence)
+            if new_results:
+                representative = merge_recollection(representative, new_results)
+                result = self.rca_agent.diagnose(cluster, representative, near_misses, retrieval_context)
 
-        return result
+        return result, representative
 
 
 def _describe_near_misses(cluster: Cluster, representative: EvidenceBundle) -> list[str]:

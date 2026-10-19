@@ -124,6 +124,34 @@ NON_GUEST_LOG_LABELS: dict[Source, str] = {
 }
 
 
+# Found 2026-10-19 by review of pipeline/normalize.py::merge_recollection:
+# every collector is registered in api/deps.py::build_live_collectors()
+# under exactly one Source "dispatch key" (the dict key collect_all()/
+# recollect_targeted() key their CollectionResult by), and for every
+# collector except this one, that dispatch key is also the ONLY Source
+# value its own TimelineEvents ever carry - confirmed directly via
+# `grep -n "source=Source\." culprit/collectors/*.py`. datadog_collector.py
+# is the one exception: registered under the single key DATADOG_METRIC,
+# but its one collect() call tags events with three different Source
+# values (DATADOG_METRIC for metrics, DATADOG_MONITOR for monitor state,
+# DATADOG_LOG for post-reboot logs). merge_recollection needs to know the
+# FULL set of event Source values a recollected dispatch key can produce -
+# not just the key itself - to correctly drop every stale event belonging
+# to that collector, not just the ones that happen to share its own
+# dispatch-key value. Anything not listed here defaults to "only its own
+# dispatch key" (see event_sources_for()).
+DISPATCH_KEY_EVENT_SOURCES: dict[Source, tuple[Source, ...]] = {
+    Source.DATADOG_METRIC: (Source.DATADOG_METRIC, Source.DATADOG_MONITOR, Source.DATADOG_LOG),
+}
+
+
+def event_sources_for(dispatch_key: Source) -> tuple[Source, ...]:
+    """Every TimelineEvent.source value a collector registered under
+    `dispatch_key` might produce - see DISPATCH_KEY_EVENT_SOURCES above for
+    why this isn't always just `(dispatch_key,)`."""
+    return DISPATCH_KEY_EVENT_SOURCES.get(dispatch_key, (dispatch_key,))
+
+
 def non_guest_finding_counts(source: Source, events: list[TimelineEvent]) -> dict[str, int]:
     """The CollectionResult.checks_finding_counts value for a non-guest
     collector - the whole collector is one row in the "logs used/not used"

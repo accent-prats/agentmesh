@@ -14,7 +14,7 @@ import logging
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime
 
-from culprit.collectors.base import CollectionRequest, Collector
+from culprit.collectors.base import CollectionRequest, CollectionResult, Collector
 from culprit.models.evidence import EvidenceBundle, MachineIdentity, OSFamily, Source
 from culprit.pipeline.normalize import merge_bundle
 
@@ -74,21 +74,32 @@ def recollect_targeted(
     collectors: dict[Source, Collector],
     window_start: datetime,
     window_end: datetime,
-) -> list:
+) -> dict[Source, CollectionResult]:
     """The re-dispatch path: when the RCA agent names specific
     `missing_evidence`, fetch exactly that rather than re-running every
     collector from scratch (proposal Section 4: "two targeted passes beat
-    one speculative one")."""
+    one speculative one").
+
+    Returns the full per-source CollectionResult dict (every applicable
+    collector re-runs fully - `request.only` only ever changes the guest
+    collectors' Run Command timeout, it doesn't narrow which sections they
+    fetch), not just a flattened events list - normalize.py::
+    merge_recollection() needs the whole shape (checks_performed/
+    checks_unavailable/checks_finding_counts/patch_extension_status/error),
+    not only events, to correctly update what actually gets persisted.
+    Found 2026-10-19: a bare events list is exactly what let this pass's
+    real findings silently never reach save_machine_outcomes() - see
+    merge_recollection()'s own docstring for the full story."""
     request = CollectionRequest(
         machine=machine, window_start=window_start, window_end=window_end, run_id=run_id, only=missing_evidence
     )
-    events = []
+    results: dict[Source, CollectionResult] = {}
     for source, collector in collectors.items():
         if not _applies_to(source, machine):
             continue
         try:
-            result = collector.collect(request)
-            events.extend(result.events)
-        except Exception:  # noqa: BLE001
+            results[source] = collector.collect(request)
+        except Exception as exc:  # noqa: BLE001
             log.exception("Targeted recollection failed for %s / %s", machine.vm_id, source)
-    return events
+            results[source] = CollectionResult(events=[], error=str(exc))
+    return results
