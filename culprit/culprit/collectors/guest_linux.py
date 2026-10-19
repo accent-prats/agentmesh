@@ -155,7 +155,17 @@ ALLOWED_LINUX_SCRIPT = (
     "echo \"http_proxy=$http_proxy\"; "
     "echo \"https_proxy=$https_proxy\"; "
     "getent hosts \"$REPOHOST\" >/dev/null 2>&1 && echo dns_resolved=yes || echo dns_resolved=no; "
+    # command -v check added 2026-10-19: curl's own stderr was being
+    # thrown away (2>/dev/null below), so a VM missing curl entirely and a
+    # VM with a genuinely unreachable repo both fell through the same
+    # `|| echo http_status=unreachable` fallback, indistinguishably -
+    # parse_repo_diagnostics's own docstring has the full incident. Emits
+    # real "command not found" text (the same shape _COMMAND_UNAVAILABLE_RE
+    # already recognizes everywhere else in this script) instead of
+    # silently discarding the one fact that would have told them apart.
+    "if command -v curl >/dev/null 2>&1; then "
     "timeout 5 curl -o /dev/null -s -w \"http_status=%{http_code}\\n\" \"http://$REPOHOST\" 2>/dev/null || echo http_status=unreachable; "
+    "else echo 'curl: command not found'; fi; "
     "EXTDIR=$(find /var/lib/waagent -maxdepth 1 -type d "
     "-name 'Microsoft.CPlat.Core.LinuxPatchExtension-*' 2>/dev/null | sort -V | tail -1); "
     "echo ---EXT_VERSION---; "
@@ -442,7 +452,15 @@ def parse_lock_holder(text: str, vm_id: str) -> list[TimelineEvent]:
 
 def parse_repo_check(text: str, vm_id: str) -> list[TimelineEvent]:
     text = text.strip()
-    if not text or text == "200":
+    # Found 2026-10-19 from a real production fleet scan: this command's
+    # own `2>&1` (merging stderr into the captured text, unlike most
+    # sections) means a VM simply missing curl produces text like "bash:
+    # line 1: curl: command not found" here - non-empty and not "200",
+    # which this parser previously read as a genuine "repo unreachable"
+    # anomaly on every single machine missing the binary. Same bug class,
+    # same guard, as the earlier fix to parse_lock_holder/_checks_
+    # unavailable - a missing tool must never be read as a real finding.
+    if not text or text == "200" or _COMMAND_UNAVAILABLE_RE.search(text):
         return []
     return [
         TimelineEvent(
@@ -577,7 +595,30 @@ def parse_repo_diagnostics(text: str, vm_id: str) -> list[TimelineEvent]:
     proxy env vars for context. Anomaly-gated: only emits when something's
     actually wrong, not a routine "all fine" confirmation line every run -
     keeps this consistent with every other new parser's token-conscious
-    design (no finding = no event = zero added prompt tokens)."""
+    design (no finding = no event = zero added prompt tokens).
+
+    Found 2026-10-19 from a real production fleet scan (identical "1
+    anomaly" fired on every Linux VM in the same tenant): the script's own
+    curl invocation redirected curl's stderr to /dev/null, so on a VM
+    missing curl entirely (plausible on a hardened/minimal image - curl is
+    a common deliberate removal, unlike getent, which basic hostname
+    resolution depends on) bash's own "command not found" text never
+    reached this parser at all - it was discarded before capture, not
+    just unrecognized. The existing `|| echo http_status=unreachable`
+    fallback then made "curl isn't installed" and "the repo is genuinely
+    unreachable" produce the exact same text, collapsing two different
+    facts into one - the earlier fix introducing checks_unavailable
+    (2026-10-19, same day) asserted this section was already safe because
+    it "explicitly branches with &&/|| so a failure reports as a real,
+    correctly-labeled negative" - true of the branching, but not of what
+    the branches can't tell apart. Fixed at the script level (ALLOWED_
+    LINUX_SCRIPT now checks `command -v curl` first and emits real
+    "command not found" text of its own when absent, the same shape
+    _COMMAND_UNAVAILABLE_RE already recognizes everywhere else) plus this
+    guard, so a missing tool is classified as checks_unavailable, never a
+    fabricated repo_unreachable anomaly."""
+    if _COMMAND_UNAVAILABLE_RE.search(text):
+        return []
     fields: dict[str, str] = {}
     for line in text.splitlines():
         key, sep, value = line.partition("=")

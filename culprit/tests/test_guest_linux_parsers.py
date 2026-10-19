@@ -91,6 +91,16 @@ def test_parse_repo_check_ok_is_silent():
     assert parse_repo_check("200", vm_id="vm-1") == []
 
 
+def test_parse_repo_check_missing_curl_is_not_read_as_a_repo_failure():
+    """Found 2026-10-19 from a real production fleet scan: this section's
+    curl command uses 2>&1 (merges stderr in), so a VM simply missing curl
+    produces shell's own "command not found" text here - previously read
+    as a genuine "repo unreachable" anomaly on every machine missing the
+    binary, the same bug class already fixed once for parse_lock_holder."""
+    assert parse_repo_check("bash: line 1: curl: command not found", vm_id="vm-1") == []
+    assert parse_repo_check("sh: 1: curl: not found", vm_id="vm-1") == []
+
+
 def test_parse_subscription_manager_flags_invalid():
     events = parse_subscription_manager("Overall Status: Invalid\n", vm_id="vm-1")
     assert events[0].detail["entitlement_expired"] is True
@@ -313,6 +323,20 @@ def test_parse_repo_diagnostics_flags_an_http_failure_even_with_dns_ok():
     assert len(events) == 1
     assert events[0].detail["dns_resolution_failed"] is False
     assert events[0].detail["repo_unreachable"] is True
+
+
+def test_parse_repo_diagnostics_missing_curl_is_not_read_as_repo_unreachable():
+    """Found 2026-10-19 from a real production fleet scan: identical "1
+    anomaly" fired on every Linux VM in the same tenant - traced to curl's
+    stderr previously being thrown away entirely (2>/dev/null), so a VM
+    missing curl and a VM with a genuinely unreachable repo were
+    indistinguishable, both producing http_status=unreachable. The script
+    now checks `command -v curl` first and emits real "command not found"
+    text when absent - this parser must recognize that text and stay
+    silent, the same bug class already fixed once for parse_lock_holder/
+    parse_repo_check."""
+    text = "configured_host=mirror.example.com\nhttp_proxy=\nhttps_proxy=\ndns_resolved=yes\ncurl: command not found\n"
+    assert parse_repo_diagnostics(text, vm_id="vm-1") == []
 
 
 def test_parse_journal_reboot_flags_a_kernel_error():
@@ -566,6 +590,34 @@ def test_checks_performed_still_includes_subman_when_it_genuinely_ran():
     stdout = "---SUBMAN---\nOverall Status: Current\n"
     _, _, checks_performed, checks_unavailable, _ = parse_linux_output(stdout, vm_id="vm-1")
     assert "subscription-manager (entitlement) status" in checks_performed
+
+
+def test_checks_performed_excludes_repo_check_when_curl_is_missing():
+    """Found 2026-10-19 from a real production fleet scan (same bug class,
+    a round later): REPO_CHECK also merges stderr via `2>&1`, and its
+    parser had no command-unavailable guard at all until this fix - a VM
+    missing curl got a fabricated "repo unreachable" finding, not an
+    honest "not available" label."""
+    stdout = "---REPO_CHECK---\nbash: line 1: curl: command not found\n"
+    events, _, checks_performed, checks_unavailable, _ = parse_linux_output(stdout, vm_id="vm-1")
+    assert not any(e.kind == "repo_check" for e in events)
+    assert "package repository reachability (archive.ubuntu.com)" not in checks_performed
+    assert "package repository reachability (archive.ubuntu.com)" in checks_unavailable
+
+
+def test_checks_performed_excludes_repo_diagnostics_when_curl_is_missing():
+    """Companion to the REPO_CHECK case above - REPO_DIAGNOSTICS's own
+    curl call used to discard its stderr entirely (2>/dev/null), making
+    "curl missing" and "repo genuinely unreachable" indistinguishable even
+    with a parser-level guard (see parse_repo_diagnostics's own docstring
+    for the full incident) - now that the script emits real "command not
+    found" text when curl is absent, the section is correctly classified
+    as unavailable rather than a fabricated finding."""
+    stdout = "---REPO_DIAGNOSTICS---\nconfigured_host=mirror.example.com\ndns_resolved=yes\ncurl: command not found\n"
+    events, _, checks_performed, checks_unavailable, _ = parse_linux_output(stdout, vm_id="vm-1")
+    assert not any(e.kind == "repo_diagnostics" for e in events)
+    assert "configured package repository DNS/HTTP reachability" not in checks_performed
+    assert "configured package repository DNS/HTTP reachability" in checks_unavailable
 
 
 # ── checks_finding_counts must reflect the TRUE, uncapped per-section
