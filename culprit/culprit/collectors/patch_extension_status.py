@@ -157,8 +157,10 @@ def parse_leading_timestamp(line: str) -> datetime | None:
 # 16) produced zero guest-side evidence in a scan run two days later (Oct
 # 18), despite the guest Run Command completing successfully. Every guest
 # log parser in guest_windows.py/guest_linux.py scans whatever text the
-# fixed `-Tail 200`/`tail -n 200` happened to return, with no regard for
-# whether those specific lines actually fall inside the collection window
+# fixed `-Tail 20`/`tail -n 20` (shrunk from `-Tail 200`/`tail -n 200`
+# 2026-10-19 - see guest_linux.py's own ALLOWED_LINUX_SCRIPT comment)
+# happened to return, with no regard for whether those specific lines
+# actually fall inside the collection window
 # (`CollectionRequest.window_start`/`window_end`) the RCA is investigating -
 # on a VM busy enough (this one had 7 deployment attempts in 30 days), two
 # days of subsequent log volume can push the relevant lines out of the

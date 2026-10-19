@@ -364,13 +364,21 @@ def test_every_script_section_is_consumed_and_vice_versa():
 # the first) ─────────────────────────────────────────────────────────────
 
 def test_the_most_diagnostically_valuable_sections_are_ordered_last():
+    """Pins the EXACT full order (not just a few spot-checked pairs)
+    because review 2026-10-19 found the first pass at this reorder moved
+    COMMAND_EXECUTION_LOG - explicitly named as a section that should
+    "sit last" - EARLIER than it was before this whole fix (rank 12/13 ->
+    10/13), an internal inconsistency a looser pairwise check didn't
+    catch. The fix: only WSUS_CONNECTIVITY actually moves (from right
+    after DISK_USAGE to right before the extension-evidence cluster);
+    EXT_VERSION/EXT_LOG/COMMAND_EXECUTION_LOG/EXT_STATUS keep their exact
+    original relative order."""
     markers_in_order = _SECTION_MARKER_RE.findall(ALLOWED_WINDOWS_SCRIPT)
-    position = {m: i for i, m in enumerate(markers_in_order)}
-
-    assert markers_in_order[-1] == "EXT_STATUS"
-    for low_value in ("WU_LOG", "CBS_LOG"):
-        assert position[low_value] < position["WSUS_CONNECTIVITY"]
-        assert position[low_value] < position["EXT_LOG"]
+    assert markers_in_order == [
+        "WU_LOG", "CBS_LOG", "PENDING_REBOOT", "WUAUSERV", "WU_HISTORY",
+        "DISK_USAGE", "VMAGENT_STATUS", "SYSTEM_EVENTLOG", "WSUS_CONNECTIVITY",
+        "EXT_VERSION", "EXT_LOG", "COMMAND_EXECUTION_LOG", "EXT_STATUS",
+    ]
 
 
 def test_every_tail_window_was_shrunk_from_the_original_200_lines():

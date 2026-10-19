@@ -423,22 +423,18 @@ def test_the_most_diagnostically_valuable_sections_are_ordered_last():
     """Azure keeps the TAIL of a combined script's output when it's too
     large, not the head - so the sections most likely to carry genuine
     root-cause evidence must be the last ones written, not wherever they
-    happened to land historically."""
+    happened to land historically. Pins the EXACT full order (not just a
+    few spot-checked pairs) because review 2026-10-19 found the first
+    pass at this reorder moved EXT_WRAPPER_LOG/EXT_CORE_LOG - literal
+    extension log files - EARLIER than they were before this whole fix,
+    an internal inconsistency a looser pairwise check didn't catch."""
     markers_in_order = re.findall(r"---(\w+)---", ALLOWED_LINUX_SCRIPT)
-    position = {m: i for i, m in enumerate(markers_in_order)}
-
-    # EXT_STATUS (the patch extension's own authoritative account) must be
-    # the very last section in the script.
-    assert markers_in_order[-1] == "EXT_STATUS"
-    # SUBMAN and REPO_DIAGNOSTICS - both confirmed, in a real production
-    # incident and the entitlement-expired demo cluster, to be genuine
-    # root-cause evidence - must come after the OS-family-specific,
-    # mutually-exclusive package-manager logs (only one pair of
-    # DPKG_LOG/APT_HISTORY vs. YUM_LOG/DNF_LOG is ever non-empty on a
-    # given distro, making them the least valuable per byte).
-    for low_value in ("KERNELS", "DPKG_LOG", "APT_HISTORY", "YUM_LOG", "DNF_LOG"):
-        assert position[low_value] < position["SUBMAN"]
-        assert position[low_value] < position["REPO_DIAGNOSTICS"]
+    assert markers_in_order == [
+        "KERNELS", "DNF_LOG", "YUM_LOG", "APT_HISTORY", "DPKG_LOG",
+        "REPO_CHECK", "LOCK_HOLDER", "WAAGENT_LOG", "EXT_WRAPPER_LOG",
+        "EXT_CORE_LOG", "JOURNAL_REBOOT", "DISK_USAGE", "SUBMAN",
+        "REPO_DIAGNOSTICS", "EXT_VERSION", "EXT_STATUS",
+    ]
 
 
 def test_every_tail_window_was_shrunk_from_the_original_200_lines():

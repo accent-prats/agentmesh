@@ -108,6 +108,22 @@ except ImportError:  # pragma: no cover
 #      (DPKG_LOG/APT_HISTORY/YUM_LOG/DNF_LOG - only one pair is ever
 #      non-empty on a given distro) and the still-unparsed KERNELS context
 #      line move to the front, the most likely to be sacrificed.
+#
+#      Found by review 2026-10-19: the FIRST pass at this reorder put
+#      EXT_WRAPPER_LOG/EXT_CORE_LOG (the extension's own log files) ahead
+#      of WAAGENT_LOG/DISK_USAGE/JOURNAL_REBOOT - moving them EARLIER, i.e.
+#      MORE exposed to truncation than before this whole fix, the exact
+#      opposite of the stated intent. The order below is a single,
+#      deliberate front-to-back sweep from lowest to highest priority with
+#      no such scrambling: KERNELS/package-manager logs/REPO_CHECK/
+#      LOCK_HOLDER (lowest - OS-specific or superseded) -> WAAGENT_LOG ->
+#      EXT_WRAPPER_LOG -> EXT_CORE_LOG (each more detailed than the last) ->
+#      JOURNAL_REBOOT -> DISK_USAGE (universal, common root cause, and
+#      cheap - a few lines - so pushing it this late costs almost nothing)
+#      -> SUBMAN -> REPO_DIAGNOSTICS (the two confirmed-valuable sections,
+#      REPO_DIAGNOSTICS last since it carried the literal causal-chain
+#      evidence in the real incident this fix responds to) -> EXT_VERSION
+#      -> EXT_STATUS (always absolutely last).
 ALLOWED_LINUX_SCRIPT = (
     "echo ---KERNELS---; dpkg -l 'linux-image-*' 2>/dev/null | grep ^ii; uname -r; "
     "echo ---DNF_LOG---; tail -n 20 /var/log/dnf.log 2>/dev/null; "
@@ -116,6 +132,7 @@ ALLOWED_LINUX_SCRIPT = (
     "echo ---DPKG_LOG---; tail -n 20 /var/log/dpkg.log 2>/dev/null; "
     "echo ---REPO_CHECK---; timeout 5 curl -o /dev/null -s -w \"%{http_code}\\n\" http://archive.ubuntu.com 2>&1; "
     "echo ---LOCK_HOLDER---; fuser /var/lib/dpkg/lock-frontend 2>&1; "
+    "echo ---WAAGENT_LOG---; tail -n 20 /var/log/waagent.log 2>/dev/null; "
     "echo ---EXT_WRAPPER_LOG---; "
     "LATESTWRAPPER=$(ls -t /var/log/azure/Microsoft.CPlat.Core.LinuxPatchExtension/*_Enable.ext.log "
     "/var/log/azure/Microsoft.CPlat.Core.LinuxPatchExtension/*.ext.log 2>/dev/null | head -1); "
@@ -123,11 +140,10 @@ ALLOWED_LINUX_SCRIPT = (
     "echo ---EXT_CORE_LOG---; "
     "LATESTCORE=$(ls -t /var/log/azure/Microsoft.CPlat.Core.LinuxPatchExtension/*.core.log 2>/dev/null | head -1); "
     "if [ -n \"$LATESTCORE\" ]; then tail -n 20 \"$LATESTCORE\"; fi; "
-    "echo ---WAAGENT_LOG---; tail -n 20 /var/log/waagent.log 2>/dev/null; "
-    "echo ---DISK_USAGE---; df -h --output=target,pcent,avail 2>/dev/null; "
     "echo ---JOURNAL_REBOOT---; "
     "journalctl --list-boots 2>/dev/null | tail -5; "
     "journalctl -k -p err -n 20 2>/dev/null; "
+    "echo ---DISK_USAGE---; df -h --output=target,pcent,avail 2>/dev/null; "
     "echo ---SUBMAN---; timeout 5 subscription-manager status 2>&1; "
     "echo ---REPO_DIAGNOSTICS---; "
     "REPOHOST=$(grep -h -oE '^deb[[:space:]]+https?://[^/[:space:]]+' /etc/apt/sources.list "

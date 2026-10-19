@@ -113,8 +113,10 @@ Azure role Culprit needs. Notable points:
   config change. The patch extension status file both collectors read
   (`collectors/patch_extension_status.py`) is the Azure patch extension's
   own JSON report - never a credential, token, or protected setting - and
-  is capped at 8192 bytes at collection time regardless of the real file's
-  size.
+  is capped at 3072 bytes at collection time (shrunk from 8192 on
+  2026-10-19, part of mitigating Azure Run Command's own ~4KB output cap -
+  see `ALLOWED_LINUX_SCRIPT`'s module-level comment in
+  `collectors/guest_linux.py`) regardless of the real file's size.
 - Assign this role, and only this role, to the identity Culprit runs as
   (a managed identity in production - `DefaultAzureCredential` picks it up
   with no code change). Do not additionally grant Contributor "just in

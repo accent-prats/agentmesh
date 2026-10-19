@@ -61,12 +61,20 @@ except ImportError:  # pragma: no cover
 # before that point with no error). Every `-Tail 200`/`-MaxEvents 100`
 # dropped to a much smaller window, and EXT_STATUS's own 8192-character
 # cap (nearly double Azure's entire output budget by itself) dropped to
-# 3072; sections reordered so EXT_STATUS/EXT_VERSION/EXT_LOG/
-# COMMAND_EXECUTION_LOG (patch-extension-level evidence) and
-# WSUS_CONNECTIVITY (the Windows analogue of guest_linux.py's
-# REPO_DIAGNOSTICS, confirmed real root-cause evidence in production) sit
-# last, while the generic, lowest-specificity raw-log tails (WU_LOG,
-# CBS_LOG) move to the front, most likely to be sacrificed.
+# 3072. Only WSUS_CONNECTIVITY (the Windows analogue of guest_linux.py's
+# REPO_DIAGNOSTICS, confirmed real root-cause evidence in production)
+# actually moves - from right after DISK_USAGE to right before the
+# extension-evidence cluster - leaving EXT_VERSION/EXT_LOG/
+# COMMAND_EXECUTION_LOG/EXT_STATUS in their EXACT original relative order.
+#
+# Found by review 2026-10-19: the FIRST pass at this reorder also
+# reshuffled EXT_VERSION/EXT_LOG/COMMAND_EXECUTION_LOG's relative order and
+# moved COMMAND_EXECUTION_LOG - explicitly named in this very comment as a
+# section that should "sit last" - EARLIER than it was before this whole
+# fix (rank 12/13 -> 10/13), the opposite of the intent. The single,
+# deliberate change below is isolating exactly the one thing this fix
+# needs (protecting WSUS_CONNECTIVITY) without touching anything already
+# correctly positioned.
 ALLOWED_WINDOWS_SCRIPT = r"""
 Write-Output "---WU_LOG---"
 Get-Content "$env:windir\WindowsUpdate.log" -Tail 20 -ErrorAction SilentlyContinue
@@ -122,18 +130,18 @@ if ($wsusHost) {
 $extRoot = "C:\Packages\Plugins\Microsoft.CPlat.Core.WindowsPatchExtension"
 $latestVersionDir = Get-ChildItem -Path $extRoot -Directory -ErrorAction SilentlyContinue |
     Sort-Object { [version]$_.Name } -Descending -ErrorAction SilentlyContinue | Select-Object -First 1
-Write-Output "---COMMAND_EXECUTION_LOG---"
-if ($latestVersionDir) {
-    $cmdExecLogPath = "C:\WindowsAzure\Logs\Plugins\Microsoft.CPlat.Core.WindowsPatchExtension\$($latestVersionDir.Name)\CommandExecution.log"
-    Get-Content $cmdExecLogPath -Tail 20 -ErrorAction SilentlyContinue
-}
+Write-Output "---EXT_VERSION---"
+if ($latestVersionDir) { Write-Output $latestVersionDir.Name }
 Write-Output "---EXT_LOG---"
 if ($latestVersionDir) {
     $extLogPath = "C:\WindowsAzure\Logs\Plugins\Microsoft.CPlat.Core.WindowsPatchExtension\$($latestVersionDir.Name)\WindowsPatchExtension.log"
     Get-Content $extLogPath -Tail 20 -ErrorAction SilentlyContinue
 }
-Write-Output "---EXT_VERSION---"
-if ($latestVersionDir) { Write-Output $latestVersionDir.Name }
+Write-Output "---COMMAND_EXECUTION_LOG---"
+if ($latestVersionDir) {
+    $cmdExecLogPath = "C:\WindowsAzure\Logs\Plugins\Microsoft.CPlat.Core.WindowsPatchExtension\$($latestVersionDir.Name)\CommandExecution.log"
+    Get-Content $cmdExecLogPath -Tail 20 -ErrorAction SilentlyContinue
+}
 Write-Output "---EXT_STATUS---"
 $latestStatusFile = $null
 if ($latestVersionDir) {
@@ -550,8 +558,10 @@ def parse_system_eventlog(
 ) -> list[TimelineEvent]:
     """Windows System Event Log, Critical/Error/Warning levels, a fixed
     6-hour lookback (ALLOWED_WINDOWS_SCRIPT is static/non-parameterized by
-    design - same constraint as every other section's fixed `-Tail 200`,
-    no real window_start can be interpolated into the script itself) -
+    design - same constraint as every other section's fixed `-Tail 20`
+    (shrunk from `-Tail 200` 2026-10-19 - see the module-level comment on
+    ALLOWED_WINDOWS_SCRIPT), no real window_start can be interpolated into
+    the script itself) -
     Windows' counterpart to guest_linux.py's parse_journal_reboot. Same
     generic anomaly-keyword scan and the same honesty caveat as every
     other new guest-log parser added 2026-10-18. Each line is
