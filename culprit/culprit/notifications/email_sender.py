@@ -7,7 +7,8 @@ import smtplib
 from email.message import EmailMessage
 
 from culprit.models.report import FleetReport
-from culprit.models.settings import SmtpSettingsInput
+from culprit.models.settings import EmailOAuthSettingsInput, SmtpSettingsInput
+from culprit.notifications import m365_oauth
 
 _SMTP_TIMEOUT_SECONDS = 10.0
 
@@ -68,6 +69,45 @@ def send_email(cfg: SmtpSettingsInput, to: list[str], subject: str, html_body: s
                 server.starttls()
             if cfg.username:
                 server.login(cfg.username, cfg.password)
+            server.send_message(msg)
+        finally:
+            server.quit()
+        return True, f"Sent to {len(to)} recipient(s)"
+    except Exception as exc:  # noqa: BLE001 - reporting the real error is the point of a send attempt
+        return False, str(exc)[:480]
+
+
+def send_email_oauth(cfg: EmailOAuthSettingsInput, to: list[str], subject: str, html_body: str) -> tuple[bool, str]:
+    """Real send via Microsoft 365's SMTP endpoint, authenticated through
+    OAuth2 (ROPC) instead of a plain password - see notifications/
+    m365_oauth.py for the full mechanism. Never raises, same (ok, message)
+    contract as send_email() above, its SMTP-password sibling - the two
+    are selected between in api/routes_notifications.py based on which
+    method the Settings screen has active, never both at once. `cfg` is a
+    fully decrypted EmailOAuthSettingsInput (db/repository.py::
+    load_email_oauth_settings) - callers never pass a Fernet ciphertext
+    here, same discipline as send_email()'s cfg.password."""
+    if not (cfg.tenant_id and cfg.client_id and cfg.username):
+        return False, "Microsoft 365 OAuth is not configured for this deployment"
+    if not to:
+        return False, "No recipients given"
+
+    token, token_message = m365_oauth.acquire_token(cfg.tenant_id, cfg.client_id, cfg.username, cfg.password)
+    if token is None:
+        return False, token_message
+
+    try:
+        msg = EmailMessage()
+        msg["Subject"] = subject
+        msg["From"] = f"{cfg.from_name} <{cfg.username}>" if cfg.from_name else cfg.username
+        msg["To"] = ", ".join(to)
+        msg.set_content("This report requires an HTML-capable email client to view.")
+        msg.add_alternative(html_body, subtype="html")
+
+        server = smtplib.SMTP(m365_oauth.SMTP_HOST, m365_oauth.SMTP_PORT, timeout=_SMTP_TIMEOUT_SECONDS)
+        try:
+            server.starttls()
+            m365_oauth.xoauth2_login(server, cfg.username, token)
             server.send_message(msg)
         finally:
             server.quit()

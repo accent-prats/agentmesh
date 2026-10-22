@@ -22,6 +22,10 @@ from culprit.models.settings import (
     DatadogSettingsView,
     DisplayTimezoneSettingsInput,
     DisplayTimezoneSettingsView,
+    EmailMethodSettingsInput,
+    EmailMethodSettingsView,
+    EmailOAuthSettingsInput,
+    EmailOAuthSettingsView,
     GateChangeEntry,
     GateSettingsInput,
     GateSettingsView,
@@ -30,7 +34,12 @@ from culprit.models.settings import (
     SmtpSettingsInput,
     SmtpSettingsView,
 )
-from culprit.security.credential_test import test_azure_credentials, test_datadog_credentials, test_smtp_credentials
+from culprit.security.credential_test import (
+    test_azure_credentials,
+    test_datadog_credentials,
+    test_email_oauth_credentials,
+    test_smtp_credentials,
+)
 
 router = APIRouter(prefix="/settings", tags=["settings"])
 
@@ -254,3 +263,59 @@ def get_smtp_log() -> list[EmailLogEntry]:
 
     with deps.get_session_factory()() as session:
         return repository.list_email_log(session, limit=50)
+
+
+@router.get("/email/oauth", response_model=EmailOAuthSettingsView)
+def get_email_oauth_settings() -> EmailOAuthSettingsView:
+    from culprit.db import repository
+
+    with deps.get_session_factory()() as session:
+        return repository.email_oauth_settings_view(session)
+
+
+@router.put("/email/oauth", response_model=EmailOAuthSettingsView)
+def put_email_oauth_settings(body: EmailOAuthSettingsInput) -> EmailOAuthSettingsView:
+    from culprit.db import repository
+
+    with deps.get_session_factory()() as session:
+        repository.save_email_oauth_settings(session, body)
+        return repository.email_oauth_settings_view(session)
+
+
+@router.post("/email/oauth/test")
+def test_email_oauth(body: EmailOAuthSettingsInput | None = None) -> dict:
+    """Same shape as POST /settings/smtp/test, same blank-password-falls-
+    back-to-stored reasoning - see that route's own docstring for why."""
+    from culprit.db import repository
+
+    with deps.get_session_factory()() as session:
+        if body and body.tenant_id:
+            cfg = body if body.password else body.model_copy(
+                update={"password": repository.load_email_oauth_settings(session).password}
+            )
+        else:
+            cfg = repository.load_email_oauth_settings(session)
+        ok, message = test_email_oauth_credentials(cfg)
+        repository.record_settings_test_result(session, "email_oauth", ok, message)
+        return {"ok": ok, "message": message}
+
+
+@router.get("/email/method", response_model=EmailMethodSettingsView)
+def get_email_method() -> EmailMethodSettingsView:
+    from culprit.db import repository
+
+    with deps.get_session_factory()() as session:
+        return EmailMethodSettingsView(method=repository.load_email_method(session))
+
+
+@router.put("/email/method", response_model=EmailMethodSettingsView)
+def put_email_method(body: EmailMethodSettingsInput) -> EmailMethodSettingsView:
+    """Which of the two configured email methods (SMTP or Microsoft 365
+    OAuth) api/routes_notifications.py actually sends through - a
+    deliberate, explicit switch, not an automatic one; see
+    EmailMethodSettingsInput's own docstring."""
+    from culprit.db import repository
+
+    with deps.get_session_factory()() as session:
+        repository.save_email_method(session, body.method)
+        return EmailMethodSettingsView(method=body.method)

@@ -338,11 +338,34 @@
           <span id="email-status" class="shrink-0"></span>
         </div>
         <p class="text-sm text-gray-500 mt-2 mb-5">
-          The SMTP server Culprit uses to email a run's report, and the default recipient list (DL) that action
-          pre-fills from &mdash; see the "Email report" button on any run's Fleet Report page.
+          How Culprit emails a run's report, and the default recipient list (DL) that action pre-fills from &mdash;
+          see the "Email report" button on any run's Fleet Report page.
         </p>
 
-        <div class="space-y-4">
+        <div class="pb-5 mb-5 border-b border-gray-100">
+          <label class="block text-xs font-medium text-gray-600 mb-2">Delivery method</label>
+          <div class="space-y-2">
+            <label class="flex items-start gap-2.5 cursor-pointer">
+              <input type="radio" name="email-method" value="smtp" checked
+                onchange="applyEmailMethod(true)" class="mt-0.5 accent-brand">
+              <span>
+                <span class="block text-sm text-gray-800">SMTP</span>
+                <span class="block text-xs text-gray-400">A traditional SMTP server and credentials &mdash; works with Exchange Online SMTP AUTH (if enabled), or any other relay.</span>
+              </span>
+            </label>
+            <label class="flex items-start gap-2.5 cursor-pointer">
+              <input type="radio" name="email-method" value="oauth"
+                onchange="applyEmailMethod(true)" class="mt-0.5 accent-brand">
+              <span>
+                <span class="block text-sm text-gray-800">Microsoft 365 (OAuth)</span>
+                <span class="block text-xs text-gray-400">Sends via smtp.office365.com, authenticated with a mailbox's Azure AD credentials instead of a long-lived SMTP password. Needs an Azure AD app registration (Client ID) with the SMTP.Send permission, consented by a tenant admin.</span>
+              </span>
+            </label>
+          </div>
+          <p id="email-method-hint" class="text-xs text-gray-500 mt-2.5"></p>
+        </div>
+
+        <div id="smtp-fields" class="space-y-4">
           <div class="grid grid-cols-2 gap-4">
             <div>
               <label class="block text-xs font-medium text-gray-600 mb-1.5">SMTP host</label>
@@ -394,13 +417,61 @@
               class="w-full border border-gray-300 rounded-lg px-3 py-2 text-sm font-mono focus:ring-2 focus:ring-brand focus:border-brand focus:outline-none"></textarea>
             <p class="text-xs text-gray-400 mt-1.5">Pre-fills the "To" field on a run's "Email report" button &mdash; editable per send.</p>
           </div>
+
+          <div class="flex items-center gap-3 mt-5 pt-5 border-t border-gray-100">
+            <button onclick="saveSmtp()" class="bg-brand hover:bg-brand-dark text-white text-sm font-medium px-4 py-2 rounded-lg transition-colors">Save</button>
+            <button onclick="testSmtp()" class="bg-gray-100 hover:bg-gray-200 text-gray-700 text-sm font-medium px-4 py-2 rounded-lg transition-colors">Test connection</button>
+            <span class="text-sm" id="smtp-result"></span>
+          </div>
+        </div><!-- /#smtp-fields -->
+
+        <div id="oauth-fields" class="hidden space-y-4">
+          <div class="grid grid-cols-2 gap-4">
+            <div>
+              <label class="block text-xs font-medium text-gray-600 mb-1.5">Tenant ID</label>
+              <input id="oauth-tenant" placeholder="contoso.onmicrosoft.com, or the tenant GUID"
+                class="w-full border border-gray-300 rounded-lg px-3 py-2 text-sm focus:ring-2 focus:ring-brand focus:border-brand focus:outline-none">
+            </div>
+            <div>
+              <label class="block text-xs font-medium text-gray-600 mb-1.5">Client (App) ID</label>
+              <input id="oauth-client" placeholder="Azure AD app registration ID"
+                class="w-full border border-gray-300 rounded-lg px-3 py-2 text-sm focus:ring-2 focus:ring-brand focus:border-brand focus:outline-none">
+            </div>
+          </div>
+          <div class="grid grid-cols-2 gap-4">
+            <div>
+              <label class="block text-xs font-medium text-gray-600 mb-1.5">Mailbox username</label>
+              <input id="oauth-username" placeholder="culprit@example.com"
+                class="w-full border border-gray-300 rounded-lg px-3 py-2 text-sm focus:ring-2 focus:ring-brand focus:border-brand focus:outline-none">
+            </div>
+            <div>
+              <label class="block text-xs font-medium text-gray-600 mb-1.5">Password</label>
+              <input id="oauth-password" type="password" placeholder="leave blank to keep saved password"
+                class="w-full border border-gray-300 rounded-lg px-3 py-2 text-sm focus:ring-2 focus:ring-brand focus:border-brand focus:outline-none">
+            </div>
+          </div>
+          <div class="grid grid-cols-2 gap-4">
+            <div>
+              <label class="block text-xs font-medium text-gray-600 mb-1.5">From name</label>
+              <input id="oauth-from-name" placeholder="Culprit"
+                class="w-full border border-gray-300 rounded-lg px-3 py-2 text-sm focus:ring-2 focus:ring-brand focus:border-brand focus:outline-none">
+            </div>
+          </div>
+          <div>
+            <label class="block text-xs font-medium text-gray-600 mb-1.5">Default recipients</label>
+            <textarea id="oauth-recipients" rows="2" placeholder="one per line, or comma-separated"
+              class="w-full border border-gray-300 rounded-lg px-3 py-2 text-sm font-mono focus:ring-2 focus:ring-brand focus:border-brand focus:outline-none"></textarea>
+            <p class="text-xs text-gray-400 mt-1.5">Pre-fills the "To" field on a run's "Email report" button &mdash; editable per send.</p>
+          </div>
+
+          <div class="flex items-center gap-3 mt-5 pt-5 border-t border-gray-100">
+            <button onclick="saveEmailOauth()" class="bg-brand hover:bg-brand-dark text-white text-sm font-medium px-4 py-2 rounded-lg transition-colors">Save</button>
+            <button onclick="testEmailOauth()" class="bg-gray-100 hover:bg-gray-200 text-gray-700 text-sm font-medium px-4 py-2 rounded-lg transition-colors">Test connection</button>
+            <span class="text-sm" id="oauth-result"></span>
+          </div>
+          <p class="text-xs text-gray-400 mt-3">Requires the "oauth" optional dependency (<code class="font-mono">pip install 'culprit[oauth]'</code>) to be installed on this deployment.</p>
         </div>
 
-        <div class="flex items-center gap-3 mt-5 pt-5 border-t border-gray-100">
-          <button onclick="saveSmtp()" class="bg-brand hover:bg-brand-dark text-white text-sm font-medium px-4 py-2 rounded-lg transition-colors">Save</button>
-          <button onclick="testSmtp()" class="bg-gray-100 hover:bg-gray-200 text-gray-700 text-sm font-medium px-4 py-2 rounded-lg transition-colors">Test connection</button>
-          <span class="text-sm" id="smtp-result"></span>
-        </div>
         <p class="text-xs text-gray-400 mt-3" id="email-status-detail"></p>
 
         <div class="mt-6 pt-5 border-t border-gray-100">
@@ -590,6 +661,46 @@ async function loadDatadog() {
   document.querySelector(`input[name="dd-auth-mode"][value="${view.personal_access_token_configured ? 'personal_access_token' : 'api_key'}"]`).checked = true;
   applyDatadogAuthMode(false);
   renderStatus('dd-status', 'dd-status-detail', 'datadog-nav-dot', view);
+}
+
+// Which configured email method (SMTP, or Microsoft 365 OAuth) is
+// currently active - a deliberate, explicit switch (unlike Datadog's
+// auth-mode toggle above, this isn't "two shapes of the same record", it's
+// "two entirely separate, independently-saved settings rows" - see
+// models/settings.py::EmailMethodSettingsInput's own docstring for why).
+// `persist` is true only for a user-initiated radio change, never for
+// loadEmailMethod() reflecting what's already saved - mirrors
+// applyAzureAuthMode's identical reasoning for its own `clearFields` flag.
+function applyEmailMethod(persist) {
+  const mode = document.querySelector('input[name="email-method"]:checked').value;
+  document.getElementById('smtp-fields').classList.toggle('hidden', mode !== 'smtp');
+  document.getElementById('oauth-fields').classList.toggle('hidden', mode !== 'oauth');
+  document.getElementById('email-method-hint').textContent = mode === 'oauth'
+    ? 'Report emails are sent via Microsoft 365 OAuth, using the settings below.'
+    : 'Report emails are sent via the SMTP server configured below.';
+  if (persist) saveEmailMethod(mode);
+  refreshEmailStatus(mode);
+}
+
+async function saveEmailMethod(mode) {
+  await fetch('settings/email/method', { method: 'PUT', headers: {'Content-Type':'application/json'}, body: JSON.stringify({ method: mode }) });
+}
+
+// The Email tab's one status badge/dot reflects whichever method is
+// ACTIVE, not both - fetches that method's own view (which already
+// carries configured/last_test_ok/last_test_message) and renders it
+// through the same shared renderStatus() every other tab uses.
+async function refreshEmailStatus(mode) {
+  const view = mode === 'oauth'
+    ? await (await fetch('settings/email/oauth')).json()
+    : await (await fetch('settings/smtp')).json();
+  renderStatus('email-status', 'email-status-detail', 'email-nav-dot', view);
+}
+
+async function loadEmailMethod() {
+  const view = await (await fetch('settings/email/method')).json();
+  document.querySelector(`input[name="email-method"][value="${view.method || 'smtp'}"]`).checked = true;
+  applyEmailMethod(false);
 }
 
 function parseSubs() {
@@ -893,6 +1004,10 @@ async function loadSmtpLog() {
   });
 }
 
+function currentEmailMethod() {
+  return document.querySelector('input[name="email-method"]:checked').value;
+}
+
 async function loadSmtp() {
   const view = await (await fetch('settings/smtp')).json();
   document.getElementById('smtp-host').value = view.host || '';
@@ -902,7 +1017,10 @@ async function loadSmtp() {
   document.getElementById('smtp-from-address').value = view.from_address || '';
   document.getElementById('smtp-from-name').value = view.from_name || 'Culprit';
   document.getElementById('smtp-recipients').value = (view.default_recipients || []).join('\n');
-  renderStatus('email-status', 'email-status-detail', 'email-nav-dot', view);
+  // The shared Email-tab badge is rendered by refreshEmailStatus() instead
+  // (it's method-aware - this view alone isn't the whole picture once the
+  // OAuth method exists alongside it), called from loadEmailMethod() and
+  // after every save/test below, not from here.
 }
 
 function smtpFormBody() {
@@ -929,6 +1047,7 @@ async function saveSmtp() {
   document.getElementById('smtp-password').value = '';
   setResult('smtp-result', 'Saved.', true);
   loadSmtp();
+  refreshEmailStatus(currentEmailMethod());
 }
 
 async function testSmtp() {
@@ -936,6 +1055,50 @@ async function testSmtp() {
   const res = await (await fetch('settings/smtp/test', { method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify(smtpFormBody()) })).json();
   setResult('smtp-result', res.message, res.ok);
   loadSmtp();
+  refreshEmailStatus(currentEmailMethod());
+}
+
+function oauthFormBody() {
+  return {
+    tenant_id: document.getElementById('oauth-tenant').value.trim(),
+    client_id: document.getElementById('oauth-client').value.trim(),
+    username: document.getElementById('oauth-username').value.trim(),
+    password: document.getElementById('oauth-password').value,
+    from_name: document.getElementById('oauth-from-name').value.trim() || 'Culprit',
+    default_recipients: document.getElementById('oauth-recipients').value
+      .split(/[\n,]/).map(function (s) { return s.trim(); }).filter(Boolean),
+  };
+}
+
+async function loadEmailOauth() {
+  const view = await (await fetch('settings/email/oauth')).json();
+  document.getElementById('oauth-tenant').value = view.tenant_id || '';
+  document.getElementById('oauth-client').value = view.client_id || '';
+  document.getElementById('oauth-username').value = view.username || '';
+  document.getElementById('oauth-from-name').value = view.from_name || 'Culprit';
+  document.getElementById('oauth-recipients').value = (view.default_recipients || []).join('\n');
+  // Shared badge handled by refreshEmailStatus(), same reasoning as loadSmtp()'s own comment.
+}
+
+async function saveEmailOauth() {
+  const res = await fetch('settings/email/oauth', { method: 'PUT', headers: {'Content-Type':'application/json'}, body: JSON.stringify(oauthFormBody()) });
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({}));
+    setResult('oauth-result', 'Failed: ' + describeSettingsError(err.detail, res.status), false);
+    return;
+  }
+  document.getElementById('oauth-password').value = '';
+  setResult('oauth-result', 'Saved.', true);
+  loadEmailOauth();
+  refreshEmailStatus(currentEmailMethod());
+}
+
+async function testEmailOauth() {
+  setResult('oauth-result', 'Testing…', null);
+  const res = await (await fetch('settings/email/oauth/test', { method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify(oauthFormBody()) })).json();
+  setResult('oauth-result', res.message, res.ok);
+  loadEmailOauth();
+  refreshEmailStatus(currentEmailMethod());
 }
 
 function renderDisplayTimezoneStatus(view) {
@@ -971,6 +1134,8 @@ loadGate();
 loadDisplayTimezone();
 loadGateHistory();
 loadSmtp();
+loadEmailOauth();
+loadEmailMethod();
 loadSmtpLog();
 </script>
 {% endblock %}

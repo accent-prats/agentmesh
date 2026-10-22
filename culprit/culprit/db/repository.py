@@ -1340,6 +1340,109 @@ def smtp_settings_view(session: Session):
     )
 
 
+# ── Email OAuth (Microsoft 365) settings ───────────────────────────────────
+# Sibling to the SMTP settings above (provider="email_oauth"), never a
+# replacement - routes_notifications.py picks between the two based on
+# load_email_method() below. Same blank-password-preserves-existing rule
+# as save_smtp_settings/save_azure_settings.
+
+def save_email_oauth_settings(session: Session, cfg) -> SettingsRecord:
+    """`cfg` is a culprit.models.settings.EmailOAuthSettingsInput."""
+    from culprit.security.crypto import encrypt
+
+    record = session.get(SettingsRecord, "email_oauth")
+    existing_password_ciphertext = record.data_json.get("password_ciphertext", "") if record else ""
+
+    password_ciphertext = encrypt(cfg.password) if cfg.password else existing_password_ciphertext
+
+    data = {
+        "tenant_id": cfg.tenant_id,
+        "client_id": cfg.client_id,
+        "username": cfg.username,
+        "password_ciphertext": password_ciphertext,
+        "from_name": cfg.from_name,
+        "default_recipients": cfg.default_recipients,
+    }
+    if record is None:
+        record = SettingsRecord(provider="email_oauth", data_json=data)
+        session.add(record)
+    else:
+        record.data_json = data
+    session.commit()
+    return record
+
+
+def load_email_oauth_settings(session: Session):
+    """Returns a fully decrypted `EmailOAuthSettingsInput` (password in
+    plain text, in memory only) - used by the settings screen's 'Test
+    connection' button and by api/routes_notifications.py's send path
+    when the OAuth method is active, never persisted or logged."""
+    from culprit.models.settings import EmailOAuthSettingsInput
+    from culprit.security.crypto import decrypt
+
+    record = session.get(SettingsRecord, "email_oauth")
+    if record is None:
+        return EmailOAuthSettingsInput()
+    d = record.data_json
+    return EmailOAuthSettingsInput(
+        tenant_id=d.get("tenant_id", ""),
+        client_id=d.get("client_id", ""),
+        username=d.get("username", ""),
+        password=decrypt(d["password_ciphertext"]) if d.get("password_ciphertext") else "",
+        from_name=d.get("from_name", "Culprit"),
+        default_recipients=d.get("default_recipients", []),
+    )
+
+
+def email_oauth_settings_view(session: Session):
+    from culprit.models.settings import EmailOAuthSettingsView
+
+    record = session.get(SettingsRecord, "email_oauth")
+    if record is None:
+        return EmailOAuthSettingsView()
+    d = record.data_json
+    return EmailOAuthSettingsView(
+        tenant_id=d.get("tenant_id", ""),
+        client_id=d.get("client_id", ""),
+        username=d.get("username", ""),
+        password_configured=bool(d.get("password_ciphertext")),
+        from_name=d.get("from_name", "Culprit"),
+        default_recipients=d.get("default_recipients", []),
+        # tenant_id/client_id/username are the three fields every real
+        # ROPC token request needs - a still-blank password legitimately
+        # means "mid-setup", same "the fields that are always required
+        # decide configured" convention as Azure/SMTP above.
+        configured=bool(d.get("tenant_id") and d.get("client_id") and d.get("username")),
+        last_tested_at=record.last_tested_at,
+        last_test_ok=record.last_test_ok,
+        last_test_message=record.last_test_message,
+    )
+
+
+# ── Active email delivery method ────────────────────────────────────────────
+# A one-field row (provider="email_method") deciding which configured
+# method (SMTP, or Microsoft 365 OAuth above) api/routes_notifications.py
+# actually sends through. "smtp" is the default so installing this feature
+# never changes an existing deployment's behavior on its own - switching to
+# "oauth" is a deliberate, explicit admin action on the Settings screen.
+
+def save_email_method(session: Session, method: str) -> None:
+    record = session.get(SettingsRecord, "email_method")
+    data = {"method": method}
+    if record is None:
+        session.add(SettingsRecord(provider="email_method", data_json=data))
+    else:
+        record.data_json = data
+    session.commit()
+
+
+def load_email_method(session: Session) -> str:
+    record = session.get(SettingsRecord, "email_method")
+    if record is None:
+        return "smtp"
+    return record.data_json.get("method", "smtp")
+
+
 def save_email_log(
     session: Session, *, run_id: str, recipients: list[str], requested_by: str, sent_at, status, message: str,
 ):

@@ -36,6 +36,14 @@ azure = [
 datadog = [
     "datadog-api-client>=2.23",
 ]
+oauth = [
+    # Microsoft 365 / Exchange Online email delivery via OAuth (ROPC) -
+    # see notifications/m365_oauth.py. Optional: a deployment that only
+    # ever uses the SMTP email method (the default) never needs this
+    # installed, same "guarded import, not a hard dependency" convention
+    # as azure/datadog above.
+    "msal>=1.28,<2",
+]
 memory = [
     # Agent memory (culprit/memory/) - self-hosted, on-disk Chroma + a
     # local sentence-transformers embedder, no separate service, no new

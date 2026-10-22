@@ -11,7 +11,7 @@ admin-managed concern owned by the Portal, not Culprit; see
 """
 from __future__ import annotations
 
-from culprit.models.settings import AzureSettingsInput, DatadogSettingsInput, SmtpSettingsInput
+from culprit.models.settings import AzureSettingsInput, DatadogSettingsInput, EmailOAuthSettingsInput, SmtpSettingsInput
 
 
 def test_azure_credentials(cfg: AzureSettingsInput) -> tuple[bool, str]:
@@ -120,6 +120,37 @@ def test_smtp_credentials(cfg: SmtpSettingsInput) -> tuple[bool, str]:
                 server.login(cfg.username, cfg.password)
                 return True, f"Connected to {cfg.host}:{cfg.port} and authenticated as {cfg.username}"
             return True, f"Connected to {cfg.host}:{cfg.port} (no credentials given, so login wasn't attempted)"
+        finally:
+            server.quit()
+    except Exception as exc:  # noqa: BLE001
+        return False, str(exc)[:480]
+
+
+def test_email_oauth_credentials(cfg: EmailOAuthSettingsInput) -> tuple[bool, str]:
+    """Acquires a real OAuth token and completes the XOAUTH2 SMTP
+    handshake against smtp.office365.com - up to but not including
+    actually sending a message - so a pass here means the real send
+    (notifications/email_sender.py::send_email_oauth) will authenticate
+    the same way. Mirrors test_smtp_credentials' own "connect + "
+    "authenticate only" contract, for the OAuth email method instead of
+    the plain-password one."""
+    import smtplib
+
+    from culprit.notifications import m365_oauth
+
+    if not (cfg.tenant_id and cfg.client_id and cfg.username):
+        return False, "Tenant ID, Client ID, and mailbox username are all required"
+
+    token, message = m365_oauth.acquire_token(cfg.tenant_id, cfg.client_id, cfg.username, cfg.password)
+    if token is None:
+        return False, message
+
+    try:
+        server = smtplib.SMTP(m365_oauth.SMTP_HOST, m365_oauth.SMTP_PORT, timeout=10)
+        try:
+            server.starttls()
+            m365_oauth.xoauth2_login(server, cfg.username, token)
+            return True, f"Authenticated as {cfg.username} via Microsoft 365 OAuth"
         finally:
             server.quit()
     except Exception as exc:  # noqa: BLE001

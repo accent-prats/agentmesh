@@ -19,3 +19,8 @@ azure-monitor-query>=1.3
 
 # Datadog collector (culprit/collectors/datadog_collector.py)
 datadog-api-client>=2.23
+
+# Microsoft 365 (OAuth) email delivery (culprit/notifications/m365_oauth.py) -
+# the "oauth" extra in pyproject.toml, listed here too since this Docker
+# build installs from this file, not pyproject.toml's own optional-dependencies.
+msal>=1.28,<2
