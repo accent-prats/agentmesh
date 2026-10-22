@@ -98,7 +98,7 @@ def _cluster_date_ranges(report: FleetReport, tz_name: str = "UTC") -> dict[str,
 
 def render_fleet_report_html(
     report: FleetReport, family_precision=None, promotion_threshold: float = 0.95, promotion_min_sample: int = 50,
-    smtp_configured: bool = False, default_recipients: list | None = None, installation_report_available: bool = False,
+    email_configured: bool = False, default_recipients: list | None = None, installation_report_available: bool = False,
     tz_name: str = "UTC",
 ) -> str:
     """`family_precision` (dict[CauseFamily, FamilyPrecision]) is a
@@ -130,7 +130,11 @@ def render_fleet_report_html(
         report=report, active="console", nav_prefix="../../", family_precision=family_precision or {},
         cluster_date_ranges=cluster_date_ranges,
         promotion_threshold=promotion_threshold, promotion_min_sample=promotion_min_sample,
-        smtp_configured=smtp_configured, default_recipients=default_recipients or [],
+        # Found by review 2026-10-22: this was "smtp_configured" and only
+        # ever fed from SMTP's own view - renamed to be honest that it now
+        # reflects WHICHEVER email method is active (see routes_runs.py::
+        # get_report_html, the only caller), not SMTP specifically.
+        email_configured=email_configured, default_recipients=default_recipients or [],
         installation_report_available=installation_report_available,
         missing_evidence_by_cluster=missing_evidence_by_cluster,
     )

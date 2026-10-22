@@ -358,7 +358,7 @@
                 onchange="applyEmailMethod(true)" class="mt-0.5 accent-brand">
               <span>
                 <span class="block text-sm text-gray-800">Microsoft 365 (OAuth)</span>
-                <span class="block text-xs text-gray-400">Sends via smtp.office365.com, authenticated with a mailbox's Azure AD credentials instead of a long-lived SMTP password. Needs an Azure AD app registration (Client ID) with the SMTP.Send permission, consented by a tenant admin.</span>
+                <span class="block text-xs text-gray-400">Sends via smtp.office365.com, authenticated with a mailbox's Azure AD credentials instead of a long-lived SMTP password. Needs an Azure AD app registration (Client ID) with "Allow public client flows" enabled and the SMTP.Send permission, consented by a tenant admin &mdash; and won't work for a mailbox whose sign-in requires MFA/Conditional Access, since this flow can't satisfy that challenge.</span>
               </span>
             </label>
           </div>

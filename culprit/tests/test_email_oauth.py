@@ -356,3 +356,31 @@ def test_send_email_via_oauth_failure_still_returns_200_with_a_readable_message(
 
     log = client.get("/settings/smtp/log").json()
     assert log[0]["status"] == "failed"
+
+
+# ── Fleet Report page's "Email report" widget ────────────────────────────────
+# Found by review 2026-10-22: GET /runs/{run_id}/report.html used to gate
+# the whole widget on SMTP's own configured-state unconditionally, so it
+# vanished entirely for a deployment that adopts OAuth as its sole method
+# and never configures SMTP - exactly the "later we switch to this option"
+# end state this feature was built for. No test anywhere exercised this
+# route at all before these two.
+
+def test_fleet_report_shows_the_email_widget_when_only_oauth_is_configured(client, seeded_run_id):
+    client.put("/settings/email/oauth", json={
+        "tenant_id": "t", "client_id": "c", "username": "culprit@contoso.com",
+        "default_recipients": ["oauth-dl@example.com"],
+    })
+    client.put("/settings/email/method", json={"method": "oauth"})
+    # SMTP is deliberately left completely unconfigured.
+
+    resp = client.get(f"/runs/{seeded_run_id}/report.html")
+    assert resp.status_code == 200
+    assert '<div class="email-report-widget' in resp.text
+    assert "oauth-dl@example.com" in resp.text  # the ACTIVE method's own DL, not SMTP's (there isn't one)
+
+
+def test_fleet_report_hides_the_email_widget_when_neither_method_is_configured(client, seeded_run_id):
+    resp = client.get(f"/runs/{seeded_run_id}/report.html")
+    assert resp.status_code == 200
+    assert '<div class="email-report-widget' not in resp.text

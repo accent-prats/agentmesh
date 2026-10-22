@@ -44,7 +44,7 @@ external credentials to *run against a live environment*:
 | Deep RCA agent (`pipeline/rca_agent.py`) | Real multi-provider LLM integration (Anthropic by default, or any provider in `shared/src/llm/catalog.py` - OpenAI, Azure OpenAI, Gemini, Grok, Qwen, DeepSeek, Ollama, LM Studio) via strict tool-use / schema-enforced output. Which one is active is a platform-wide admin setting on the AgentMesh Portal's Admin → AI Providers screen (`portal/api/routers/ai_providers.py`) - unset there, this falls back to `ANTHROPIC_API_KEY` (or an `ant auth login` profile), then to a clearly-labeled scripted stand-in (see below). |
 | API, DB, reporting, scheduler | Fully self-contained. SQLite by default; point at Postgres for production. |
 | Azure/Datadog **connection settings** (`/settings` screen) | Fully self-contained - a real settings UI (encrypted-at-rest storage, masked GET responses, a genuine "Test connection" that calls the provider) with no credentials of its own required to use it. What it configures (a real subscription, a real Datadog org) is what needs credentials, not the screen itself. |
-| **Email a report** (`/settings`'s "Email" tab, a run's own "Email report" widget) | Real SMTP send (`notifications/email_sender.py`), same encrypted-at-rest/masked-GET/real-Test-connection treatment as Azure/Datadog above - needs a real SMTP server+credentials to send against, nothing else to configure. Every send attempt, success or failure, is logged (`GET /settings/smtp/log`). |
+| **Email a report** (`/settings`'s "Email" tab, a run's own "Email report" widget) | Two independently-configured delivery methods, switchable via one "Delivery method" setting (default SMTP, never auto-switches): real SMTP send (`notifications/email_sender.py::send_email`), or Microsoft 365 via OAuth2 (`notifications/m365_oauth.py` + `email_sender.py::send_email_oauth` - a mailbox's own Azure AD tenant/username/password exchanged via MSAL's ROPC flow for a token, authenticating an SMTP session to `smtp.office365.com` via XOAUTH2 instead of a plain password; needs an Azure AD App Registration with "Allow public client flows" enabled and the `SMTP.Send` permission consented by a tenant admin, plus the optional `oauth` dependency installed - `pip install 'culprit[oauth]'`). Both share the same encrypted-at-rest/masked-GET/real-Test-connection treatment as Azure/Datadog above. Every send attempt, success or failure, is logged (`GET /settings/smtp/log`) regardless of which method sent it. |
 | Agent memory (`memory/`) | Real mem0 integration, verified end to end against a live mem0/Chroma/sentence-transformers install (remember, semantic recall, forget-on-wrong-verdict) - but off by default and a graceful no-op without `pip install 'culprit[memory]'`. Self-hosted only: on-disk Chroma, a local embedder, no data leaves the host. See `culprit/memory/__init__.py` and RUNBOOK.md §8. |
 
 **The demo and the entire test suite run with zero credentials.** Where a
@@ -123,12 +123,15 @@ uvicorn culprit.api.main:app --reload
 # GET  /settings/gate/history   - every gate change ever made (who, when, to what)
 # GET/PUT /settings/smtp        - SMTP server + default recipient list for "Email report"
 # POST /settings/smtp/test      - real connection test
-# GET  /settings/smtp/log       - every report email ever sent (JSON)
+# GET  /settings/smtp/log       - every report email ever sent (JSON), either method
+# GET/PUT /settings/email/oauth      - Microsoft 365 OAuth mailbox + default recipient list (alternative to SMTP above)
+# POST /settings/email/oauth/test    - real connection test (acquires a token, completes the XOAUTH2 handshake)
+# GET/PUT /settings/email/method     - which of the two configured methods actually sends (default "smtp")
 # POST /runs/demo             - trigger the demo scenario, get a FleetReport back
 # POST /runs/live             - discover + diagnose real failed machines (needs /settings configured)
 # GET  /runs/{run_id}/report - the same report, JSON
 # GET  /runs/{run_id}/report.html
-# POST /runs/{run_id}/email    - email a run's report to a recipient list (needs SMTP configured)
+# POST /runs/{run_id}/email    - email a run's report to a recipient list (needs the active email method configured)
 # GET  /runs/{run_id}/installation-report, /installation-report.html  - the Azure Update Manager-style full-fleet view (every machine, not just the failures this report clusters)
 # GET  /runs/{run_id}/machines/{vm_name}.html  - one machine's own patch outcome (status, error, failed KB/package), its guest patch extension's own status, plus its deviation from its cluster
 # POST /verdicts              - submit an engineer verdict on an RCA card
@@ -165,7 +168,7 @@ culprit/
   memory/         mem0-backed episodic memory (optional - pip install 'culprit[memory]')
   db/             SQLAlchemy persistence (SQLite by default, Postgres-ready)
   reporting/      fleet report + installation report models, HTML rendering, Teams/Slack notification
-  notifications/  SMTP email sending for "Email report" (separate from reporting/'s Teams/Slack digest)
+  notifications/  SMTP or Microsoft 365 (OAuth) email sending for "Email report" (separate from reporting/'s Teams/Slack digest)
   remediation/    the one gated, hardcoded automated action (disk cleanup) and its Run Command execution
   api/            FastAPI app
   scheduler/      cron (scheduled + pre-flight) and Event Grid webhook receiver

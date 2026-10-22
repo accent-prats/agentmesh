@@ -58,7 +58,7 @@
   <p class="text-xs text-gray-400 mb-6">No prior completed cycle for "{{ report.run.scope_name }}" yet to trend against.</p>
   {% endif %}
 
-  {% if smtp_configured %}
+  {% if email_configured %}
   <div class="email-report-widget bg-white rounded-2xl shadow-sm border border-gray-100 p-4 mb-6" data-run-id="{{ report.run.run_id }}">
     <button type="button" class="email-report-toggle flex items-center gap-2 text-sm font-medium text-gray-700 hover:text-brand">
       <i data-lucide="mail" class="w-4 h-4"></i> Email report
@@ -547,6 +547,13 @@ function describeEmailError(detail, statusCode) {
   if (typeof detail === 'string') return detail;
   if (detail && typeof detail === 'object' && detail.reason === 'smtp_not_configured') {
     return 'SMTP is not configured for this deployment yet - ask an admin to set it up under Settings → Email.';
+  }
+  // Found by review 2026-10-22: the OAuth method's own 409 reason had no
+  // friendly mapping here, so switching the active method to Microsoft
+  // 365 OAuth before finishing its setup showed a raw
+  // {"reason": "email_oauth_not_configured"} blob instead of readable text.
+  if (detail && typeof detail === 'object' && detail.reason === 'email_oauth_not_configured') {
+    return 'Microsoft 365 (OAuth) is not fully configured for this deployment yet - ask an admin to finish it under Settings → Email.';
   }
   return detail ? JSON.stringify(detail) : ('HTTP ' + statusCode);
 }

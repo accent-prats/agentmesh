@@ -179,7 +179,19 @@ def get_report_html(run_id: str):
         # up here immediately too - see repository.py::get_current_promotion_gate.
         family_precision = compute_family_precision(repository.all_verdicts(session))
         threshold, min_sample = repository.get_current_promotion_gate(session)
-        smtp = repository.smtp_settings_view(session)
+        # Found by review 2026-10-22: this used to read smtp_settings_view()
+        # unconditionally, so the "Email report" widget below gated itself
+        # on SMTP's own configured-state regardless of which email method
+        # is actually active - for a deployment that adopts Microsoft 365
+        # OAuth and never configures SMTP (precisely the "later we switch
+        # to this option" scenario the OAuth feature was built for), the
+        # button vanished entirely even though POST /runs/{run_id}/email
+        # itself worked fine via a direct API call. Mirrors routes_
+        # notifications.py::send_report_email's own active-method branch.
+        if repository.load_email_method(session) == "oauth":
+            email_cfg = repository.email_oauth_settings_view(session)
+        else:
+            email_cfg = repository.smtp_settings_view(session)
         # Found in review: the "View installation report" link was
         # unconditional, so a run from before this feature existed (or
         # one where the best-effort build in live_run.py/trigger_demo_run
@@ -189,7 +201,7 @@ def get_report_html(run_id: str):
         tz_name = repository.load_display_timezone_settings(session).timezone
     return HTMLResponse(render_fleet_report_html(
         report, family_precision=family_precision, promotion_threshold=threshold, promotion_min_sample=min_sample,
-        smtp_configured=smtp.configured, default_recipients=smtp.default_recipients,
+        email_configured=email_cfg.configured, default_recipients=email_cfg.default_recipients,
         installation_report_available=installation_report_available, tz_name=tz_name,
     ))
 

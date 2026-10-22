@@ -318,6 +318,33 @@ def test_fleet_report_hides_the_installation_report_link_when_none_was_built():
     assert "installation-report.html" in html_with
 
 
+def test_fleet_report_shows_the_email_widget_based_on_email_configured_not_smtp_specifically():
+    """Found by review 2026-10-22: render_fleet_report_html's gate for the
+    "Email report" widget used to be named (and only ever fed from)
+    SMTP's own configured-state - routes_runs.py::get_report_html now
+    computes this from whichever email method is actually active (see
+    that route's own comment), so this parameter must work as a generic
+    "is email configured at all" flag, not implicitly assume SMTP."""
+    from culprit.models.patch_run import PatchRun, TriggerMode
+    from culprit.models.report import FleetReport
+    from culprit.reporting.render import render_fleet_report_html
+
+    run = PatchRun(run_id="run-1", maintenance_configuration_id="mc-1", subscription_id="s", scope_name="scope-a",
+                   started_at=datetime(2026, 1, 1, tzinfo=timezone.utc), total_machines=10, trigger_mode=TriggerMode.AD_HOC)
+    report = FleetReport(run=run, total_machines=10, total_failed=0, total_clusters=0, entries=[])
+
+    # The JS at the bottom of the page references ".email-report-widget"
+    # (querySelectorAll) regardless of whether the Jinja {% if %} rendered
+    # the div itself - checking for the actual element's opening tag, not
+    # the bare class name, is what actually proves the widget is gone.
+    html_without = render_fleet_report_html(report, email_configured=False)
+    assert '<div class="email-report-widget' not in html_without
+
+    html_with = render_fleet_report_html(report, email_configured=True, default_recipients=["ops@example.com"])
+    assert '<div class="email-report-widget' in html_with
+    assert "ops@example.com" in html_with
+
+
 def test_load_installation_report_returns_none_when_never_built(session_factory):
     from culprit.db import repository
     from culprit.db.models import RunStage
