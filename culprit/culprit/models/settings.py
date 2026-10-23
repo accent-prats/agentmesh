@@ -37,6 +37,14 @@ from pydantic import BaseModel, Field, field_validator
 # per-send recipient override, not just the stored default list.
 EMAIL_ADDRESS_RE = r"^[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}$"
 
+# What a real Azure AD tenant_id/client_id can actually be - used by
+# EmailOAuthSettingsInput's validators below. A GUID covers both fields;
+# a tenant can additionally be its full verified domain (always has a
+# dot - a bare short name never does) or one of the three documented
+# multi-tenant aliases.
+_AAD_GUID_RE = r"^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$"
+_AAD_MULTI_TENANT_ALIASES = {"common", "organizations", "consumers"}
+
 
 class AzureSettingsInput(BaseModel):
     subscription_ids: list[str] = Field(default_factory=list)
@@ -282,6 +290,43 @@ class EmailOAuthSettingsInput(BaseModel):
     password: str = ""
     from_name: str = "Culprit"
     default_recipients: list[str] = Field(default_factory=list)
+
+    # Found 2026-10-23 against a real preprod deployment: an admin entered
+    # a short internal tenant nickname ("tcxppreprod") instead of the
+    # tenant's actual GUID or verified domain. MSAL's own authority-
+    # discovery error for that exact mistake ("Unable to get authority
+    # configuration for https://login.microsoftonline.com/tcxppreprod...")
+    # only surfaces after a live round-trip to Azure AD, on both Save and
+    # Test connection. This catches the same mistake instantly, before
+    # either call ever happens - see notifications/m365_oauth.py's
+    # authority construction, which is exactly `.../{tenant_id}`.
+    @field_validator("tenant_id")
+    @classmethod
+    def _tenant_id_must_look_like_a_real_tenant(cls, v: str) -> str:
+        import re
+
+        if not v or re.match(_AAD_GUID_RE, v) or v.lower() in _AAD_MULTI_TENANT_ALIASES or "." in v:
+            return v
+        raise ValueError(
+            f"'{v}' doesn't look like a real Azure AD tenant identifier - use the tenant's GUID "
+            "(Azure Active Directory -> Overview -> Tenant ID) or its full verified domain "
+            "(e.g. 'contoso.onmicrosoft.com'), not an internal short name"
+        )
+
+    # Same mistake, same fix - an App Registration's Application (client)
+    # ID is always a GUID, never the human-chosen display name IT may use
+    # to refer to the app internally.
+    @field_validator("client_id")
+    @classmethod
+    def _client_id_must_be_a_guid(cls, v: str) -> str:
+        import re
+
+        if not v or re.match(_AAD_GUID_RE, v):
+            return v
+        raise ValueError(
+            f"'{v}' doesn't look like a real Azure AD Application (client) ID - it's always a GUID "
+            "(App registration -> Overview -> Application (client) ID), not a display name"
+        )
 
     @field_validator("username")
     @classmethod

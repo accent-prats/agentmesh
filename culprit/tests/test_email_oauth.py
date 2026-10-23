@@ -143,10 +143,12 @@ def test_email_oauth_settings_save_and_reload_masks_the_password(client):
 
 def test_email_oauth_blank_password_on_update_preserves_the_existing_one(client):
     client.put("/settings/email/oauth", json={
-        "tenant_id": "t", "client_id": "c", "username": "u@example.com", "password": "first-secret",
+        "tenant_id": "contoso.onmicrosoft.com", "client_id": "11111111-1111-1111-1111-111111111111",
+        "username": "u@example.com", "password": "first-secret",
     })
     resp = client.put("/settings/email/oauth", json={
-        "tenant_id": "t", "client_id": "c", "username": "u@example.com", "password": "",
+        "tenant_id": "contoso.onmicrosoft.com", "client_id": "11111111-1111-1111-1111-111111111111",
+        "username": "u@example.com", "password": "",
     })
     assert resp.json()["password_configured"] is True
 
@@ -171,21 +173,76 @@ def test_email_oauth_settings_configured_requires_all_three_fields():
     engine = make_engine("sqlite:///:memory:")
     factory = make_session_factory(engine)
     with factory() as session:
-        repository.save_email_oauth_settings(session, EmailOAuthSettingsInput(tenant_id="t"))
-        assert repository.email_oauth_settings_view(session).configured is False
-
-        repository.save_email_oauth_settings(session, EmailOAuthSettingsInput(tenant_id="t", client_id="c"))
+        repository.save_email_oauth_settings(session, EmailOAuthSettingsInput(tenant_id="contoso.onmicrosoft.com"))
         assert repository.email_oauth_settings_view(session).configured is False
 
         repository.save_email_oauth_settings(
-            session, EmailOAuthSettingsInput(tenant_id="t", client_id="c", username="u@example.com")
+            session,
+            EmailOAuthSettingsInput(
+                tenant_id="contoso.onmicrosoft.com", client_id="11111111-1111-1111-1111-111111111111"
+            ),
+        )
+        assert repository.email_oauth_settings_view(session).configured is False
+
+        repository.save_email_oauth_settings(
+            session,
+            EmailOAuthSettingsInput(
+                tenant_id="contoso.onmicrosoft.com", client_id="11111111-1111-1111-1111-111111111111",
+                username="u@example.com",
+            ),
         )
         assert repository.email_oauth_settings_view(session).configured is True
 
 
 def test_email_oauth_settings_rejects_a_malformed_username(client):
-    resp = client.put("/settings/email/oauth", json={"tenant_id": "t", "client_id": "c", "username": "not-an-email"})
+    resp = client.put("/settings/email/oauth", json={
+        "tenant_id": "contoso.onmicrosoft.com", "client_id": "11111111-1111-1111-1111-111111111111",
+        "username": "not-an-email",
+    })
     assert resp.status_code == 422
+
+
+# Added 2026-10-23: a real preprod deployment entered "tcxppreprod" (an
+# internal short nickname) as the Tenant ID and "tcxppreprod-email-techuser"
+# (a display name) as the Client ID. Both are rejected by MSAL's own
+# authority-discovery call, but only after a live round-trip to Azure AD -
+# these tests pin that the exact same mistake is now caught instantly by
+# EmailOAuthSettingsInput's own validators, on both Save and Test, before
+# any network call happens.
+
+def test_email_oauth_settings_rejects_a_short_tenant_nickname(client):
+    resp = client.put("/settings/email/oauth", json={
+        "tenant_id": "tcxppreprod", "client_id": "11111111-1111-1111-1111-111111111111",
+        "username": "u@example.com",
+    })
+    assert resp.status_code == 422
+    assert "tcxppreprod" in resp.text
+
+
+def test_email_oauth_settings_rejects_a_client_id_that_is_not_a_guid(client):
+    resp = client.put("/settings/email/oauth", json={
+        "tenant_id": "contoso.onmicrosoft.com", "client_id": "tcxppreprod-email-techuser",
+        "username": "u@example.com",
+    })
+    assert resp.status_code == 422
+    assert "tcxppreprod-email-techuser" in resp.text
+
+
+@pytest.mark.parametrize("tenant_id", [
+    "11111111-1111-1111-1111-111111111111",  # a real tenant GUID
+    "contoso.onmicrosoft.com",  # a verified domain
+    "contoso.com",  # a verified custom domain - any dot qualifies
+    "common",  # the three documented multi-tenant aliases
+    "organizations",
+    "consumers",
+    "",  # blank is still a valid "not configured yet" value
+])
+def test_email_oauth_settings_accepts_every_real_tenant_id_shape(client, tenant_id):
+    resp = client.put("/settings/email/oauth", json={
+        "tenant_id": tenant_id, "client_id": "11111111-1111-1111-1111-111111111111",
+        "username": "u@example.com",
+    })
+    assert resp.status_code == 200
 
 
 def test_email_oauth_test_connection_success(client, monkeypatch):
@@ -193,15 +250,16 @@ def test_email_oauth_test_connection_success(client, monkeypatch):
     monkeypatch.setattr("smtplib.SMTP", FakeSMTP)
 
     resp = client.post("/settings/email/oauth/test", json={
-        "tenant_id": "t", "client_id": "c", "username": "u@example.com", "password": "p",
+        "tenant_id": "contoso.onmicrosoft.com", "client_id": "11111111-1111-1111-1111-111111111111",
+        "username": "u@example.com", "password": "p",
     })
     assert resp.status_code == 200
     body = resp.json()
     assert body["ok"] is True
     assert "u@example.com" in body["message"]
     assert FakeSMTP.instances[0].calls == ["starttls", "docmd:AUTH", "quit"]
-    assert FakePublicClientApplication.instances[0].client_id == "c"
-    assert FakePublicClientApplication.instances[0].authority == "https://login.microsoftonline.com/t"
+    assert FakePublicClientApplication.instances[0].client_id == "11111111-1111-1111-1111-111111111111"
+    assert FakePublicClientApplication.instances[0].authority == "https://login.microsoftonline.com/contoso.onmicrosoft.com"
 
     view = client.get("/settings/email/oauth").json()
     assert view["last_test_ok"] is True
@@ -217,7 +275,8 @@ def test_email_oauth_test_connection_failure_from_azure_ad(client, monkeypatch):
         "error": "invalid_grant", "error_description": "AADSTS50126: Invalid username or password.",
     }
     resp = client.post("/settings/email/oauth/test", json={
-        "tenant_id": "t", "client_id": "c", "username": "u@example.com", "password": "wrong",
+        "tenant_id": "contoso.onmicrosoft.com", "client_id": "11111111-1111-1111-1111-111111111111",
+        "username": "u@example.com", "password": "wrong",
     })
     body = resp.json()
     assert body["ok"] is False
@@ -233,7 +292,8 @@ def test_email_oauth_test_connection_failure_from_smtp_auth(client, monkeypatch)
     monkeypatch.setattr("smtplib.SMTP", lambda host, port, timeout=None: FakeSMTP(host, port, fail_on="auth"))
 
     resp = client.post("/settings/email/oauth/test", json={
-        "tenant_id": "t", "client_id": "c", "username": "u@example.com", "password": "p",
+        "tenant_id": "contoso.onmicrosoft.com", "client_id": "11111111-1111-1111-1111-111111111111",
+        "username": "u@example.com", "password": "p",
     })
     body = resp.json()
     assert body["ok"] is False
@@ -245,7 +305,8 @@ def test_email_oauth_test_connection_without_msal_installed(client, monkeypatch)
 
     monkeypatch.setattr(m365_oauth, "_MSAL_AVAILABLE", False)
     resp = client.post("/settings/email/oauth/test", json={
-        "tenant_id": "t", "client_id": "c", "username": "u@example.com", "password": "p",
+        "tenant_id": "contoso.onmicrosoft.com", "client_id": "11111111-1111-1111-1111-111111111111",
+        "username": "u@example.com", "password": "p",
     })
     body = resp.json()
     assert body["ok"] is False
@@ -259,11 +320,13 @@ def test_email_oauth_test_connection_after_save_uses_the_stored_password_not_a_b
     _patch_msal(monkeypatch)
     monkeypatch.setattr("smtplib.SMTP", FakeSMTP)
     client.put("/settings/email/oauth", json={
-        "tenant_id": "t", "client_id": "c", "username": "u@example.com", "password": "the-real-password",
+        "tenant_id": "contoso.onmicrosoft.com", "client_id": "11111111-1111-1111-1111-111111111111",
+        "username": "u@example.com", "password": "the-real-password",
     })
 
     resp = client.post("/settings/email/oauth/test", json={
-        "tenant_id": "t", "client_id": "c", "username": "u@example.com", "password": "",
+        "tenant_id": "contoso.onmicrosoft.com", "client_id": "11111111-1111-1111-1111-111111111111",
+        "username": "u@example.com", "password": "",
     })
     assert resp.status_code == 200
     assert resp.json()["ok"] is True
@@ -303,7 +366,8 @@ def test_send_email_via_oauth_method_uses_the_oauth_default_dl(client, seeded_ru
     _patch_msal(monkeypatch)
     monkeypatch.setattr("smtplib.SMTP", FakeSMTP)
     client.put("/settings/email/oauth", json={
-        "tenant_id": "t", "client_id": "c", "username": "culprit@contoso.com", "password": "p",
+        "tenant_id": "contoso.onmicrosoft.com", "client_id": "11111111-1111-1111-1111-111111111111",
+        "username": "culprit@contoso.com", "password": "p",
         "default_recipients": ["ops@example.com"],
     })
     client.put("/settings/email/method", json={"method": "oauth"})
@@ -328,7 +392,8 @@ def test_send_email_does_not_use_oauth_dl_when_smtp_method_is_active(client, see
     vice versa (each is read from its own settings row)."""
     monkeypatch.setattr("smtplib.SMTP", FakeSMTP)
     client.put("/settings/email/oauth", json={
-        "tenant_id": "t", "client_id": "c", "username": "oauth@contoso.com",
+        "tenant_id": "contoso.onmicrosoft.com", "client_id": "11111111-1111-1111-1111-111111111111",
+        "username": "oauth@contoso.com",
         "default_recipients": ["oauth-dl@example.com"],
     })
     client.put("/settings/smtp", json={"host": "smtp.example.com", "default_recipients": ["smtp-dl@example.com"]})
@@ -343,7 +408,8 @@ def test_send_email_via_oauth_failure_still_returns_200_with_a_readable_message(
     _patch_msal(monkeypatch)
     FakePublicClientApplication.result = {"error": "invalid_grant", "error_description": "AADSTS50126: bad password"}
     client.put("/settings/email/oauth", json={
-        "tenant_id": "t", "client_id": "c", "username": "u@example.com", "password": "p",
+        "tenant_id": "contoso.onmicrosoft.com", "client_id": "11111111-1111-1111-1111-111111111111",
+        "username": "u@example.com", "password": "p",
         "default_recipients": ["ops@example.com"],
     })
     client.put("/settings/email/method", json={"method": "oauth"})
@@ -368,7 +434,8 @@ def test_send_email_via_oauth_failure_still_returns_200_with_a_readable_message(
 
 def test_fleet_report_shows_the_email_widget_when_only_oauth_is_configured(client, seeded_run_id):
     client.put("/settings/email/oauth", json={
-        "tenant_id": "t", "client_id": "c", "username": "culprit@contoso.com",
+        "tenant_id": "contoso.onmicrosoft.com", "client_id": "11111111-1111-1111-1111-111111111111",
+        "username": "culprit@contoso.com",
         "default_recipients": ["oauth-dl@example.com"],
     })
     client.put("/settings/email/method", json={"method": "oauth"})
