@@ -46,6 +46,38 @@ class FakeVendorMailer:
         return self._TOKEN
 
 
+# Found by review 2026-11-02: every test in this file (including the one
+# directly below, via fake_vendor) monkeypatches _vendor_mailer/
+# _MAILER_AVAILABLE as plain attributes - which never actually exercises the
+# real `import tcx_mailer.mailer as _vendor_mailer` statement at all. Proven
+# by sabotage: reverting that import to the historically-wrong `_mailer.
+# mailer` left all 27 tests in this file passing, which is exactly how the
+# wrong name shipped to a real production VM undetected. This is the one
+# test that forces the real statement to execute, by planting a correctly-
+# named fake package in sys.modules and reloading the module for real.
+def test_tcx_mailer_adapter_imports_the_real_vendor_module_name():
+    import importlib
+    import sys
+    import types
+
+    import culprit.notifications.tcx_mailer_adapter as tcx_mailer_adapter
+
+    fake_mailer_submodule = types.ModuleType("tcx_mailer.mailer")
+    fake_package = types.ModuleType("tcx_mailer")
+    fake_package.mailer = fake_mailer_submodule
+
+    sys.modules["tcx_mailer"] = fake_package
+    sys.modules["tcx_mailer.mailer"] = fake_mailer_submodule
+    try:
+        importlib.reload(tcx_mailer_adapter)
+        assert tcx_mailer_adapter._MAILER_AVAILABLE is True
+        assert tcx_mailer_adapter._vendor_mailer is fake_mailer_submodule
+    finally:
+        del sys.modules["tcx_mailer"]
+        del sys.modules["tcx_mailer.mailer"]
+        importlib.reload(tcx_mailer_adapter)  # back to the real (not installed) state for every other test
+
+
 @pytest.fixture
 def fake_vendor(monkeypatch):
     import culprit.notifications.tcx_mailer_adapter as tcx_mailer_adapter
@@ -461,6 +493,133 @@ def test_build_subject_and_body_formats_the_window_cleanly_not_a_raw_repr(client
         assert "373324" not in body
         assert ".373324" not in body
     assert "2026-11-02 12:13" in plain_text_body
+
+
+# Found by review 2026-11-02: every existing test of send_report_on_completion/
+# the live_run.py hook only ever exercised the tcx_mailer method - the user's
+# explicit "auto-send must work under all three methods" decision had zero
+# direct test coverage for the SMTP/OAuth cases specifically. These two close
+# that gap, proving the shared send(cfg, to, subject, body, attachments)
+# contract genuinely carries the attachment through for the two pre-existing
+# senders too, not just the new one.
+
+def test_send_report_on_completion_sends_via_smtp_with_the_attachment(client, seeded_run_id, monkeypatch):
+    import smtplib
+
+    class FakeSMTP:
+        instances: list["FakeSMTP"] = []
+
+        def __init__(self, host, port, timeout=None):
+            self.sent_message = None
+            FakeSMTP.instances.append(self)
+
+        def starttls(self):
+            pass
+
+        def send_message(self, msg):
+            self.sent_message = msg
+
+        def quit(self):
+            pass
+
+    FakeSMTP.instances = []
+    monkeypatch.setattr(smtplib, "SMTP", FakeSMTP)
+
+    from culprit.api.deps import get_session_factory
+    from culprit.db import repository
+    from culprit.models.patch_run import TriggerMode
+    from culprit.notifications.auto_report_email import send_report_on_completion
+
+    client.put("/settings/smtp", json={"host": "smtp.example.com", "default_recipients": ["ops@example.com"]})
+    client.put("/settings/email/method", json={"method": "smtp"})
+
+    with get_session_factory()() as session:
+        report = repository.load_fleet_report(session, seeded_run_id)
+
+    send_report_on_completion(get_session_factory(), report, TriggerMode.SCHEDULED)
+
+    assert len(FakeSMTP.instances) == 1
+    sent = FakeSMTP.instances[0].sent_message
+    assert sent is not None
+    assert sent["To"] == "ops@example.com"
+    attachment_filenames = [
+        part.get_filename() for part in sent.iter_attachments()
+    ]
+    assert f"culprit-report-{seeded_run_id}.zip" in attachment_filenames
+
+    with get_session_factory()() as session:
+        log = repository.list_email_log(session)
+    assert len(log) == 1
+    assert log[0].status.value == "success"
+
+
+def test_send_report_on_completion_sends_via_oauth_with_the_attachment(client, seeded_run_id, monkeypatch):
+    import smtplib
+
+    import culprit.notifications.m365_oauth as m365_oauth
+
+    class FakePublicClientApplication:
+        def __init__(self, client_id, authority=None):
+            pass
+
+        def acquire_token_by_username_password(self, username, password, scopes=None):
+            return {"access_token": "fake-access-token"}
+
+    monkeypatch.setattr(m365_oauth, "msal", type("msal", (), {"PublicClientApplication": FakePublicClientApplication}))
+    monkeypatch.setattr(m365_oauth, "_MSAL_AVAILABLE", True)
+
+    class FakeSMTP:
+        instances: list["FakeSMTP"] = []
+
+        def __init__(self, host, port, timeout=None):
+            self.sent_message = None
+            self.calls: list[str] = []
+            FakeSMTP.instances.append(self)
+
+        def starttls(self):
+            self.calls.append("starttls")
+
+        def docmd(self, cmd, arg):
+            self.calls.append(f"docmd:{cmd}")
+            return 235, b"2.7.0 Authentication successful"
+
+        def send_message(self, msg):
+            self.sent_message = msg
+
+        def quit(self):
+            pass
+
+    FakeSMTP.instances = []
+    monkeypatch.setattr(smtplib, "SMTP", FakeSMTP)
+
+    from culprit.api.deps import get_session_factory
+    from culprit.db import repository
+    from culprit.models.patch_run import TriggerMode
+    from culprit.notifications.auto_report_email import send_report_on_completion
+
+    client.put("/settings/email/oauth", json={
+        "tenant_id": "contoso.onmicrosoft.com", "client_id": "11111111-1111-1111-1111-111111111111",
+        "username": "culprit@contoso.com", "password": "p", "default_recipients": ["ops@example.com"],
+    })
+    client.put("/settings/email/method", json={"method": "oauth"})
+
+    with get_session_factory()() as session:
+        report = repository.load_fleet_report(session, seeded_run_id)
+
+    send_report_on_completion(get_session_factory(), report, TriggerMode.AD_HOC)
+
+    assert len(FakeSMTP.instances) == 1
+    sent = FakeSMTP.instances[0].sent_message
+    assert sent is not None
+    attachment_filenames = [
+        part.get_filename() for part in sent.iter_attachments()
+    ]
+    assert f"culprit-report-{seeded_run_id}.zip" in attachment_filenames
+
+    with get_session_factory()() as session:
+        log = repository.list_email_log(session)
+    assert len(log) == 1
+    assert log[0].status.value == "success"
 
 
 # ── End-to-end: the real scheduler hook (pipeline/live_run.py) ─────────────
