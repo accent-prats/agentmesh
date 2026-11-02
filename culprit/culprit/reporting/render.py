@@ -370,7 +370,7 @@ def render_remediation_log_html(records, tz_name: str = "UTC") -> str:
     return template.render(active="remediation", records=records, nav_prefix="../")
 
 
-def render_email_report_html(report: FleetReport, top_entries: list, report_url: str | None, note: str, requested_by: str, tz_name: str = "UTC") -> str:
+def render_email_report_html(report: FleetReport, top_entries: list, note: str, requested_by: str, tz_name: str = "UTC") -> str:
     """The HTML body of a "Email report" send (api/routes_notifications.py,
     culprit/notifications/email_sender.py) - standalone (no `extends
     base.html.j2`, same reasoning as render_login_html: nothing to put in
@@ -380,10 +380,15 @@ def render_email_report_html(report: FleetReport, top_entries: list, report_url:
     from every other page `_env()` serves. `top_entries` is
     notify.py::top_entries(report)'s own selection, reused rather than
     duplicated so the email's "top findings" list always matches the
-    Teams/Slack digest's."""
+    Teams/Slack digest's.
+
+    No `report_url` - this body never links out to a live server (found
+    2026-11-02: it used to, via an "Open full report" button - the
+    caller now always attaches a fully self-contained offline bundle
+    instead, see reporting/report_bundle.py)."""
     template = _env(tz_name).get_template("email_report.html.j2")
     return template.render(
-        report=report, top_entries=top_entries, report_url=report_url, note=note, requested_by=requested_by,
+        report=report, top_entries=top_entries, note=note, requested_by=requested_by,
         cluster_date_ranges=_cluster_date_ranges(report, tz_name),
     )
 

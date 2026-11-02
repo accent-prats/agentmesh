@@ -317,6 +317,31 @@ def test_email_note_is_html_escaped_in_the_sent_message(client, seeded_run_id, m
     assert "&lt;script&gt;" in html_part
 
 
+def test_send_email_attaches_the_offline_bundle_and_never_links_out(client, seeded_run_id, monkeypatch):
+    """Found by review 2026-11-02, against a real production send: this
+    digest used to link out to a live 'Open full report' page - exactly
+    the 'email depends on reaching a live server' shape the user
+    explicitly ruled out for every Culprit email, not just the new
+    auto-send one. Now attaches the same self-contained offline bundle
+    auto-send uses, and never renders a link to any report URL at all."""
+    monkeypatch.setattr("smtplib.SMTP", FakeSMTP)
+    client.put("/settings/email/method", json={"method": "smtp"})
+    client.put("/settings/smtp", json={"host": "smtp.example.com", "default_recipients": ["ops@example.com"]})
+
+    resp = client.post(f"/runs/{seeded_run_id}/email", json={"requested_by": "alice@example.com"})
+    assert resp.status_code == 200
+    assert resp.json()["ok"] is True
+
+    sent = FakeSMTP.instances[0].sent_message
+    attachment_filenames = [part.get_filename() for part in sent.iter_attachments()]
+    assert f"culprit-report-{seeded_run_id}.zip" in attachment_filenames
+
+    html_part = sent.get_body(preferencelist=("html",)).get_content()
+    assert "href=" not in html_part
+    assert "Open full report" not in html_part
+    assert "attached" in html_part.lower()
+
+
 def test_smtp_test_connection_after_save_uses_the_stored_password_not_a_blank_one(client, monkeypatch):
     """Found in review 2026-10-14: the Email tab's password field is
     never re-populated after a save (passwords are never echoed back),

@@ -10,6 +10,20 @@ WORKDIR /app
 COPY culprit/requirements.txt ./culprit/requirements.txt
 RUN pip install --no-cache-dir -r culprit/requirements.txt
 
+# Vendored, optional: IT's own `tcx_mailer` package for the "tcx-mailer"
+# email method (culprit/notifications/tcx_mailer_adapter.py) - not on any
+# index this build can reach (needs IT's private GitLab credentials), so
+# it's vendored into the build context instead of listed in requirements.txt.
+# See culprit/vendor/tcx_mailer/README.md for how to drop the real source
+# in. Safe to leave empty (ships with only a README + .gitkeep) - the `if`
+# below just skips installing anything when it is, same "degrade to not
+# installed" contract as every other optional dependency in this app.
+COPY culprit/vendor/tcx_mailer/ /tmp/vendor/tcx_mailer/
+RUN if [ -f /tmp/vendor/tcx_mailer/pyproject.toml ] || [ -f /tmp/vendor/tcx_mailer/setup.py ]; then \
+        pip install --no-cache-dir /tmp/vendor/tcx_mailer/; \
+    fi \
+    && rm -rf /tmp/vendor
+
 COPY culprit/ ./culprit/
 COPY shared/ ./shared/
 

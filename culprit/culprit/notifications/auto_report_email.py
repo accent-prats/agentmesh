@@ -33,8 +33,13 @@ _TRIGGER_LABELS = {
 def _build_subject_and_body(report: FleetReport, trigger_mode: TriggerMode, tz_name: str) -> tuple[str, str, str]:
     """Returns (subject, plain_text_body, html_body) - built once, used by
     whichever method is active (tcx-mailer's `body` is plain text; SMTP/
-    OAuth's is HTML, same facts either way)."""
-    from culprit import config as config_module
+    OAuth's is HTML, same facts either way). Deliberately never includes a
+    "view live" link of any kind, even a conditional one - found 2026-11-02,
+    against a real send: the user's "no broken links" requirement means NO
+    link to a live server at all, full stop, not "a link when one happens
+    to resolve" - every fact here comes from `report`/`trigger_mode` and the
+    attached offline bundle, nothing that depends on this deployment's own
+    reachability."""
     from culprit.reporting.notify import top_entries
 
     zone = ZoneInfo(tz_name)
@@ -78,10 +83,6 @@ def _build_subject_and_body(report: FleetReport, trigger_mode: TriggerMode, tz_n
                 f"  - {entry.cluster.size} machine(s) — {entry.result.title}{badge} "
                 f"(confidence {entry.result.confidence:.0%})"
             )
-    public_url = config_module.settings.public_url
-    if public_url:
-        lines.append("")
-        lines.append(f"View live: {public_url}/runs/{run.run_id}/report.html")
     lines.append("")
     lines.append("The full Fleet Report and Installation Report are attached as a self-contained")
     lines.append("offline bundle (culprit-report-*.zip) - extract it and open report.html; every")

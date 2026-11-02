@@ -69,19 +69,26 @@ def resolve_active_email_status(session):
 
 
 def build_report_digest(
-    report: FleetReport, report_url: str | None, note: str, requested_by: str, tz_name: str = "UTC",
+    report: FleetReport, note: str, requested_by: str, tz_name: str = "UTC",
 ) -> tuple[str, str]:
     """Returns (subject, html_body). Same "top findings + headline facts"
     shape as reporting/notify.py's Teams/Slack digest - imports its
     top_entries rather than re-selecting independently, so this email's
-    findings list always matches what the webhook digest already shows."""
+    findings list always matches what the webhook digest already shows.
+
+    No longer takes a `report_url` - found by review 2026-11-02 against a
+    real production send: this digest's own "Open full report" button is
+    exactly the kind of "email depends on reaching a live server" link the
+    user explicitly ruled out (the same decision that shaped reporting/
+    report_bundle.py's offline bundle) - removed, not just made optional,
+    since the caller (routes_notifications.py::send_report_email) now
+    always attaches the same self-contained zip bundle instead."""
     from culprit.reporting.notify import top_entries as select_top_entries
     from culprit.reporting.render import render_email_report_html
 
     subject = f"Culprit · {report.run.scope_name} — {report.total_failed}/{report.total_machines} failed"
     html_body = render_email_report_html(
-        report, top_entries=select_top_entries(report), report_url=report_url, note=note, requested_by=requested_by,
-        tz_name=tz_name,
+        report, top_entries=select_top_entries(report), note=note, requested_by=requested_by, tz_name=tz_name,
     )
     return subject, html_body
 

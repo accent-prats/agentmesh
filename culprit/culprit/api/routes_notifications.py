@@ -7,7 +7,7 @@ from __future__ import annotations
 
 from datetime import datetime, timezone
 
-from fastapi import APIRouter, HTTPException, Request
+from fastapi import APIRouter, HTTPException
 
 from culprit.api import deps
 from culprit.models.email import EmailStatus, SendReportRequest, SendReportResponse
@@ -16,14 +16,14 @@ router = APIRouter(tags=["notifications"])
 
 
 @router.post("/runs/{run_id}/email", response_model=SendReportResponse)
-def send_report_email(run_id: str, request: Request, body: SendReportRequest) -> SendReportResponse:
+def send_report_email(run_id: str, body: SendReportRequest) -> SendReportResponse:
     from culprit.db import repository
     from culprit.notifications.email_sender import (
         build_report_digest,
         is_email_method_configured,
         resolve_active_email_config,
     )
-    from culprit.reporting.notify import report_url_from_request
+    from culprit.reporting.report_bundle import build_offline_report_bundle
 
     with deps.get_session_factory()() as session:
         report = repository.load_fleet_report(session, run_id)
@@ -52,10 +52,18 @@ def send_report_email(run_id: str, request: Request, body: SendReportRequest) ->
         if not recipients:
             raise HTTPException(status_code=400, detail="No recipients given and no default recipient list is configured")
 
-        report_url = report_url_from_request(request, run_id)
         tz_name = repository.load_display_timezone_settings(session).timezone
-        subject, html_body = build_report_digest(report, report_url, body.note, body.requested_by, tz_name=tz_name)
-        ok, message = send(cfg, recipients, subject, html_body)
+        subject, html_body = build_report_digest(report, body.note, body.requested_by, tz_name=tz_name)
+        # Found by review 2026-11-02, against a real production send: this
+        # digest used to link out to a live "Open full report" page instead
+        # of attaching anything - exactly the "depends on reaching a live
+        # server" shape the user explicitly ruled out for every Culprit
+        # email, not just the auto-send one. Now attaches the same fully
+        # self-contained offline bundle auto-send uses, so both paths carry
+        # the same guarantee.
+        zip_bytes = build_offline_report_bundle(session, report)
+        attachments = [(f"culprit-report-{run_id}.zip", zip_bytes)]
+        ok, message = send(cfg, recipients, subject, html_body, attachments)
 
         repository.save_email_log(
             session, run_id=run_id, recipients=recipients, requested_by=body.requested_by,

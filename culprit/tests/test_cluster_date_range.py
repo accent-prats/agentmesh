@@ -167,6 +167,6 @@ def test_email_report_also_shows_the_per_cluster_date_range():
     ])
     entry = _entry("cluster-a")
     report = report.model_copy(update={"entries": [entry]})
-    html = render_email_report_html(report, top_entries=[entry], report_url=None, note="", requested_by="")
+    html = render_email_report_html(report, top_entries=[entry], note="", requested_by="")
     assert "patched 2026-10-08" in html
     assert "2026-10-13" in html

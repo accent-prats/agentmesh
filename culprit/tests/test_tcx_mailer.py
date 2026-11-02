@@ -461,6 +461,13 @@ def test_send_report_on_completion_sends_via_the_active_method_and_logs_it(clien
     assert call["to"] == ["ops@example.com"]
     assert seeded_run_id in call["subject"] or report.run.scope_name in call["subject"]
     assert len(call["attachments"]) == 1
+    # Found by review 2026-11-02, against a real send: the body used to
+    # include a conditional "View live: http://..." line whenever
+    # CULPRIT_PUBLIC_URL happened to be set - the user's "no broken links"
+    # requirement means no link at all, not "a link when one happens to
+    # resolve". Pinned here regardless of whether public_url is configured
+    # in this test environment.
+    assert "http://" not in call["body"] and "https://" not in call["body"]
 
     with get_session_factory()() as session:
         log = repository.list_email_log(session)
