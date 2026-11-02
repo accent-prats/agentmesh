@@ -334,8 +334,8 @@ def test_email_oauth_test_connection_after_save_uses_the_stored_password_not_a_b
 
 # ── Active email method ──────────────────────────────────────────────────────
 
-def test_email_method_defaults_to_smtp(client):
-    assert client.get("/settings/email/method").json()["method"] == "smtp"
+def test_email_method_defaults_to_tcx_mailer(client):
+    assert client.get("/settings/email/method").json()["method"] == "tcx_mailer"
 
 
 def test_email_method_can_be_switched_to_oauth_and_back(client):
@@ -397,7 +397,7 @@ def test_send_email_does_not_use_oauth_dl_when_smtp_method_is_active(client, see
         "default_recipients": ["oauth-dl@example.com"],
     })
     client.put("/settings/smtp", json={"host": "smtp.example.com", "default_recipients": ["smtp-dl@example.com"]})
-    # method stays at its default ("smtp") - never switched
+    client.put("/settings/email/method", json={"method": "smtp"})
 
     resp = client.post(f"/runs/{seeded_run_id}/email", json={"requested_by": "alice@example.com"})
     assert resp.status_code == 200

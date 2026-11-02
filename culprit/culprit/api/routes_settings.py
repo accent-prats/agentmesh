@@ -33,12 +33,15 @@ from culprit.models.settings import (
     ScheduleSettingsView,
     SmtpSettingsInput,
     SmtpSettingsView,
+    TcxMailerSettingsInput,
+    TcxMailerSettingsView,
 )
 from culprit.security.credential_test import (
     test_azure_credentials,
     test_datadog_credentials,
     test_email_oauth_credentials,
     test_smtp_credentials,
+    test_tcx_mailer_credentials,
 )
 
 router = APIRouter(prefix="/settings", tags=["settings"])
@@ -300,6 +303,41 @@ def test_email_oauth(body: EmailOAuthSettingsInput | None = None) -> dict:
         return {"ok": ok, "message": message}
 
 
+@router.get("/email/tcx-mailer", response_model=TcxMailerSettingsView)
+def get_tcx_mailer_settings() -> TcxMailerSettingsView:
+    from culprit.db import repository
+
+    with deps.get_session_factory()() as session:
+        return repository.tcx_mailer_settings_view(session)
+
+
+@router.put("/email/tcx-mailer", response_model=TcxMailerSettingsView)
+def put_tcx_mailer_settings(body: TcxMailerSettingsInput) -> TcxMailerSettingsView:
+    from culprit.db import repository
+
+    with deps.get_session_factory()() as session:
+        repository.save_tcx_mailer_settings(session, body)
+        return repository.tcx_mailer_settings_view(session)
+
+
+@router.post("/email/tcx-mailer/test")
+def test_tcx_mailer(body: TcxMailerSettingsInput | None = None) -> dict:
+    """Same shape as POST /settings/smtp/test, same blank-password-falls-
+    back-to-stored reasoning - see that route's own docstring for why."""
+    from culprit.db import repository
+
+    with deps.get_session_factory()() as session:
+        if body and body.tenant:
+            cfg = body if body.password else body.model_copy(
+                update={"password": repository.load_tcx_mailer_settings(session).password}
+            )
+        else:
+            cfg = repository.load_tcx_mailer_settings(session)
+        ok, message = test_tcx_mailer_credentials(cfg)
+        repository.record_settings_test_result(session, "email_tcx_mailer", ok, message)
+        return {"ok": ok, "message": message}
+
+
 @router.get("/email/method", response_model=EmailMethodSettingsView)
 def get_email_method() -> EmailMethodSettingsView:
     from culprit.db import repository
@@ -310,10 +348,10 @@ def get_email_method() -> EmailMethodSettingsView:
 
 @router.put("/email/method", response_model=EmailMethodSettingsView)
 def put_email_method(body: EmailMethodSettingsInput) -> EmailMethodSettingsView:
-    """Which of the two configured email methods (SMTP or Microsoft 365
-    OAuth) api/routes_notifications.py actually sends through - a
-    deliberate, explicit switch, not an automatic one; see
-    EmailMethodSettingsInput's own docstring."""
+    """Which of the three configured email methods (SMTP, Microsoft 365
+    OAuth, or IT's own tcx-mailer utility) api/routes_notifications.py
+    actually sends through - a deliberate, explicit switch, not an
+    automatic one; see EmailMethodSettingsInput's own docstring."""
     from culprit.db import repository
 
     with deps.get_session_factory()() as session:

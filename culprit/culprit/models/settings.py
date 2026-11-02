@@ -361,24 +361,82 @@ class EmailOAuthSettingsView(BaseModel):
     last_test_message: str = ""
 
 
-EmailMethod = Literal["smtp", "oauth"]
+class TcxMailerSettingsInput(BaseModel):
+    """What PUT /settings/email/tcx-mailer accepts - delivery through IT's
+    own internal `_mailer` ("tcx-mailer") Python utility instead of SMTP or
+    Microsoft 365. That utility authenticates with a custom OAuth2
+    client-credentials-with-tenant-impersonation grant against IT's own
+    token endpoint, then POSTs to IT's own "email-notification-jobs" REST
+    API - see notifications/tcx_mailer_adapter.py for the actual mechanism
+    and the two vendor-specific gotchas it works around.
+
+    `username` is NOT validated as an email address (unlike EmailOAuthSettings
+    Input.username) - it authenticates against IT's own token endpoint, which
+    may use a service-account identifier rather than a mailbox address.
+    `token_url`/`api_url`/`from_app` are deliberately left blank by default -
+    these are IT's own gateway endpoints baked into the installed `_mailer`
+    package itself; Culprit has no business defaulting them on its own, and
+    a blank value here means "let the installed package use its own
+    hardcoded default" rather than "unset". Same "blank password preserves
+    whatever's already stored" rule as every other secret on this screen -
+    see repository.py::save_tcx_mailer_settings."""
+
+    tenant: str = ""
+    username: str = ""
+    password: str = ""
+    from_name: str = "Culprit"
+    token_url: str = ""
+    api_url: str = ""
+    from_app: str = ""
+    default_recipients: list[str] = Field(default_factory=list)
+
+    @field_validator("default_recipients")
+    @classmethod
+    def _recipients_must_look_like_emails(cls, v: list[str]) -> list[str]:
+        import re
+
+        for addr in v:
+            if not re.match(EMAIL_ADDRESS_RE, addr):
+                raise ValueError(f"'{addr}' doesn't look like an email address")
+        return v
+
+
+class TcxMailerSettingsView(BaseModel):
+    tenant: str = ""
+    username: str = ""
+    password_configured: bool = False
+    from_name: str = "Culprit"
+    token_url: str = ""
+    api_url: str = ""
+    from_app: str = ""
+    default_recipients: list[str] = Field(default_factory=list)
+    configured: bool = False
+    last_tested_at: datetime | None = None
+    last_test_ok: bool | None = None
+    last_test_message: str = ""
+
+
+EmailMethod = Literal["smtp", "oauth", "tcx_mailer"]
 
 
 class EmailMethodSettingsInput(BaseModel):
-    """Which of the two configured email delivery methods above (SmtpSettingsInput's
-    SMTP, or EmailOAuthSettingsInput's Microsoft 365 OAuth) api/routes_notifications.py
+    """Which of the three configured email delivery methods above
+    (SmtpSettingsInput's SMTP, EmailOAuthSettingsInput's Microsoft 365 OAuth,
+    or TcxMailerSettingsInput's IT-provided utility) api/routes_notifications.py
     actually sends through. Deliberately a separate, explicit choice rather
     than e.g. "whichever one is configured" or "OAuth if its fields are
-    filled in" - so an admin can set up and test the OAuth side ahead of
-    time (the user's own explicit ask: "keep the smtp wizard as well as
-    later we can switch to this option whenever it's available") without
-    it silently taking over the moment its fields are non-empty."""
+    filled in" - so an admin can set up and test a method ahead of time
+    without it silently taking over the moment its fields are non-empty.
 
-    method: EmailMethod = "smtp"
+    Default is "tcx_mailer", not "smtp" - IT's own utility is the deployment's
+    actual supported path going forward (2026-11-02), with SMTP/Microsoft 365
+    kept available as already-proven fallbacks, not the other way around."""
+
+    method: EmailMethod = "tcx_mailer"
 
 
 class EmailMethodSettingsView(BaseModel):
-    method: EmailMethod = "smtp"
+    method: EmailMethod = "tcx_mailer"
 
 
 class DisplayTimezoneSettingsInput(BaseModel):

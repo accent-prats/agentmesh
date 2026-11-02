@@ -18,7 +18,11 @@ router = APIRouter(tags=["notifications"])
 @router.post("/runs/{run_id}/email", response_model=SendReportResponse)
 def send_report_email(run_id: str, request: Request, body: SendReportRequest) -> SendReportResponse:
     from culprit.db import repository
-    from culprit.notifications.email_sender import build_report_digest, send_email, send_email_oauth
+    from culprit.notifications.email_sender import (
+        build_report_digest,
+        is_email_method_configured,
+        resolve_active_email_config,
+    )
     from culprit.reporting.notify import report_url_from_request
 
     with deps.get_session_factory()() as session:
@@ -26,22 +30,23 @@ def send_report_email(run_id: str, request: Request, body: SendReportRequest) ->
         if report is None:
             raise HTTPException(status_code=404, detail=f"Run {run_id} not found")
 
-        # Which configured method (SMTP, or Microsoft 365 OAuth) actually
-        # sends - a deliberate, explicit admin choice (models/settings.py::
-        # EmailMethodSettingsInput), never "whichever one happens to be
-        # filled in". "smtp" is the default so this branch never changes
-        # behavior for a deployment that hasn't touched the new OAuth tab.
-        method = repository.load_email_method(session)
-        if method == "oauth":
-            cfg = repository.load_email_oauth_settings(session)
-            if not (cfg.tenant_id and cfg.client_id and cfg.username):
-                raise HTTPException(status_code=409, detail={"reason": "email_oauth_not_configured"})
-            send = send_email_oauth
-        else:
-            cfg = repository.load_smtp_settings(session)
-            if not cfg.host:
-                raise HTTPException(status_code=409, detail={"reason": "smtp_not_configured"})
-            send = send_email
+        # Which configured method (SMTP, Microsoft 365 OAuth, or IT's own
+        # tcx-mailer utility) actually sends - a deliberate, explicit admin
+        # choice (models/settings.py::EmailMethodSettingsInput), never
+        # "whichever one happens to be filled in".
+        method, cfg, send = resolve_active_email_config(session)
+        if not is_email_method_configured(method, cfg):
+            # Keeps each method's own pre-existing reason string exactly
+            # (fleet_report.html.j2::describeEmailError matches these
+            # literally - "smtp_not_configured" has no "email_" prefix,
+            # an inconsistency already baked into the UI before this change,
+            # not introduced by it) and adds a new one for the new method.
+            reason = {
+                "smtp": "smtp_not_configured",
+                "oauth": "email_oauth_not_configured",
+                "tcx_mailer": "email_tcx_mailer_not_configured",
+            }[method]
+            raise HTTPException(status_code=409, detail={"reason": reason})
 
         recipients = body.recipients or cfg.default_recipients
         if not recipients:

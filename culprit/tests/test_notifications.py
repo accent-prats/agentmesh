@@ -188,12 +188,18 @@ def test_send_email_404_when_run_not_found(client):
 
 
 def test_send_email_409_when_smtp_not_configured(client, seeded_run_id):
+    # Default method is now tcx_mailer (2026-11-02) - every test in this
+    # file exercises the SMTP send path specifically, so each switches to
+    # it explicitly first, same as test_email_oauth.py's own cross-method
+    # tests already do.
+    client.put("/settings/email/method", json={"method": "smtp"})
     resp = client.post(f"/runs/{seeded_run_id}/email", json={"requested_by": "a@b.com"})
     assert resp.status_code == 409
     assert resp.json()["detail"]["reason"] == "smtp_not_configured"
 
 
 def test_send_email_400_when_no_recipients_and_no_default_dl(client, seeded_run_id):
+    client.put("/settings/email/method", json={"method": "smtp"})
     client.put("/settings/smtp", json={"host": "smtp.example.com"})
     resp = client.post(f"/runs/{seeded_run_id}/email", json={"requested_by": "a@b.com"})
     assert resp.status_code == 400
@@ -207,6 +213,7 @@ def test_send_email_rejects_blank_requested_by(client, seeded_run_id):
 
 def test_send_email_uses_the_default_dl_when_no_recipients_given(client, seeded_run_id, monkeypatch):
     monkeypatch.setattr("smtplib.SMTP", FakeSMTP)
+    client.put("/settings/email/method", json={"method": "smtp"})
     client.put("/settings/smtp", json={
         "host": "smtp.example.com", "from_address": "culprit@example.com",
         "default_recipients": ["ops@example.com", "qa@example.com"],
@@ -225,6 +232,7 @@ def test_send_email_uses_the_default_dl_when_no_recipients_given(client, seeded_
 
 def test_send_email_overrides_the_default_dl_when_recipients_given(client, seeded_run_id, monkeypatch):
     monkeypatch.setattr("smtplib.SMTP", FakeSMTP)
+    client.put("/settings/email/method", json={"method": "smtp"})
     client.put("/settings/smtp", json={"host": "smtp.example.com", "default_recipients": ["ops@example.com"]})
 
     resp = client.post(
@@ -237,6 +245,7 @@ def test_send_email_overrides_the_default_dl_when_recipients_given(client, seede
 
 def test_send_email_persists_one_audit_log_record(client, seeded_run_id, monkeypatch):
     monkeypatch.setattr("smtplib.SMTP", FakeSMTP)
+    client.put("/settings/email/method", json={"method": "smtp"})
     client.put("/settings/smtp", json={"host": "smtp.example.com", "default_recipients": ["ops@example.com"]})
     client.post(f"/runs/{seeded_run_id}/email", json={"requested_by": "alice@example.com", "note": "FYI"})
 
@@ -250,6 +259,7 @@ def test_send_email_persists_one_audit_log_record(client, seeded_run_id, monkeyp
 
 def test_send_email_failure_still_returns_200_with_a_readable_message(client, seeded_run_id, monkeypatch):
     monkeypatch.setattr("smtplib.SMTP", lambda host, port, timeout=None: FakeSMTP(host, port, fail_on="send"))
+    client.put("/settings/email/method", json={"method": "smtp"})
     client.put("/settings/smtp", json={"host": "smtp.example.com", "default_recipients": ["ops@example.com"]})
 
     resp = client.post(f"/runs/{seeded_run_id}/email", json={"requested_by": "alice@example.com"})
@@ -292,6 +302,7 @@ def test_email_note_is_html_escaped_in_the_sent_message(client, seeded_run_id, m
     just that the one exploitable field (default_recipients) now happens
     to be blocked earlier by its own stricter email-shape validator."""
     monkeypatch.setattr("smtplib.SMTP", FakeSMTP)
+    client.put("/settings/email/method", json={"method": "smtp"})
     client.put("/settings/smtp", json={"host": "smtp.example.com", "default_recipients": ["ops@example.com"]})
 
     resp = client.post(

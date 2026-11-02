@@ -11,7 +11,13 @@ admin-managed concern owned by the Portal, not Culprit; see
 """
 from __future__ import annotations
 
-from culprit.models.settings import AzureSettingsInput, DatadogSettingsInput, EmailOAuthSettingsInput, SmtpSettingsInput
+from culprit.models.settings import (
+    AzureSettingsInput,
+    DatadogSettingsInput,
+    EmailOAuthSettingsInput,
+    SmtpSettingsInput,
+    TcxMailerSettingsInput,
+)
 
 
 def test_azure_credentials(cfg: AzureSettingsInput) -> tuple[bool, str]:
@@ -155,3 +161,14 @@ def test_email_oauth_credentials(cfg: EmailOAuthSettingsInput) -> tuple[bool, st
             server.quit()
     except Exception as exc:  # noqa: BLE001
         return False, str(exc)[:480]
+
+
+def test_tcx_mailer_credentials(cfg: TcxMailerSettingsInput) -> tuple[bool, str]:
+    """Thin wrapper - see notifications/tcx_mailer_adapter.py::
+    test_tcx_mailer_credentials for the actual mechanism (acquires a token
+    through IT's own utility, never sends a real message), mirrors
+    test_email_oauth_credentials' own "wrap the notifications-module
+    function" shape."""
+    from culprit.notifications import tcx_mailer_adapter
+
+    return tcx_mailer_adapter.test_tcx_mailer_credentials(cfg)

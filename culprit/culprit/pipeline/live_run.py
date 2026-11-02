@@ -109,4 +109,20 @@ def execute_live_run(
 
         logging.getLogger(__name__).exception("Failed to build the Patch Installation Report for run %s", run.run_id)
 
+    # Auto-email the report the instant this run finishes (whichever email
+    # method is active, scheduled or ad hoc - both callers of this function
+    # - never the demo run, which calls Pipeline.run() directly and never
+    # reaches this function at all). send_report_on_completion is itself
+    # already fully best-effort/non-raising internally; this try/except is
+    # belt-and-braces, same double-layer convention as the Installation
+    # Report block just above.
+    try:
+        from culprit.notifications.auto_report_email import send_report_on_completion
+
+        send_report_on_completion(session_factory, fleet_report, trigger_mode)
+    except Exception:  # noqa: BLE001 - must not fail the run that already completed successfully
+        import logging
+
+        logging.getLogger(__name__).exception("Failed to auto-send the report email for run %s", run.run_id)
+
     return fleet_report

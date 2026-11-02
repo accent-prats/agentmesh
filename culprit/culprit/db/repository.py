@@ -1419,12 +1419,97 @@ def email_oauth_settings_view(session: Session):
     )
 
 
+# ── Email tcx-mailer (IT's own internal utility) settings ─────────────────
+# A second sibling to the SMTP settings above (provider="email_tcx_mailer"),
+# never a replacement - same three-way pick as email_oauth above, via
+# load_email_method() below. Same blank-password-preserves-existing rule.
+
+def save_tcx_mailer_settings(session: Session, cfg) -> SettingsRecord:
+    """`cfg` is a culprit.models.settings.TcxMailerSettingsInput."""
+    from culprit.security.crypto import encrypt
+
+    record = session.get(SettingsRecord, "email_tcx_mailer")
+    existing_password_ciphertext = record.data_json.get("password_ciphertext", "") if record else ""
+
+    password_ciphertext = encrypt(cfg.password) if cfg.password else existing_password_ciphertext
+
+    data = {
+        "tenant": cfg.tenant,
+        "username": cfg.username,
+        "password_ciphertext": password_ciphertext,
+        "from_name": cfg.from_name,
+        "token_url": cfg.token_url,
+        "api_url": cfg.api_url,
+        "from_app": cfg.from_app,
+        "default_recipients": cfg.default_recipients,
+    }
+    if record is None:
+        record = SettingsRecord(provider="email_tcx_mailer", data_json=data)
+        session.add(record)
+    else:
+        record.data_json = data
+    session.commit()
+    return record
+
+
+def load_tcx_mailer_settings(session: Session):
+    """Returns a fully decrypted `TcxMailerSettingsInput` (password in plain
+    text, in memory only) - used by the settings screen's 'Test connection'
+    button and by the send path when the tcx_mailer method is active, never
+    persisted or logged."""
+    from culprit.models.settings import TcxMailerSettingsInput
+    from culprit.security.crypto import decrypt
+
+    record = session.get(SettingsRecord, "email_tcx_mailer")
+    if record is None:
+        return TcxMailerSettingsInput()
+    d = record.data_json
+    return TcxMailerSettingsInput(
+        tenant=d.get("tenant", ""),
+        username=d.get("username", ""),
+        password=decrypt(d["password_ciphertext"]) if d.get("password_ciphertext") else "",
+        from_name=d.get("from_name", "Culprit"),
+        token_url=d.get("token_url", ""),
+        api_url=d.get("api_url", ""),
+        from_app=d.get("from_app", ""),
+        default_recipients=d.get("default_recipients", []),
+    )
+
+
+def tcx_mailer_settings_view(session: Session):
+    from culprit.models.settings import TcxMailerSettingsView
+
+    record = session.get(SettingsRecord, "email_tcx_mailer")
+    if record is None:
+        return TcxMailerSettingsView()
+    d = record.data_json
+    return TcxMailerSettingsView(
+        tenant=d.get("tenant", ""),
+        username=d.get("username", ""),
+        password_configured=bool(d.get("password_ciphertext")),
+        from_name=d.get("from_name", "Culprit"),
+        token_url=d.get("token_url", ""),
+        api_url=d.get("api_url", ""),
+        from_app=d.get("from_app", ""),
+        default_recipients=d.get("default_recipients", []),
+        # tenant/username are the two fields every real token request needs -
+        # a still-blank password legitimately means "mid-setup", same
+        # convention as email_oauth_settings_view above.
+        configured=bool(d.get("tenant") and d.get("username")),
+        last_tested_at=record.last_tested_at,
+        last_test_ok=record.last_test_ok,
+        last_test_message=record.last_test_message,
+    )
+
+
 # ── Active email delivery method ────────────────────────────────────────────
 # A one-field row (provider="email_method") deciding which configured
-# method (SMTP, or Microsoft 365 OAuth above) api/routes_notifications.py
-# actually sends through. "smtp" is the default so installing this feature
-# never changes an existing deployment's behavior on its own - switching to
-# "oauth" is a deliberate, explicit admin action on the Settings screen.
+# method (SMTP, Microsoft 365 OAuth, or IT's own tcx-mailer utility above)
+# api/routes_notifications.py actually sends through. "tcx_mailer" is the
+# fallback for a deployment that has never touched this screen at all (a
+# fresh install - 2026-11-02) - a deployment that already explicitly saved
+# "smtp" or "oauth" earlier keeps exactly that, this default only applies
+# when no choice has ever been persisted.
 
 def save_email_method(session: Session, method: str) -> None:
     record = session.get(SettingsRecord, "email_method")
@@ -1439,8 +1524,8 @@ def save_email_method(session: Session, method: str) -> None:
 def load_email_method(session: Session) -> str:
     record = session.get(SettingsRecord, "email_method")
     if record is None:
-        return "smtp"
-    return record.data_json.get("method", "smtp")
+        return "tcx_mailer"
+    return record.data_json.get("method", "tcx_mailer")
 
 
 def save_email_log(

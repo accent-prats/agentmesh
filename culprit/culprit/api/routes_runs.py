@@ -163,47 +163,20 @@ def get_report_html(run_id: str):
     from fastapi.responses import HTMLResponse
 
     from culprit.db import repository
-    from culprit.models.verdict import compute_family_precision
-    from culprit.reporting.render import render_fleet_report_html
+    from culprit.reporting.render import render_fleet_report_html_for_run
 
     with deps.get_session_factory()() as session:
         report = repository.load_fleet_report(session, run_id)
         if report is None:
             raise HTTPException(status_code=404, detail=f"Run {run_id} not found")
-        # Read fresh on every render, same as the execute route itself -
-        # this is what lets the "eligible once X clears review: N/50..."
-        # message stay accurate as verdicts are submitted, not a stale
-        # snapshot from whenever the page was last generated. The gate
-        # values themselves are read the same way (DB-backed, falling
-        # back to config.settings) so a just-saved Settings change shows
-        # up here immediately too - see repository.py::get_current_promotion_gate.
-        family_precision = compute_family_precision(repository.all_verdicts(session))
-        threshold, min_sample = repository.get_current_promotion_gate(session)
-        # Found by review 2026-10-22: this used to read smtp_settings_view()
-        # unconditionally, so the "Email report" widget below gated itself
-        # on SMTP's own configured-state regardless of which email method
-        # is actually active - for a deployment that adopts Microsoft 365
-        # OAuth and never configures SMTP (precisely the "later we switch
-        # to this option" scenario the OAuth feature was built for), the
-        # button vanished entirely even though POST /runs/{run_id}/email
-        # itself worked fine via a direct API call. Mirrors routes_
-        # notifications.py::send_report_email's own active-method branch.
-        if repository.load_email_method(session) == "oauth":
-            email_cfg = repository.email_oauth_settings_view(session)
-        else:
-            email_cfg = repository.smtp_settings_view(session)
-        # Found in review: the "View installation report" link was
-        # unconditional, so a run from before this feature existed (or
-        # one where the best-effort build in live_run.py/trigger_demo_run
-        # silently failed) showed a working-looking link that 404'd with
-        # a raw JSON error instead of the app's own styled pages.
-        installation_report_available = repository.installation_report_exists(session, run_id)
-        tz_name = repository.load_display_timezone_settings(session).timezone
-    return HTMLResponse(render_fleet_report_html(
-        report, family_precision=family_precision, promotion_threshold=threshold, promotion_min_sample=min_sample,
-        email_configured=email_cfg.configured, default_recipients=email_cfg.default_recipients,
-        installation_report_available=installation_report_available, tz_name=tz_name,
-    ))
+        # Every input this page needs (family precision, the gate, which
+        # email method is active, whether an Installation Report exists,
+        # the display timezone) is computed in ONE shared place now - see
+        # render_fleet_report_html_for_run's own docstring for why (this
+        # exact setup already drifted once, when a 2nd email method was
+        # added and this route's own hand-rolled copy went stale).
+        html = render_fleet_report_html_for_run(session, run_id, report)
+    return HTMLResponse(html)
 
 
 @router.get("/{run_id}/installation-report", response_model=InstallationReport)

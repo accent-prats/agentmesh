@@ -140,6 +140,33 @@ def render_fleet_report_html(
     )
 
 
+def render_fleet_report_html_for_run(session, run_id: str, report: FleetReport) -> str:
+    """Computes every input render_fleet_report_html() needs from the DB
+    (family precision, the current promotion gate, which email method is
+    active and its configured-state/default recipients, whether an
+    Installation Report exists, the display timezone) and renders it - the
+    ONE place this 5-input setup is written, reused by both routes_runs.py::
+    get_report_html (the live page) and reporting/report_bundle.py (the
+    emailed offline bundle). Found by review 2026-10-22 that this exact
+    setup had already drifted once (the live page's own email-method check
+    went stale when a 2nd method was added) - this function exists
+    specifically so that can't happen a second time."""
+    from culprit.db import repository
+    from culprit.models.verdict import compute_family_precision
+    from culprit.notifications.email_sender import resolve_active_email_status
+
+    family_precision = compute_family_precision(repository.all_verdicts(session))
+    threshold, min_sample = repository.get_current_promotion_gate(session)
+    _method, email_configured, default_recipients = resolve_active_email_status(session)
+    installation_report_available = repository.installation_report_exists(session, run_id)
+    tz_name = repository.load_display_timezone_settings(session).timezone
+    return render_fleet_report_html(
+        report, family_precision=family_precision, promotion_threshold=threshold, promotion_min_sample=min_sample,
+        email_configured=email_configured, default_recipients=default_recipients,
+        installation_report_available=installation_report_available, tz_name=tz_name,
+    )
+
+
 def render_installation_report_html(report: InstallationReport, tz_name: str = "UTC") -> str:
     """The Azure Update Manager-style full-fleet view
     (models/installation_report.py) - lives at the same depth as

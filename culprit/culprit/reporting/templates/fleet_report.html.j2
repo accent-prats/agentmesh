@@ -555,6 +555,9 @@ function describeEmailError(detail, statusCode) {
   if (detail && typeof detail === 'object' && detail.reason === 'email_oauth_not_configured') {
     return 'Microsoft 365 (OAuth) is not fully configured for this deployment yet - ask an admin to finish it under Settings → Email.';
   }
+  if (detail && typeof detail === 'object' && detail.reason === 'email_tcx_mailer_not_configured') {
+    return 'The tcx-mailer utility is not fully configured for this deployment yet - ask an admin to finish it under Settings → Email.';
+  }
   return detail ? JSON.stringify(detail) : ('HTTP ' + statusCode);
 }
 
