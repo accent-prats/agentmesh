@@ -37,9 +37,22 @@ def _build_subject_and_body(report: FleetReport, trigger_mode: TriggerMode, tz_n
     from culprit import config as config_module
     from culprit.reporting.notify import top_entries
 
+    zone = ZoneInfo(tz_name)
+
+    def _format_local(dt: datetime | None) -> str:
+        # Same "%Y-%m-%d %H:%M" + tzname shape as reporting/timezone_display.py's
+        # `localtime` Jinja filter every report page already uses - found by
+        # review 2026-11-02: a bare str(datetime) here left real run windows
+        # reading like "2026-11-02 12:13:48.373324" (raw UTC, microseconds and
+        # all), nowhere near as clean as the subject line's own date_str.
+        if dt is None:
+            return "unknown"
+        localized = (dt if dt.tzinfo else dt.replace(tzinfo=timezone.utc)).astimezone(zone)
+        return f"{localized.strftime('%Y-%m-%d %H:%M')} {localized.tzname()}"
+
     run = report.run
     when = (run.ended_at or run.started_at or datetime.now(timezone.utc))
-    when_local = (when if when.tzinfo else when.replace(tzinfo=timezone.utc)).astimezone(ZoneInfo(tz_name))
+    when_local = (when if when.tzinfo else when.replace(tzinfo=timezone.utc)).astimezone(zone)
     date_str = when_local.strftime("%Y-%m-%d")
 
     subject = (
@@ -50,7 +63,7 @@ def _build_subject_and_body(report: FleetReport, trigger_mode: TriggerMode, tz_n
     lines = [
         f"Run: {run.run_id} ({_TRIGGER_LABELS.get(trigger_mode, trigger_mode.value)})",
         f"Scope: {run.scope_name}",
-        f"Window: {run.started_at} – {run.ended_at}",
+        f"Window: {_format_local(run.started_at)} – {_format_local(run.ended_at)}",
         f"Machines scanned: {report.total_machines}",
         f"Failed: {report.total_failed} across {report.total_clusters} distinct cause(s)",
         f"Compliance: {report.compliance_pct}%",

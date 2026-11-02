@@ -292,6 +292,63 @@ def test_email_method_can_be_switched_to_tcx_mailer_and_back(client):
     assert client.get("/settings/email/method").json()["method"] == "tcx_mailer"
 
 
+# Found by review 2026-11-02, reproduced directly: a deployment that
+# configured SMTP (or OAuth) before tcx_mailer existed, and never
+# separately visited the method radio, got silently switched to
+# tcx_mailer the moment this feature shipped - breaking the
+# already-working manual "Send Report" button with a 409
+# email_tcx_mailer_not_configured instead of sending via the SMTP server
+# that was already set up. This app has no data-migration mechanism, so
+# load_email_method's own fallback has to make this distinction itself.
+
+def test_email_method_preserves_smtp_default_for_a_pre_existing_smtp_deployment(client):
+    client.put("/settings/smtp", json={"host": "smtp.example.com", "default_recipients": ["ops@example.com"]})
+    # Deliberately never touch /settings/email/method - the exact shape of
+    # a deployment that configured email before this feature existed.
+    assert client.get("/settings/email/method").json()["method"] == "smtp"
+
+
+def test_email_method_preserves_smtp_default_for_a_pre_existing_oauth_deployment(client):
+    client.put("/settings/email/oauth", json={
+        "tenant_id": "contoso.onmicrosoft.com", "client_id": "11111111-1111-1111-1111-111111111111",
+        "username": "culprit@contoso.com",
+    })
+    assert client.get("/settings/email/method").json()["method"] == "smtp"
+
+
+def test_email_method_defaults_to_tcx_mailer_only_for_a_genuinely_fresh_deployment(client):
+    """Neither SMTP nor OAuth has ever been touched - the one case the new
+    default is actually meant for."""
+    assert client.get("/settings/email/method").json()["method"] == "tcx_mailer"
+
+
+def test_send_report_email_still_works_via_smtp_for_a_pre_existing_deployment(client, seeded_run_id, monkeypatch):
+    """The regression reproduced end-to-end: the existing manual "Send
+    Report" button must keep working via SMTP for a deployment that
+    configured it before this feature existed, with no 409."""
+    import smtplib
+
+    class FakeSMTP:
+        def __init__(self, host, port, timeout=None):
+            pass
+
+        def starttls(self):
+            pass
+
+        def send_message(self, msg):
+            pass
+
+        def quit(self):
+            pass
+
+    monkeypatch.setattr(smtplib, "SMTP", FakeSMTP)
+    client.put("/settings/smtp", json={"host": "smtp.example.com", "default_recipients": ["ops@example.com"]})
+
+    resp = client.post(f"/runs/{seeded_run_id}/email", json={"requested_by": "alice@example.com"})
+    assert resp.status_code == 200
+    assert resp.json()["ok"] is True
+
+
 # ── Offline report bundle (reporting/report_bundle.py) ──────────────────────
 
 def test_build_offline_report_bundle_contains_every_linked_page(client, seeded_run_id):
@@ -307,6 +364,17 @@ def test_build_offline_report_bundle_contains_every_linked_page(client, seeded_r
         names = set(zf.namelist())
         assert f"runs/{seeded_run_id}/report.html" in names
         assert "static/tailwind.js" in names
+        # Found by review 2026-11-02: lucide.min.js was missing (only
+        # tailwind.js was hardcoded) - base.html.j2's shared inline script
+        # calls lucide.createIcons() as its FIRST statement, with no
+        # try/catch, before the .eg-detail-toggle click handlers it wires
+        # up right after - a missing lucide there means every "Show full
+        # error/status/timeline" disclosure is permanently stuck hidden in
+        # the offline bundle, not just missing icons.
+        assert "static/lucide.min.js" in names
+        from culprit.reporting.report_bundle import _STATIC_DIR
+
+        assert zf.read("static/lucide.min.js") == (_STATIC_DIR / "lucide.min.js").read_bytes()
         # Every machine the Fleet Report's own table links to has its own page.
         for row in report.machine_rows:
             assert f"runs/{seeded_run_id}/machines/{row.vm_name}.html" in names
@@ -367,6 +435,32 @@ def test_send_report_on_completion_sends_via_the_active_method_and_logs_it(clien
     assert len(log) == 1
     assert log[0].requested_by == "system (auto-send on completion)"
     assert log[0].status.value == "success"
+
+
+def test_build_subject_and_body_formats_the_window_cleanly_not_a_raw_repr(client, seeded_run_id):
+    """Found by review 2026-11-02: a bare str(datetime) in the Window line
+    left a real run reading like "...12:13:48.373324" (raw UTC,
+    microseconds and all) - nowhere near as clean as the subject line's own
+    date_str, and inconsistent with how every other timestamp in this app
+    (reporting/timezone_display.py's `localtime` filter) is formatted."""
+    import datetime as datetime_module
+
+    from culprit.api.deps import get_session_factory
+    from culprit.db import repository
+    from culprit.models.patch_run import TriggerMode
+    from culprit.notifications.auto_report_email import _build_subject_and_body
+
+    with get_session_factory()() as session:
+        report = repository.load_fleet_report(session, seeded_run_id)
+
+    messy_ended_at = datetime_module.datetime(2026, 11, 2, 12, 13, 48, 373324, tzinfo=datetime_module.timezone.utc)
+    report = report.model_copy(update={"run": report.run.model_copy(update={"ended_at": messy_ended_at})})
+
+    _subject, plain_text_body, html_body = _build_subject_and_body(report, TriggerMode.SCHEDULED, "UTC")
+    for body in (plain_text_body, html_body):
+        assert "373324" not in body
+        assert ".373324" not in body
+    assert "2026-11-02 12:13" in plain_text_body
 
 
 # ── End-to-end: the real scheduler hook (pipeline/live_run.py) ─────────────

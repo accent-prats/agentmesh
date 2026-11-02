@@ -1506,10 +1506,10 @@ def tcx_mailer_settings_view(session: Session):
 # A one-field row (provider="email_method") deciding which configured
 # method (SMTP, Microsoft 365 OAuth, or IT's own tcx-mailer utility above)
 # api/routes_notifications.py actually sends through. "tcx_mailer" is the
-# fallback for a deployment that has never touched this screen at all (a
-# fresh install - 2026-11-02) - a deployment that already explicitly saved
-# "smtp" or "oauth" earlier keeps exactly that, this default only applies
-# when no choice has ever been persisted.
+# fallback ONLY for a deployment that has never touched email settings at
+# all (a genuinely fresh install - 2026-11-02); see load_email_method's own
+# docstring for why a deployment that already configured SMTP/OAuth before
+# this third method existed - explicitly or not - keeps getting "smtp".
 
 def save_email_method(session: Session, method: str) -> None:
     record = session.get(SettingsRecord, "email_method")
@@ -1523,9 +1523,37 @@ def save_email_method(session: Session, method: str) -> None:
 
 def load_email_method(session: Session) -> str:
     record = session.get(SettingsRecord, "email_method")
-    if record is None:
-        return "tcx_mailer"
-    return record.data_json.get("method", "tcx_mailer")
+    if record is not None:
+        return record.data_json.get("method", "tcx_mailer")
+
+    # No explicit choice has ever been saved. Found by review 2026-11-02,
+    # reproduced directly: defaulting straight to "tcx_mailer" here broke
+    # the ALREADY-WORKING manual "Send Report" button (409
+    # email_tcx_mailer_not_configured) - and would have silently no-op'd
+    # auto-send too - for any deployment that configured SMTP or Microsoft
+    # 365 OAuth before this third method existed and simply never
+    # separately visited the method radio. This app has no schema/data
+    # migration mechanism at all (confirmed - only the lazy ALTER-TABLE
+    # column-adder in db/engine.py, which is schema, not data), so the
+    # fallback itself has to tell "a pre-existing deployment that predates
+    # this feature" apart from "a genuinely brand-new install" - checking
+    # whether either OLDER method already has real data is exactly that
+    # check. Such a deployment keeps getting "smtp", the one and only
+    # historical default regardless of which of the two old methods it
+    # actually set up (true before this feature too) - only a deployment
+    # where NEITHER old method was ever touched gets the new default.
+    smtp_record = session.get(SettingsRecord, "smtp")
+    oauth_record = session.get(SettingsRecord, "email_oauth")
+    smtp_configured = bool(smtp_record and smtp_record.data_json.get("host"))
+    oauth_configured = bool(
+        oauth_record
+        and oauth_record.data_json.get("tenant_id")
+        and oauth_record.data_json.get("client_id")
+        and oauth_record.data_json.get("username")
+    )
+    if smtp_configured or oauth_configured:
+        return "smtp"
+    return "tcx_mailer"
 
 
 def save_email_log(

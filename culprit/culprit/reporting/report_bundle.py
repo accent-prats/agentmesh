@@ -10,10 +10,17 @@ RELATIVE paths that assume the live app's own route structure:
 template to carry an absolute base URL, this module reproduces that EXACT
 nested folder structure inside a zip - every one of those existing relative
 hrefs then resolves correctly once the zip is extracted and `report.html`
-is opened via `file://`, with zero template changes. The one external asset
-every page's styling depends on (`static/tailwind.js`, served live by
-api/main.py's own static route) is copied in alongside it for the same
-reason - without it, the pages would render completely unstyled offline.
+is opened via `file://`, with zero template changes. Every static asset
+every page depends on (base.html.j2 loads `tailwind.js` for styling AND
+`lucide.min.js` for icons - the latter's `lucide.createIcons()` call also
+has to succeed for the shared `.eg-detail-toggle` click handlers right
+after it in the same inline script block to ever get attached at all, see
+base.html.j2's own script block - an uncaught ReferenceError from a
+missing lucide halts that whole block, silently breaking every "Show full
+error/status/timeline" disclosure in the offline bundle, found by review
+2026-11-02) is copied in alongside the pages - every file actually present
+under reporting/static/, not one hardcoded name, so a third static asset
+added later doesn't silently repeat this same gap.
 """
 from __future__ import annotations
 
@@ -67,8 +74,9 @@ def build_offline_report_bundle(session, report: FleetReport) -> bytes:
             )
             zf.writestr(f"runs/{run_id}/machines/{vm_name}.html", machine_html)
 
-        tailwind_js = _STATIC_DIR / "tailwind.js"
-        if tailwind_js.exists():
-            zf.writestr("static/tailwind.js", tailwind_js.read_bytes())
+        if _STATIC_DIR.is_dir():
+            for asset in sorted(_STATIC_DIR.iterdir()):
+                if asset.is_file():
+                    zf.writestr(f"static/{asset.name}", asset.read_bytes())
 
     return buffer.getvalue()
