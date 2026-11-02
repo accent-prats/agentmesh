@@ -3,7 +3,7 @@ tcx_mailer_adapter.py, email_sender.py's attachment support and shared
 resolve_active_email_*/is_email_method_configured helpers, reporting/
 report_bundle.py, notifications/auto_report_email.py, and the
 /settings/email/tcx-mailer routes. Mirrors test_email_oauth.py's exact
-conventions - `_mailer.mailer` is monkeypatched throughout via a fake
+conventions - `tcx_mailer.mailer` is monkeypatched throughout via a fake
 object; no real network connection or IT token/email API involved anywhere
 in this file.
 """
@@ -21,7 +21,7 @@ from culprit.retrieval.corpus import default_retrieval_store
 
 
 class FakeVendorMailer:
-    """Stands in for `_mailer.mailer` - the real vendor module's public
+    """Stands in for `tcx_mailer.mailer` - the real vendor module's public
     shape is `send_email(to, subject, body, attachments=None)` and
     `_get_token()`, plus the module-global `_TOKEN` cache
     tcx_mailer_adapter.py deliberately resets before every call."""
@@ -182,7 +182,7 @@ def test_tcx_mailer_test_connection_without_the_package_installed(client, monkey
     })
     body = resp.json()
     assert body["ok"] is False
-    assert "_mailer is not installed" in body["message"]
+    assert "tcx_mailer is not installed" in body["message"]
 
 
 def test_tcx_mailer_test_connection_after_save_uses_the_stored_password_not_a_blank_one(client, fake_vendor):
@@ -269,7 +269,7 @@ def test_send_tcx_mailer_not_installed(monkeypatch):
     cfg = TcxMailerSettingsInput(tenant="acme-prod", username="svc", password="p")
     ok, message = tcx_mailer_adapter.send_tcx_mailer(cfg, ["a@b.com"], "s", "b")
     assert ok is False
-    assert "_mailer is not installed" in message
+    assert "tcx_mailer is not installed" in message
 
 
 def test_send_tcx_mailer_not_configured(fake_vendor):

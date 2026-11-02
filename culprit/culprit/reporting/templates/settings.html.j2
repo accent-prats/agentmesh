@@ -350,7 +350,7 @@
                 onchange="applyEmailMethod(true)" class="mt-0.5 accent-brand">
               <span>
                 <span class="block text-sm text-gray-800">tcx-mailer (recommended)</span>
-                <span class="block text-xs text-gray-400">IT's own internal email utility &mdash; authenticates with a tenant-impersonation OAuth grant against IT's own token endpoint, then delivers through IT's own email gateway. Requires the <code class="font-mono">_mailer</code> package to be installed on this deployment separately (ask IT for the wheel).</span>
+                <span class="block text-xs text-gray-400">IT's own internal email utility &mdash; authenticates with a tenant-impersonation OAuth grant against IT's own token endpoint, then delivers through IT's own email gateway. Requires the <code class="font-mono">tcx_mailer</code> package to be installed on this deployment separately (ask IT for the wheel).</span>
               </span>
             </label>
             <label class="flex items-start gap-2.5 cursor-pointer">
@@ -430,7 +430,7 @@
             <button onclick="testTcxMailer()" class="bg-gray-100 hover:bg-gray-200 text-gray-700 text-sm font-medium px-4 py-2 rounded-lg transition-colors">Test connection</button>
             <span class="text-sm" id="tcxmailer-result"></span>
           </div>
-          <p class="text-xs text-gray-400 mt-3">Requires IT's own <code class="font-mono">_mailer</code> package to be installed on this deployment (not a pip extra - ask IT for the wheel).</p>
+          <p class="text-xs text-gray-400 mt-3">Requires IT's own <code class="font-mono">tcx_mailer</code> package to be installed on this deployment (not a pip extra - ask IT for the wheel).</p>
         </div><!-- /#tcxmailer-fields -->
 
         <div id="smtp-fields" class="hidden space-y-4">

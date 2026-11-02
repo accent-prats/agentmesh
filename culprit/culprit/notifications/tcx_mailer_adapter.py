@@ -1,4 +1,4 @@
-"""Email delivery through IT's own internal "_mailer" (tcx-mailer) utility -
+"""Email delivery through IT's own internal "tcx_mailer" utility -
 a custom OAuth2 client-credentials-with-tenant-impersonation grant against
 IT's own token endpoint, then a multipart POST to IT's own
 "email-notification-jobs" REST API. See models/settings.py::
@@ -10,35 +10,51 @@ separate, explicit admin choice (EmailMethodSettingsInput); see
 email_sender.py::resolve_active_email_config for how the three are picked
 between.
 
-Requires the vendor-provided `_mailer` package (IT's own wheel/git repo,
+Requires the vendor-provided `tcx_mailer` package (IT's own wheel/git repo,
 installed separately by ops onto wherever Culprit runs - not something this
 codebase's own requirements.txt can pull, since it needs IT's private
 GitLab credentials). Guarded the same way `msal`/azure-mgmt-compute are
 guarded elsewhere in this codebase, so a deployment that hasn't installed
 it yet degrades to "not installed" rather than failing to start.
 
-Two real gotchas in the vendor's own `_mailer.mailer` module (read directly
-from IT's shared source, not guessed), both worked around here:
+**Package name, confirmed 2026-11-02 against the real installed package on
+a real VM** (`pip show tcx-mailer` + the unpacked source tree showing a
+`tcx_mailer/` directory sitting next to a `tcx_mailer.egg-info/` - the
+egg-info directory name always mirrors the real importable package name):
+the PyPI/pip distribution name is the hyphenated `tcx-mailer` (ordinary
+PEP 503 normalization - hyphens are fine in a *distribution* name), but the
+actual Python package you `import` is `tcx_mailer` (underscored - hyphens
+aren't legal in a module name at all). An earlier round of this
+integration read a cropped/blurry screenshot of the repo's own file tree
+and GitLab breadcrumb as "_mailer" (a leading underscore, no "tcx") and
+wrote `import _mailer.mailer` on that basis - wrong, and confirmed wrong by
+a live "not installed" error against a real deployment where the package
+genuinely WAS installed. Every reference in this file is `tcx_mailer`, not
+`_mailer`.
 
-1. `_mailer.mailer.send_email()`/`_get_token()` read ALL their configuration
-   - tenant, username, password, token/API URLs, from-name - from process
-   environment variables, not function parameters. Culprit stores these
-   encrypted in its own database instead, and may have several callers in
-   the same long-running process (concurrent HTTP requests, a background
-   scheduler cycle), so every call here pushes the configured values into
-   `os.environ` for the duration of the call, under a process-wide lock,
-   and restores whatever was there before in a `finally` block - this
-   module's use of the vendor package never leaks into or races with
-   anything else running in the same process.
+Two real gotchas in the vendor's own `tcx_mailer.mailer` module (read
+directly from IT's shared source, not guessed), both worked around here:
+
+1. `tcx_mailer.mailer.send_email()`/`_get_token()` read ALL their
+   configuration - tenant, username, password, token/API URLs, from-name -
+   from process environment variables, not function parameters. Culprit
+   stores these encrypted in its own database instead, and may have
+   several callers in the same long-running process (concurrent HTTP
+   requests, a background scheduler cycle), so every call here pushes the
+   configured values into `os.environ` for the duration of the call, under
+   a process-wide lock, and restores whatever was there before in a
+   `finally` block - this module's use of the vendor package never leaks
+   into or races with anything else running in the same process.
 
 2. `_get_token()` caches its acquired token in a module-global `_TOKEN` with
    NO expiry check - once acquired in this process, every later call reuses
    it forever, even after Culprit saves different credentials, even once
-   the real token has expired. This module resets `_mailer.mailer._TOKEN =
-   None` before every call, forcing a fresh token every time (one extra
-   token round-trip per send - negligible, since this sends at most a
-   handful of emails a day). This is a deliberate reach into the vendor
-   module's own private attribute - there's no public API to invalidate it.
+   the real token has expired. This module resets
+   `tcx_mailer.mailer._TOKEN = None` before every call, forcing a fresh
+   token every time (one extra token round-trip per send - negligible,
+   since this sends at most a handful of emails a day). This is a
+   deliberate reach into the vendor module's own private attribute - there's
+   no public API to invalidate it.
 """
 from __future__ import annotations
 
@@ -49,13 +65,15 @@ from contextlib import contextmanager
 from pathlib import Path
 
 try:
-    import _mailer.mailer as _vendor_mailer
+    import tcx_mailer.mailer as _vendor_mailer
 
     _MAILER_AVAILABLE = True
 except ImportError:  # pragma: no cover - exercised via the "not installed" branch below
     _MAILER_AVAILABLE = False
 
-_NOT_INSTALLED_MESSAGE = "_mailer is not installed on this deployment - ask IT for the tcx-mailer wheel and pip install it"
+_NOT_INSTALLED_MESSAGE = (
+    "tcx_mailer is not installed on this deployment - ask IT for the tcx-mailer wheel and pip install it"
+)
 
 # Every call - a real send or a credential test - goes through this lock,
 # since both temporarily mutate process-global state (os.environ, the
@@ -75,7 +93,7 @@ _ENV_KEYS = (
 
 @contextmanager
 def _vendor_env(cfg):
-    """Pushes `cfg`'s fields into the env vars _mailer.mailer actually reads,
+    """Pushes `cfg`'s fields into the env vars tcx_mailer.mailer actually reads,
     resets its cached token so this call is guaranteed to use THESE
     credentials (not a stale token from an earlier call), and restores the
     previous environment exactly on the way out - success or failure."""

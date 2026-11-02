@@ -363,7 +363,7 @@ class EmailOAuthSettingsView(BaseModel):
 
 class TcxMailerSettingsInput(BaseModel):
     """What PUT /settings/email/tcx-mailer accepts - delivery through IT's
-    own internal `_mailer` ("tcx-mailer") Python utility instead of SMTP or
+    own internal `tcx_mailer` Python utility instead of SMTP or
     Microsoft 365. That utility authenticates with a custom OAuth2
     client-credentials-with-tenant-impersonation grant against IT's own
     token endpoint, then POSTs to IT's own "email-notification-jobs" REST
@@ -374,10 +374,10 @@ class TcxMailerSettingsInput(BaseModel):
     Input.username) - it authenticates against IT's own token endpoint, which
     may use a service-account identifier rather than a mailbox address.
     `token_url`/`api_url`/`from_app` are deliberately left blank by default -
-    these are IT's own gateway endpoints baked into the installed `_mailer`
-    package itself; Culprit has no business defaulting them on its own, and
-    a blank value here means "let the installed package use its own
-    hardcoded default" rather than "unset". Same "blank password preserves
+    these are IT's own gateway endpoints baked into the installed
+    `tcx_mailer` package itself; Culprit has no business defaulting them on
+    its own, and a blank value here means "let the installed package use
+    its own hardcoded default" rather than "unset". Same "blank password preserves
     whatever's already stored" rule as every other secret on this screen -
     see repository.py::save_tcx_mailer_settings."""
 
