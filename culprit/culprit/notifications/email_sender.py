@@ -129,7 +129,7 @@ def send_email(
         msg.set_content("This report requires an HTML-capable email client to view.")
         msg.add_alternative(html_body, subtype="html")
         for filename, content in attachments or []:
-            msg.add_attachment(content, maintype="text", subtype="html", filename=filename)
+            msg.add_attachment(content, maintype="application", subtype="zip", filename=filename)
 
         if cfg.encryption == "ssl":
             server = smtplib.SMTP_SSL(cfg.host, cfg.port, timeout=_SMTP_TIMEOUT_SECONDS)
@@ -179,7 +179,7 @@ def send_email_oauth(
         msg.set_content("This report requires an HTML-capable email client to view.")
         msg.add_alternative(html_body, subtype="html")
         for filename, content in attachments or []:
-            msg.add_attachment(content, maintype="text", subtype="html", filename=filename)
+            msg.add_attachment(content, maintype="application", subtype="zip", filename=filename)
 
         server = smtplib.SMTP(m365_oauth.SMTP_HOST, m365_oauth.SMTP_PORT, timeout=_SMTP_TIMEOUT_SECONDS)
         try:

@@ -61,8 +61,8 @@ def send_report_email(run_id: str, body: SendReportRequest) -> SendReportRespons
         # email, not just the auto-send one. Now attaches the same fully
         # self-contained offline bundle auto-send uses, so both paths carry
         # the same guarantee.
-        report_html_bytes = build_offline_report_bundle(session, report)
-        attachments = [(f"culprit-report-{run_id}.html", report_html_bytes)]
+        report_bundle_bytes = build_offline_report_bundle(session, report)
+        attachments = [(f"culprit-report-{run_id}.zip", report_bundle_bytes)]
         ok, message = send(cfg, recipients, subject, html_body, attachments)
 
         repository.save_email_log(

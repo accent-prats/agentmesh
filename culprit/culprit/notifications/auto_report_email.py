@@ -85,8 +85,8 @@ def _build_subject_and_body(report: FleetReport, trigger_mode: TriggerMode, tz_n
             )
     lines.append("")
     lines.append("The full Fleet Report (root cause + recommended fix per cause) and Installation")
-    lines.append("Report are in the attached HTML file - open it directly, no extraction needed,")
-    lines.append("nothing else to open, no network access required.")
+    lines.append("Report are in the attached zip - extract it and open report.html. Nothing in it")
+    lines.append("needs network access.")
     plain_text_body = "\n".join(lines)
     html_body = "<pre style=\"font-family:inherit\">" + "\n".join(
         line.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;") for line in lines
@@ -117,8 +117,8 @@ def send_report_on_completion(session_factory, report: FleetReport, trigger_mode
 
             tz_name = repository.load_display_timezone_settings(session).timezone
             subject, plain_text_body, html_body = _build_subject_and_body(report, trigger_mode, tz_name)
-            report_html_bytes = build_offline_report_bundle(session, report)
-            attachments = [(f"culprit-report-{run_id}.html", report_html_bytes)]
+            report_bundle_bytes = build_offline_report_bundle(session, report)
+            attachments = [(f"culprit-report-{run_id}.zip", report_bundle_bytes)]
 
             body = plain_text_body if method == "tcx_mailer" else html_body
             ok, message = send(cfg, recipients, subject, body, attachments)

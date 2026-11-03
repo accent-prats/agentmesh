@@ -392,27 +392,35 @@ def test_send_report_email_still_works_via_smtp_for_a_pre_existing_deployment(cl
 # the real bundle's shape: several cross-linked HTML pages each loading
 # real third-party JS - a pattern corporate email security commonly
 # treats as a phishing-kit signature. Replaced with one flat .html file,
-# no <script> tag anywhere, no external file references - these tests pin
-# exactly that property, not just "the content looks right".
+# no <script> tag anywhere, no external file references - this is what
+# these tests pin.
+#
+# Found again, same day, also via direct reproduction: IT's own send API
+# then rejected a bare .html attachment outright with an explicit 400
+# ("fds.email.invalidAttachment" / "Email attachment extension is not
+# allowed"), while .zip is on its allowlist (already proven earlier in the
+# same investigation). So the single script-free HTML file above is now
+# wrapped in a one-entry .zip before being attached - the API only
+# validates the outer attachment's own extension, never an archive's
+# contents, so this satisfies both constraints at once.
 
-def test_build_offline_report_bundle_is_one_script_free_html_file(client, seeded_run_id):
+def test_build_offline_report_bundle_is_a_one_entry_zip_of_script_free_html(client, seeded_run_id):
     from culprit.api.deps import get_session_factory
     from culprit.db import repository
     from culprit.reporting.report_bundle import build_offline_report_bundle
 
     with get_session_factory()() as session:
         report = repository.load_fleet_report(session, seeded_run_id)
-        html_bytes = build_offline_report_bundle(session, report)
+        zip_bytes = build_offline_report_bundle(session, report)
 
-    # Not a zip - a bare UTF-8 HTML document.
-    with pytest.raises(Exception):
-        zipfile.ZipFile(__import__("io").BytesIO(html_bytes))
-    html = html_bytes.decode("utf-8")
+    with zipfile.ZipFile(__import__("io").BytesIO(zip_bytes)) as zf:
+        assert zf.namelist() == ["report.html"]
+        html = zf.read("report.html").decode("utf-8")
     assert html.lstrip().startswith("<!doctype html>")
 
-    # The whole point of this redesign - no script tag, no reference to any
-    # other file or page at all (nothing left for a security scanner to
-    # treat as a multi-page kit).
+    # The whole point of the redesign this bundle wraps - no script tag, no
+    # reference to any other file or page at all (nothing left for a
+    # security scanner to treat as a multi-page kit).
     assert "<script" not in html.lower()
     assert "static/" not in html
     assert "machines/" not in html
@@ -565,7 +573,7 @@ def test_send_report_on_completion_sends_via_smtp_with_the_attachment(client, se
     attachment_filenames = [
         part.get_filename() for part in sent.iter_attachments()
     ]
-    assert f"culprit-report-{seeded_run_id}.html" in attachment_filenames
+    assert f"culprit-report-{seeded_run_id}.zip" in attachment_filenames
 
     with get_session_factory()() as session:
         log = repository.list_email_log(session)
@@ -634,7 +642,7 @@ def test_send_report_on_completion_sends_via_oauth_with_the_attachment(client, s
     attachment_filenames = [
         part.get_filename() for part in sent.iter_attachments()
     ]
-    assert f"culprit-report-{seeded_run_id}.html" in attachment_filenames
+    assert f"culprit-report-{seeded_run_id}.zip" in attachment_filenames
 
     with get_session_factory()() as session:
         log = repository.list_email_log(session)
