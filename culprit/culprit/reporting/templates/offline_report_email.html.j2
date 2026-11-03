@@ -1,0 +1,144 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Culprit &middot; {{ report.run.scope_name }}</title>
+<style>
+  body { margin:0; padding:24px; background:#ffffff; color:#111827; font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif; font-size:14px; line-height:1.5; }
+  .header { background:#1C0A0F; color:#ffffff; padding:20px 24px; border-radius:10px; margin-bottom:20px; }
+  .header .brand { font-size:16px; font-weight:700; }
+  .header .sub { color:#9ca3af; font-size:12px; margin-left:8px; }
+  .header h1 { margin:10px 0 4px 0; font-size:20px; }
+  .header .meta { margin:0; font-size:12px; color:#d1d5db; }
+  .stats { display:table; width:100%; margin-bottom:20px; border-collapse:separate; border-spacing:8px 0; }
+  .stat { display:table-cell; text-align:center; background:#f9fafb; border:1px solid #e5e7eb; border-radius:8px; padding:12px 6px; }
+  .stat .value { font-size:20px; font-weight:700; color:#111827; }
+  .stat .label { font-size:10px; color:#6b7280; text-transform:uppercase; letter-spacing:.03em; }
+  .trend { font-size:12px; color:#6b7280; margin:-8px 0 20px 0; }
+  h2.section { font-size:14px; text-transform:uppercase; letter-spacing:.04em; color:#6b7280; border-bottom:1px solid #e5e7eb; padding-bottom:6px; margin:28px 0 14px 0; }
+  .cluster { border:1px solid #e5e7eb; border-radius:10px; padding:16px 18px; margin-bottom:14px; }
+  .cluster .title { font-size:14px; font-weight:600; color:#111827; margin:0 0 4px 0; }
+  .cluster .badge { color:#dc2626; font-weight:500; }
+  .cluster .facts { font-size:12px; color:#6b7280; margin:0 0 10px 0; }
+  .cluster h4 { font-size:11px; text-transform:uppercase; color:#9ca3af; margin:12px 0 4px 0; }
+  .cluster ol, .cluster ul { margin:0; padding-left:20px; }
+  .cluster li { margin-bottom:3px; }
+  .risk-low { color:#047857; }
+  .risk-medium { color:#b45309; }
+  .risk-high { color:#b91c1c; }
+  table.rows { width:100%; border-collapse:collapse; font-size:12px; }
+  table.rows th { text-align:left; background:#f9fafb; border-bottom:1px solid #e5e7eb; padding:6px 8px; font-size:10px; text-transform:uppercase; color:#6b7280; }
+  table.rows td { border-bottom:1px solid #f3f4f6; padding:6px 8px; vertical-align:top; }
+  .status-succeeded { color:#047857; font-weight:600; }
+  .status-failed { color:#b91c1c; font-weight:600; }
+  .status-unresponsive_or_shutdown { color:#b45309; font-weight:600; }
+  .status-excluded { color:#9ca3af; font-weight:600; }
+  .footer { margin-top:28px; padding-top:14px; border-top:1px solid #e5e7eb; font-size:11px; color:#9ca3af; }
+</style>
+</head>
+<body>
+
+<div class="header">
+  <span class="brand">Culprit</span><span class="sub">Patch Failure RCA Agent</span>
+  <h1>{{ report.run.scope_name }}</h1>
+  <p class="meta">
+    Run {{ report.run.run_id }} ({{ report.run.trigger_mode.value.replace('_', ' ')|title }}) &middot;
+    window {{ report.run.started_at | localtime }}{% if report.run.ended_at %} &ndash; {{ report.run.ended_at | localtime }}{% endif %}
+  </p>
+</div>
+
+<div class="stats">
+  <div class="stat"><div class="value">{{ report.total_failed }}/{{ report.total_machines }}</div><div class="label">Failed</div></div>
+  <div class="stat"><div class="value">{{ report.total_clusters }}</div><div class="label">Distinct causes</div></div>
+  <div class="stat"><div class="value">{{ '%.1f'|format(report.compliance_pct) }}%</div><div class="label">Compliance</div></div>
+  <div class="stat"><div class="value">{{ report.repeat_offender_count }}</div><div class="label">Repeat offenders</div></div>
+  <div class="stat"><div class="value">{{ report.unresolved_count }}</div><div class="label">Unresolved</div></div>
+</div>
+
+{% if report.trend %}
+<p class="trend">
+  vs. previous cycle ({{ report.trend.previous_run_id }}): {{ report.trend.previous_total_failed }} failed,
+  {{ '%.1f'|format(report.trend.previous_compliance_pct) }}% compliance, {{ report.trend.previous_repeat_offender_count }} repeat offenders.
+</p>
+{% endif %}
+
+<h2 class="section">Root causes &amp; recommended fixes</h2>
+{% for entry in report.entries %}
+<div class="cluster">
+  <p class="title">
+    {{ entry.cluster.size }} machine{{ 's' if entry.cluster.size != 1 else '' }} &mdash; {{ entry.result.title }}
+    {% if entry.recurrence_badge %}<span class="badge">&nbsp;{{ entry.recurrence_badge }}</span>{% endif %}
+  </p>
+  <p class="facts">Confidence {{ '%.0f'|format(entry.result.confidence * 100) }}% &middot; {{ entry.result.cause_family.value }}</p>
+
+  {% if entry.result.causal_chain %}
+  <h4>Root cause</h4>
+  <ol>
+    {% for step in entry.result.causal_chain|sort(attribute='order') %}
+    <li>{{ step.statement }}</li>
+    {% endfor %}
+  </ol>
+  {% endif %}
+
+  {% if entry.result.ruled_out %}
+  <h4>Ruled out</h4>
+  <ul>
+    {% for ro in entry.result.ruled_out %}
+    <li>{{ ro.candidate }} &mdash; {{ ro.reason }}</li>
+    {% endfor %}
+  </ul>
+  {% endif %}
+
+  {% if entry.result.remediation %}
+    {% if entry.result.remediation.immediate_fix %}
+    <h4>Recommended fix &mdash; immediate
+      (<span class="risk-{{ entry.result.remediation.immediate_risk.value }}">{{ entry.result.remediation.immediate_risk.value }} risk</span>,
+      {{ entry.result.remediation.immediate_scope }})
+    </h4>
+    <ol>
+      {% for step in entry.result.remediation.immediate_fix|sort(attribute='order') %}
+      <li>{{ step.instruction }}{% if step.expected_result %} &mdash; <em>{{ step.expected_result }}</em>{% endif %}</li>
+      {% endfor %}
+    </ol>
+    {% endif %}
+    {% if entry.result.remediation.preventive_fix %}
+    <h4>Recommended fix &mdash; preventive
+      (<span class="risk-{{ entry.result.remediation.preventive_risk.value }}">{{ entry.result.remediation.preventive_risk.value }} risk</span>)
+    </h4>
+    <p>{{ entry.result.remediation.preventive_fix }}</p>
+    {% endif %}
+    {% if entry.result.remediation.rollback %}
+    <h4>Rollback</h4>
+    <p>{{ entry.result.remediation.rollback }}</p>
+    {% endif %}
+  {% endif %}
+</div>
+{% endfor %}
+
+{% if installation_report %}
+<h2 class="section">Installation report &mdash; every machine</h2>
+<table class="rows">
+  <thead>
+    <tr><th>Machine</th><th>Status</th><th>Error</th><th>Root cause</th></tr>
+  </thead>
+  <tbody>
+    {% for row in installation_report.rows %}
+    <tr>
+      <td>{{ row.vm_name }}</td>
+      <td class="status-{{ row.status.value }}">{{ row.status.value.replace('_', ' ') }}</td>
+      <td>{% if row.error_code %}{{ row.error_code }}{% if row.error_message %}: {{ row.error_message }}{% endif %}{% endif %}</td>
+      <td>{{ row.rca_title or '' }}</td>
+    </tr>
+    {% endfor %}
+  </tbody>
+</table>
+{% endif %}
+
+<div class="footer">
+  This report is self-contained - every fact above was current as of {{ generated_at | localtime }}. No part of this
+  document depends on network access or a live server.
+</div>
+
+</body>
+</html>

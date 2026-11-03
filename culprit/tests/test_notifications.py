@@ -334,7 +334,7 @@ def test_send_email_attaches_the_offline_bundle_and_never_links_out(client, seed
 
     sent = FakeSMTP.instances[0].sent_message
     attachment_filenames = [part.get_filename() for part in sent.iter_attachments()]
-    assert f"culprit-report-{seeded_run_id}.zip" in attachment_filenames
+    assert f"culprit-report-{seeded_run_id}.html" in attachment_filenames
 
     html_part = sent.get_body(preferencelist=("html",)).get_content()
     assert "href=" not in html_part

@@ -393,6 +393,36 @@ def render_email_report_html(report: FleetReport, top_entries: list, note: str, 
     )
 
 
+def render_offline_report_email_html(
+    report: FleetReport, installation_report: InstallationReport | None, tz_name: str = "UTC",
+) -> str:
+    """The email attachment behind both the manual "Send Report" button and
+    the auto-send-on-completion feature (reporting/report_bundle.py). A
+    SINGLE flat HTML file - no `<script>` tag anywhere, no external file
+    references, every section always expanded (nothing to click, since
+    there's no JS to wire up a toggle with).
+
+    Replaced a zip-of-linked-pages-plus-JS-libraries bundle 2026-11-03:
+    found, via direct reproduction, that the real bundle never reached an
+    inbox even though sends were accepted and reported successful by IT's
+    own gateway - while every synthetic test (size, `.zip` extension,
+    HTML+`<script>` content) delivered fine. The one difference left was
+    the real bundle's specific shape: a zip of several cross-linked HTML
+    pages each loading real third-party JS - a pattern corporate email
+    security scanners commonly treat as a phishing-kit signature, accepted
+    at the API layer then silently quarantined before delivery. This
+    template is deliberately "boring" to avoid that: one file, no
+    cross-page links (nothing to link to - per-machine deep-dive pages are
+    intentionally not included here; they stay fully browsable live at
+    /runs/{id}/machines/{vm}.html, untouched by this change), no script."""
+    template = _env(tz_name).get_template("offline_report_email.html.j2")
+    from datetime import datetime, timezone
+
+    return template.render(
+        report=report, installation_report=installation_report, generated_at=datetime.now(timezone.utc),
+    )
+
+
 def render_login_html(next_path: str = "/", error: str = "", show_token_login: bool = True) -> str:
     """The shared-token sign-in page (culprit/api/auth_middleware.py) -
     doesn't extend base.html.j2, since there's nothing to put in the

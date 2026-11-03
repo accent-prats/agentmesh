@@ -383,43 +383,56 @@ def test_send_report_email_still_works_via_smtp_for_a_pre_existing_deployment(cl
 
 # ── Offline report bundle (reporting/report_bundle.py) ──────────────────────
 
-def test_build_offline_report_bundle_contains_every_linked_page(client, seeded_run_id):
+# Found 2026-11-03, against a real production send: the previous zip-of-
+# linked-HTML-pages-plus-JS-libraries bundle was accepted by IT's own send
+# API and reported "sent successfully", but never reached a real inbox -
+# reproduced directly by sending the exact real bundle through the same
+# CLI path every synthetic test (size, .zip extension, HTML+<script>
+# content) had already proven delivers fine. The one difference left was
+# the real bundle's shape: several cross-linked HTML pages each loading
+# real third-party JS - a pattern corporate email security commonly
+# treats as a phishing-kit signature. Replaced with one flat .html file,
+# no <script> tag anywhere, no external file references - these tests pin
+# exactly that property, not just "the content looks right".
+
+def test_build_offline_report_bundle_is_one_script_free_html_file(client, seeded_run_id):
     from culprit.api.deps import get_session_factory
     from culprit.db import repository
     from culprit.reporting.report_bundle import build_offline_report_bundle
 
     with get_session_factory()() as session:
         report = repository.load_fleet_report(session, seeded_run_id)
-        zip_bytes = build_offline_report_bundle(session, report)
+        html_bytes = build_offline_report_bundle(session, report)
 
-    with zipfile.ZipFile(__import__("io").BytesIO(zip_bytes)) as zf:
-        names = set(zf.namelist())
-        assert f"runs/{seeded_run_id}/report.html" in names
-        assert "static/tailwind.js" in names
-        # Found by review 2026-11-02: lucide.min.js was missing (only
-        # tailwind.js was hardcoded) - base.html.j2's shared inline script
-        # calls lucide.createIcons() as its FIRST statement, with no
-        # try/catch, before the .eg-detail-toggle click handlers it wires
-        # up right after - a missing lucide there means every "Show full
-        # error/status/timeline" disclosure is permanently stuck hidden in
-        # the offline bundle, not just missing icons.
-        assert "static/lucide.min.js" in names
-        from culprit.reporting.report_bundle import _STATIC_DIR
+    # Not a zip - a bare UTF-8 HTML document.
+    with pytest.raises(Exception):
+        zipfile.ZipFile(__import__("io").BytesIO(html_bytes))
+    html = html_bytes.decode("utf-8")
+    assert html.lstrip().startswith("<!doctype html>")
 
-        assert zf.read("static/lucide.min.js") == (_STATIC_DIR / "lucide.min.js").read_bytes()
-        # Every machine the Fleet Report's own table links to has its own page.
-        for row in report.machine_rows:
-            assert f"runs/{seeded_run_id}/machines/{row.vm_name}.html" in names
+    # The whole point of this redesign - no script tag, no reference to any
+    # other file or page at all (nothing left for a security scanner to
+    # treat as a multi-page kit).
+    assert "<script" not in html.lower()
+    assert "static/" not in html
+    assert "machines/" not in html
+    assert "http://" not in html and "https://" not in html
 
-        # The relative link fleet_report.html.j2 actually renders for a
-        # machine really does resolve to a real entry in this same zip -
-        # proves the chosen "replicate the live route's folder depth"
-        # approach, not just that files with plausible names exist.
-        report_html = zf.read(f"runs/{seeded_run_id}/report.html").decode()
-        if report.machine_rows:
-            sample_vm = report.machine_rows[0].vm_name
-            assert f"machines/{sample_vm}.html" in report_html
-            assert f"runs/{seeded_run_id}/machines/{sample_vm}.html" in names
+    # The actual content is still all there - run id, every cluster's
+    # title and causal-chain statement, every failed machine's own row.
+    # Compared against the HTML-escaped form (markupsafe.escape, the same
+    # escaping Jinja's autoescape itself applies) since several real
+    # titles/statements contain apostrophes - the raw string legitimately
+    # never appears verbatim, that's autoescape working correctly.
+    import markupsafe
+
+    assert seeded_run_id in html
+    for entry in report.entries:
+        assert str(markupsafe.escape(entry.result.title)) in html
+        for step in entry.result.causal_chain:
+            assert str(markupsafe.escape(step.statement)) in html
+    for row in report.machine_rows:
+        assert row.vm_name in html
 
 
 # ── send_report_on_completion (notifications/auto_report_email.py) ─────────
@@ -552,7 +565,7 @@ def test_send_report_on_completion_sends_via_smtp_with_the_attachment(client, se
     attachment_filenames = [
         part.get_filename() for part in sent.iter_attachments()
     ]
-    assert f"culprit-report-{seeded_run_id}.zip" in attachment_filenames
+    assert f"culprit-report-{seeded_run_id}.html" in attachment_filenames
 
     with get_session_factory()() as session:
         log = repository.list_email_log(session)
@@ -621,7 +634,7 @@ def test_send_report_on_completion_sends_via_oauth_with_the_attachment(client, s
     attachment_filenames = [
         part.get_filename() for part in sent.iter_attachments()
     ]
-    assert f"culprit-report-{seeded_run_id}.zip" in attachment_filenames
+    assert f"culprit-report-{seeded_run_id}.html" in attachment_filenames
 
     with get_session_factory()() as session:
         log = repository.list_email_log(session)
