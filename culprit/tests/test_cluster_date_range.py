@@ -25,7 +25,12 @@ from culprit.models.patch_run import PatchRun, TriggerMode
 from culprit.models.rca import CausalStep, RCAResult, ResultOrigin
 from culprit.models.report import ClusterReportEntry, FleetReport, MachineRow
 from culprit.models.taxonomy import CauseFamily
-from culprit.reporting.render import _cluster_date_ranges, render_email_report_html, render_fleet_report_html
+from culprit.reporting.render import (
+    _cluster_date_ranges,
+    render_email_report_html,
+    render_fleet_report_html,
+    render_offline_report_email_html,
+)
 
 
 def _row(vm_id: str, cluster_id: str, started_at: datetime | None) -> MachineRow:
@@ -170,3 +175,20 @@ def test_email_report_also_shows_the_per_cluster_date_range():
     html = render_email_report_html(report, top_entries=[entry], note="", requested_by="")
     assert "patched 2026-10-08" in html
     assert "2026-10-13" in html
+
+
+def test_offline_report_email_renders_when_remediation_is_none():
+    """Found by review 2026-11-03: `_entry()`'s own RCAResult leaves
+    `remediation` at its Pydantic default (None) - a real, reachable
+    production state (pipeline/orchestrator.py's "no deep RCA agent
+    configured" fallback never sets it), but no test exercised this
+    template with it. Jinja's lenient Undefined happens to make every
+    `{% if entry.result.remediation %}` guard safe either way, but that
+    was unproven until now - this pins it stays that way."""
+    report = _report([_row("vm-1", "cluster-a", datetime(2026, 10, 10, tzinfo=timezone.utc))])
+    entry = _entry("cluster-a")
+    assert entry.result.remediation is None
+    report = report.model_copy(update={"entries": [entry]})
+    html = render_offline_report_email_html(report, installation_report=None, tz_name="UTC")
+    assert entry.result.title in html
+    assert "repo unreachable" in html
