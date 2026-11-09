@@ -44,13 +44,11 @@ second login. See [docs/SETUP.md](docs/SETUP.md) for first-time configuration.
 │
 ├── shared/                   # Shared library — imported by both apps
 │   └── src/
-│       ├── feature_flags/    # GrowthBook client + FastAPI middleware (used by Portal)
 │       └── llm/              # Multi-provider AI client construction (used by Culprit's
 │                             # deep RCA agent; app-agnostic, see shared/README.md)
 │
 ├── infrastructure/
-│   ├── nginx/                 # Reverse proxy configs + TLS cert generation
-│   └── mongodb/               # GrowthBook's MongoDB config
+│   └── nginx/                 # Reverse proxy configs + TLS cert generation
 │
 ├── scripts/
 │   └── deploy.sh              # First-time and incremental deployment script

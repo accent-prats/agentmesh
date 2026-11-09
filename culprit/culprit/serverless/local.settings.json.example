@@ -1,0 +1,14 @@
+{
+  "IsEncrypted": false,
+  "Values": {
+    "FUNCTIONS_WORKER_RUNTIME": "python",
+    "AzureWebJobsStorage": "UseDevelopmentStorage=true",
+    "CULPRIT_SCHEDULE_CRON": "0 0 4 * * *",
+    "CULPRIT_DATABASE_URL": "postgresql+psycopg://user:pass@host/culprit",
+    "CULPRIT_ENCRYPTION_KEY": "",
+    "ANTHROPIC_API_KEY": "",
+    "CULPRIT_RCA_MODEL": "claude-opus-5",
+    "CULPRIT_PORTAL_JWT_SECRET": "",
+    "CULPRIT_PORTAL_INTERNAL_URL": "http://portal-api:8000"
+  }
+}

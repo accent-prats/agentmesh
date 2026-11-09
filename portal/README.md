@@ -41,7 +41,7 @@ No per-app login. One set of credentials unlocks every authorized agent.
 ```
 portal/
 ├── api/                      # FastAPI backend (port 8000)
-│   ├── main.py                   # App setup, GrowthBook flags, DB bootstrap
+│   ├── main.py                   # App setup, DB bootstrap
 │   ├── routers/auth.py           # Login, refresh, user/app-access management
 │   ├── routers/apps.py           # App registry + per-user visibility
 │   └── routers/ai_providers.py   # Platform-wide AI provider config (admin) +
@@ -70,7 +70,11 @@ portal/
 │       ├── lib/
 │       │   ├── api.ts            # fetchApps(), fetchMe(), login(), getAIProviders()/saveAIProvider()/...
 │       │   ├── auth.ts           # saveTokens(), clearTokens(), buildAppUrl()
-│       │   └── growthbook.ts     # GrowthBook SDK init for the UI (flags, experiment attrs)
+│       │   └── growthbook.ts     # GrowthBook SDK init for the UI - unused since the backend
+│       │                        # was removed 2026-11-10 (management call); VITE_GROWTHBOOK_*
+│       │                        # is now unset, so every flag check resolves to its default
+│       │                        # (off) via GrowthBook's own no-op behavior - see git history
+│       │                        # for the removed `growthbook`/`mongo` containers.
 │       └── main.tsx
 │
 ├── Dockerfile                 # Two-stage Alpine build (python:3.12-alpine)
@@ -195,9 +199,6 @@ The real model call happens directly from the consuming app to the provider — 
 | `PORTAL_ADMIN_EMAIL` | `admin@example.com` | Email for the auto-seeded first admin account |
 | `PORTAL_ADMIN_PASSWORD` | `ChangeMe123!` | Password for the auto-seeded first admin account — change this before any real deployment |
 | `CULPRIT_PUBLIC_URL` | `/culprit/` | URL the Culprit app card on the launcher points to (`portal/api/routers/apps.py`) |
-| `GROWTHBOOK_API_HOST` | `http://growthbook:3100` | Internal GrowthBook SDK API URL |
-| `GROWTHBOOK_CLIENT_KEY` | `sdk-` | GrowthBook SDK connection key |
-| `GROWTHBOOK_REFRESH_INTERVAL` | `60` | Seconds between GrowthBook flag-config refreshes (`portal/api/main.py`) |
 | `ENVIRONMENT` | `production` | Environment label passed to the feature-flag middleware (`shared/src/feature_flags`) |
 | `LOG_LEVEL` | `info` | `debug` \| `info` \| `warning` \| `error` |
 | `LOG_FORMAT` | `json` | `json` \| `console` — set `console` for human-readable local dev logs (`portal/logging_config.py`) |

@@ -36,6 +36,34 @@ def _applies_to(source: Source, machine: MachineIdentity) -> bool:
     return required_os is None or machine.os_family == required_os
 
 
+def collect_one_machine(
+    run_id: str,
+    machine: MachineIdentity,
+    collectors: dict[Source, Collector],
+    window_start: datetime,
+    window_end: datetime,
+) -> EvidenceBundle:
+    """One machine's full evidence collection across every applicable
+    collector, merged into its EvidenceBundle - the actual unit of work
+    `collect_all`'s ThreadPoolExecutor fans out below. Extracted to a
+    top-level function (it used to be a closure inside `collect_all`) so
+    the serverless Durable Functions port (`culprit/serverless/`) can fan
+    this exact same unit of work out as one activity per machine, instead
+    of duplicating this logic - the whole point of that port is reusing
+    this module unchanged, not rewriting it."""
+    request = CollectionRequest(machine=machine, window_start=window_start, window_end=window_end, run_id=run_id)
+    results = {}
+    for source, collector in collectors.items():
+        if not _applies_to(source, machine):
+            continue
+        try:
+            results[source] = collector.collect(request)
+        except Exception as exc:  # noqa: BLE001 - one collector's crash must not sink the machine
+            log.exception("Collector %s failed for %s", source, machine.vm_id)
+            results[source] = CollectionResult(events=[], error=str(exc))
+    return merge_bundle(run_id, machine, results, collection_started_at=window_start)
+
+
 def collect_all(
     run_id: str,
     machines: list[MachineIdentity],
@@ -44,24 +72,11 @@ def collect_all(
     window_end: datetime,
     max_workers: int = 8,
 ) -> list[EvidenceBundle]:
-    def collect_one(machine: MachineIdentity) -> EvidenceBundle:
-        request = CollectionRequest(machine=machine, window_start=window_start, window_end=window_end, run_id=run_id)
-        results = {}
-        for source, collector in collectors.items():
-            if not _applies_to(source, machine):
-                continue
-            try:
-                results[source] = collector.collect(request)
-            except Exception as exc:  # noqa: BLE001 - one collector's crash must not sink the machine
-                log.exception("Collector %s failed for %s", source, machine.vm_id)
-                from culprit.collectors.base import CollectionResult
-
-                results[source] = CollectionResult(events=[], error=str(exc))
-        return merge_bundle(run_id, machine, results, collection_started_at=window_start)
-
     bundles: list[EvidenceBundle] = []
     with ThreadPoolExecutor(max_workers=max_workers) as pool:
-        futures = {pool.submit(collect_one, m): m for m in machines}
+        futures = {
+            pool.submit(collect_one_machine, run_id, m, collectors, window_start, window_end): m for m in machines
+        }
         for future in as_completed(futures):
             bundles.append(future.result())
     return bundles

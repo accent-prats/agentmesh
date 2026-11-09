@@ -1,75 +1,24 @@
 # ─────────────────────────────────────────────────────────────
 # AgentMesh platform — unified stack
-# Services: postgres, portal-api, portal-ui, culprit-api,
-#           nginx, mongo + growthbook (feature flags)
+# Services: postgres, portal-api, portal-ui, culprit-api, nginx
+#
+# GrowthBook (feature flags) + its MongoDB were removed 2026-11-10 -
+# management confirmed feature flagging isn't needed. Culprit's own code
+# never depended on it (confirmed by code audit - zero references
+# anywhere in culprit/); only Portal wired it in
+# (shared/src/feature_flags, now unused/dead code, not deleted in case
+# it's wanted again later).
 # ─────────────────────────────────────────────────────────────
 
 x-api-env: &api-env
   DATABASE_URL:  postgresql+asyncpg://${DB_USER:-portal}:${DB_PASS:-portal}@postgres:5432/${DB_NAME:-portal}
   SECRET_KEY:    ${SECRET_KEY:-change-me-in-production}
   LOG_LEVEL:     ${LOG_LEVEL:-info}
-  # GrowthBook — feature flags
-  GROWTHBOOK_API_HOST:          ${GROWTHBOOK_API_HOST:-http://growthbook:3100}
-  GROWTHBOOK_CLIENT_KEY:        ${GROWTHBOOK_CLIENT_KEY:-sdk-}
-  GROWTHBOOK_REFRESH_INTERVAL:  ${GROWTHBOOK_REFRESH_INTERVAL:-60}
   ENVIRONMENT:                  ${ENVIRONMENT:-production}
 
 services:
 
   # ── Infrastructure ────────────────────────────────────────
-
-  # MongoDB — used exclusively by GrowthBook (separate from the platform PostgreSQL)
-  mongo:
-    image: mongo:7
-    restart: unless-stopped
-    # Config file sets per-component verbosity -1 for NETWORK, ACCESS, and COMMAND
-    # to suppress the flood of INFO connection logs from GrowthBook's Mongoose pool
-    # and Docker health checks. WARNING and ERROR messages are still shown.
-    command: ["mongod", "--config", "/etc/mongod.conf"]
-    volumes:
-      - ./infrastructure/mongodb/mongod.conf:/etc/mongod.conf:ro
-      - mongo_data:/data/db
-    networks: [platform]
-    healthcheck:
-      # TCP-level probe — avoids spawning mongosh (Node.js runtime) which opens
-      # multiple connections and floods logs with NETWORK/ACCESS INFO messages.
-      # bash /dev/tcp is available in the mongo:7 image and verifies the port
-      # is open without triggering connection-lifecycle log events.
-      test: ["CMD-SHELL", "bash -c 'cat < /dev/null > /dev/tcp/127.0.0.1/27017' 2>/dev/null"]
-      interval: 30s
-      timeout: 5s
-      retries: 5
-
-  # GrowthBook — open-source feature flagging & A/B experimentation
-  # Admin UI : https://growthbook.local  (container port 3000, proxied by nginx)
-  # SDK API  : http://growthbook:3100    (container port 3100 — used by backend SDKs)
-  growthbook:
-    image: growthbook/growthbook:latest
-    restart: unless-stopped
-    ports:
-      - "3100:3000"   # Admin UI  (host 3100 → container 3000) — direct fallback access
-      - "3101:3100"   # SDK API   (host 3101 → container 3100) — direct fallback access
-    environment:
-      MONGODB_URI: mongodb://mongo:27017/growthbook
-      APP_ORIGIN:       ${GROWTHBOOK_URL:-https://growthbook.local}
-      # API_HOST must be an intra-container URL (not the public domain) so that
-      # Next.js SSR data-fetching calls go directly to Express (localhost:3100)
-      # without needing to resolve growthbook.local, which is only in the host
-      # /etc/hosts and is NOT resolvable by Docker's internal DNS.
-      API_HOST:         http://localhost:3100
-      JWT_SECRET:       ${SECRET_KEY:-change-me-in-production}
-      ENCRYPTION_KEY:   ${GROWTHBOOK_ENCRYPTION_KEY:?GROWTHBOOK_ENCRYPTION_KEY must be set in .env}
-      TOKEN_REFRESH_AGE: 2592000
-      NODE_ENV:         production
-      # Suppress INFO-level request completion logs (pino level 30).
-      # warn (40) keeps errors and warnings only.
-      LOG_LEVEL:        warn
-    depends_on:
-      mongo:
-        condition: service_healthy
-    volumes:
-      - growthbook_uploads:/usr/local/src/app/packages/back-end/uploads
-    networks: [platform]
 
   postgres:
     image: postgres:16-alpine
@@ -178,8 +127,6 @@ services:
       dockerfile: Dockerfile
       args:
         VITE_PORTAL_URL: ${PORTAL_PUBLIC_URL:-https://portal.local}
-        VITE_GROWTHBOOK_API_HOST: ${GROWTHBOOK_CLIENT_KEY:+https://growthbook.local}
-        VITE_GROWTHBOOK_CLIENT_KEY: ${GROWTHBOOK_CLIENT_KEY:-}
     restart: unless-stopped
     networks: [platform]
 
@@ -207,6 +154,4 @@ networks:
 
 volumes:
   postgres_data:
-  mongo_data:
-  growthbook_uploads:
   culprit_data:

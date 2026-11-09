@@ -10,7 +10,7 @@ set -euo pipefail
 CERT_DIR="$(dirname "$0")/certs"
 mkdir -p "$CERT_DIR"
 
-for domain in portal.local growthbook.local; do
+for domain in portal.local; do
   if [[ -f "$CERT_DIR/$domain.crt" ]]; then
     echo "  ✓ $domain.crt already exists, skipping"
     continue

@@ -7,7 +7,7 @@ This guide covers everything an admin needs to configure the platform after firs
 2. [User Management](#2-user-management)
 3. [AI Providers (platform-wide)](#3-ai-providers-platform-wide)
 4. [Culprit — Azure & Datadog Connections](#4-culprit--azure--datadog-connections)
-5. [Feature Flags (GrowthBook)](#5-feature-flags-growthbook)
+5. [Feature Flags (removed)](#5-feature-flags-removed-2026-11-10)
 6. [Verification](#6-verification)
 
 ---
@@ -153,10 +153,11 @@ and a no-op without the extra installed. See "Agent memory" in
 
 ---
 
-## 5. Feature Flags (GrowthBook)
+## 5. Feature Flags (removed 2026-11-10)
 
-Optional. See [docs/feature-flags/README.md](feature-flags/README.md) for the full setup —
-covers the Portal's launcher banners and admin-panel toggles. Culprit does not use GrowthBook.
+GrowthBook and its MongoDB container were removed - management confirmed feature flagging
+isn't needed for this platform. Culprit never depended on it. See
+[docs/feature-flags/README.md](feature-flags/README.md) for what used to be here.
 
 ---
 
