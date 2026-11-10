@@ -33,6 +33,9 @@ param postgresAdminPassword string
 @secure()
 param anthropicApiKey string = ''
 
+@description('Image tag to deploy - defaults to :latest; set this explicitly on every real deployment once a CI pipeline exists, so a Function App restart cannot silently pick up a newer, untested image')
+param imageTag string = 'latest'
+
 var storageAccountName = toLower(replace('${namePrefix}sa', '-', ''))
 var functionAppName = '${namePrefix}-pipeline'
 var appInsightsName = '${namePrefix}-insights'
@@ -40,6 +43,7 @@ var keyVaultName = '${namePrefix}-kv'
 var postgresServerName = '${namePrefix}-pg'
 var planName = '${namePrefix}-plan'
 var identityName = '${namePrefix}-identity'
+var registryName = toLower(replace('${namePrefix}acr', '-', ''))
 
 resource identity 'Microsoft.ManagedIdentity/userAssignedIdentities@2023-01-31' = {
   name: identityName
@@ -56,6 +60,42 @@ resource storage 'Microsoft.Storage/storageAccounts@2023-01-01' = {
   properties: {
     minimumTlsVersion: 'TLS1_2'
     allowBlobPublicAccess: false
+  }
+}
+
+// Found while preparing the implementation/deployment proposal
+// (2026-11-10): the Function App below needs a real container registry
+// to pull its image from - a previous version of this template left
+// that as an unresolved `<acr-or-registry>` placeholder, silently
+// assuming one already existed. Provisioning it here means the
+// deployment is genuinely self-sufficient under a fresh subscription,
+// not dependent on a registry someone has to remember to set up
+// separately. Basic SKU - cheapest tier, ample for one image with a
+// handful of tags; Azure Container Registry doesn't do GB-second
+// serverless billing, so this is the one resource in this template
+// that is NOT fully consumption-priced - a small, fixed, roughly $5/mo
+// cost, not something a schedule-based workload avoids regardless of
+// hosting approach.
+resource registry 'Microsoft.ContainerRegistry/registries@2023-07-01' = {
+  name: registryName
+  location: location
+  sku: {
+    name: 'Basic'
+  }
+  properties: {
+    adminUserEnabled: false
+  }
+}
+
+// AcrPull - lets the Function App's managed identity pull the image
+// without a registry username/password ever being stored anywhere.
+resource acrPullRole 'Microsoft.Authorization/roleAssignments@2022-04-01' = {
+  name: guid(registry.id, identity.id, 'AcrPull')
+  scope: registry
+  properties: {
+    roleDefinitionId: subscriptionResourceId('Microsoft.Authorization/roleDefinitions', '7f951dda-4ed3-4680-a7ca-43fe172d538d')
+    principalId: identity.properties.principalId
+    principalType: 'ServicePrincipal'
   }
 }
 
@@ -200,7 +240,14 @@ resource functionApp 'Microsoft.Web/sites@2023-01-01' = {
     // ANTHROPIC_API_KEY unset.
     keyVaultReferenceIdentity: identity.id
     siteConfig: {
-      linuxFxVersion: 'DOCKER|<acr-or-registry>/culprit-serverless:latest'
+      linuxFxVersion: 'DOCKER|${registry.properties.loginServer}/culprit-serverless:${imageTag}'
+      // Pulls the image via the Function App's own managed identity,
+      // not a registry username/password - pairs with the AcrPull role
+      // assignment above. acrUserManagedIdentityID must be the full
+      // resource ID (not the app setting form) for a user-assigned
+      // identity pull.
+      acrUseManagedIdentityCreds: true
+      acrUserManagedIdentityID: identity.id
       appSettings: [
         {
           name: 'AzureWebJobsStorage'
@@ -235,6 +282,7 @@ resource functionApp 'Microsoft.Web/sites@2023-01-01' = {
   }
   dependsOn: [
     keyVaultSecretsUserRole
+    acrPullRole
   ]
 }
 
@@ -242,3 +290,4 @@ output functionAppName string = functionApp.name
 output functionAppPrincipalId string = identity.properties.principalId
 output postgresFullyQualifiedDomainName string = postgres.properties.fullyQualifiedDomainName
 output keyVaultName string = keyVault.name
+output containerRegistryLoginServer string = registry.properties.loginServer

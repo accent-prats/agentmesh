@@ -149,6 +149,13 @@ clean up the dead code now or leave it as a documented no-op.
 
 ## Deploying for real (once the above is validated)
 
+The template now provisions its own Azure Container Registry (found while
+preparing the implementation/deployment proposal, 2026-11-10 - an earlier
+version left the registry as an unresolved placeholder) - so the first
+deployment creates an empty registry before any image exists to push.
+Deploy, THEN build/push, THEN the Function App's first successful start
+happens:
+
 ```bash
 az bicep build --file culprit/infra/main.bicep
 az deployment group what-if -g <resource-group> --template-file culprit/infra/main.bicep \
@@ -156,7 +163,12 @@ az deployment group what-if -g <resource-group> --template-file culprit/infra/ma
 az deployment group create -g <resource-group> --template-file culprit/infra/main.bicep \
   --parameters namePrefix=culprit-<env> postgresAdminLogin=<...> postgresAdminPassword=<...>
 
-docker build -f culprit/culprit/serverless/Dockerfile -t culprit-serverless:latest .
-# push to whatever registry the deployed Function App's linuxFxVersion points at,
-# then update that image reference and restart the Function App.
+# The registry now exists but is empty - build and push before the
+# Function App can start successfully:
+REGISTRY=$(az deployment group show -g <resource-group> -n main --query properties.outputs.containerRegistryLoginServer.value -o tsv)
+az acr login --name "$REGISTRY"
+docker build -f culprit/culprit/serverless/Dockerfile -t "$REGISTRY/culprit-serverless:latest" .
+docker push "$REGISTRY/culprit-serverless:latest"
+# The Function App should now pull successfully on its own; if it was
+# already running, restart it once to force an immediate pull.
 ```
