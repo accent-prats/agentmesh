@@ -172,13 +172,19 @@ def test_diagnose_cluster_orchestrator_calls_deep_rca_when_rules_do_not_settle_i
     result = _drive(
         gen,
         None,
+        {"near_misses": ["disk_low precondition present but no corroborating write-failure evidence"], "retrieval_context": "ctx"},
         {"cluster_id": "c1", "title": "diagnosed", "missing_evidence": []},
         {"cluster_id": "c1", "result": {"title": "diagnosed"}, "recurrence_badge": None, "consecutive_cycles": 1},
     )
 
     assert result["result"]["title"] == "diagnosed"
     names = [c[1] for c in ctx.calls]
-    assert names == ["evaluate_rules_activity", "deep_rca_activity", "advise_and_persist_activity"]
+    assert names == ["evaluate_rules_activity", "compute_rca_context_activity", "deep_rca_activity", "advise_and_persist_activity"]
+
+    # The computed near_misses/retrieval_context must actually reach deep_rca_activity.
+    deep_rca_call = next(c for c in ctx.calls if c[1] == "deep_rca_activity")
+    assert deep_rca_call[2]["near_misses"] == ["disk_low precondition present but no corroborating write-failure evidence"]
+    assert deep_rca_call[2]["retrieval_context"] == "ctx"
 
 
 def test_diagnose_cluster_orchestrator_does_not_re_diagnose_when_recollection_finds_nothing_new():
@@ -188,6 +194,7 @@ def test_diagnose_cluster_orchestrator_does_not_re_diagnose_when_recollection_fi
     result = _drive(
         gen,
         None,
+        {"near_misses": [], "retrieval_context": ""},
         {"cluster_id": "c1", "title": "first pass", "missing_evidence": ["disk_metrics"]},
         {"changed": False},
         {"cluster_id": "c1", "result": {"title": "first pass"}, "recurrence_badge": None, "consecutive_cycles": 1},
@@ -195,7 +202,10 @@ def test_diagnose_cluster_orchestrator_does_not_re_diagnose_when_recollection_fi
 
     assert result["result"]["title"] == "first pass"
     names = [c[1] for c in ctx.calls]
-    assert names == ["evaluate_rules_activity", "deep_rca_activity", "recollect_activity", "advise_and_persist_activity"]
+    assert names == [
+        "evaluate_rules_activity", "compute_rca_context_activity", "deep_rca_activity",
+        "recollect_activity", "advise_and_persist_activity",
+    ]
 
     # Exactly one deep_rca_activity call - no silent second LLM call when
     # there was nothing new to re-diagnose with.
@@ -223,6 +233,7 @@ def test_diagnose_cluster_orchestrator_re_diagnoses_with_the_recollected_bundle_
     result = _drive(
         gen,
         None,
+        {"near_misses": ["lock_held precondition present but error code doesn't match"], "retrieval_context": "ctx-v1"},
         {"cluster_id": "c1", "title": "first pass", "missing_evidence": ["disk_metrics"]},
         {"changed": True, "bundle": recollected_bundle},
         {"cluster_id": "c1", "title": "re-diagnosed", "missing_evidence": []},
@@ -232,14 +243,22 @@ def test_diagnose_cluster_orchestrator_re_diagnoses_with_the_recollected_bundle_
     assert result["result"]["title"] == "re-diagnosed"
     names = [c[1] for c in ctx.calls]
     assert names == [
-        "evaluate_rules_activity", "deep_rca_activity", "recollect_activity",
+        "evaluate_rules_activity", "compute_rca_context_activity", "deep_rca_activity", "recollect_activity",
         "deep_rca_activity", "advise_and_persist_activity",
     ]
     assert names.count("deep_rca_activity") == 2
+    assert names.count("compute_rca_context_activity") == 1
 
-    # The second deep_rca_activity call must carry the recollected bundle.
-    second_deep_rca_call = [c for c in ctx.calls if c[1] == "deep_rca_activity"][1]
+    # The second deep_rca_activity call must carry the recollected bundle
+    # AND reuse the SAME near_misses/retrieval_context as the first call -
+    # not recompute them against the recollected bundle (found in review
+    # 2026-11-10: `_diagnose_one` computes both once and reuses them for
+    # the re-diagnosis call too, so this port must match that exactly).
+    deep_rca_calls = [c for c in ctx.calls if c[1] == "deep_rca_activity"]
+    first_deep_rca_call, second_deep_rca_call = deep_rca_calls
     assert second_deep_rca_call[2]["representative_bundle"] == recollected_bundle
+    assert second_deep_rca_call[2]["near_misses"] == first_deep_rca_call[2]["near_misses"] == ["lock_held precondition present but error code doesn't match"]
+    assert second_deep_rca_call[2]["retrieval_context"] == first_deep_rca_call[2]["retrieval_context"] == "ctx-v1"
 
     # And the persisted member_bundles must have vm-1's entry replaced
     # with the recollected bundle, while vm-2's is untouched.

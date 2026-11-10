@@ -165,16 +165,46 @@ def evaluate_rules_activity(input_: dict) -> dict | None:
 
 
 @bp.activity_trigger(input_name="input_")
-def deep_rca_activity(input_: dict) -> dict:
-    """The deep-RCA half of `Pipeline._diagnose_one` - reuses that
-    function's own `_describe_near_misses` helper directly (intra-package
-    reuse of a private helper, not a new copy of its logic) so the near-
-    miss notes the model sees are identical to the Docker deployment's.
-    Called a second time, with `representative_bundle` set to the
-    recollected bundle, after `recollect_activity` finds new evidence -
-    the same "re-diagnose once" shape `_diagnose_one` already has."""
+def compute_rca_context_activity(input_: dict) -> dict:
+    """Computes `near_misses`/`retrieval_context` exactly once, against
+    the PRE-recollection representative - split out as its own activity
+    (found in review 2026-11-10) because `_diagnose_one` computes these
+    once and reuses them verbatim for both the first AND the post-
+    recollection re-diagnosis call. An earlier version of this port had
+    `deep_rca_activity` recompute both values fresh on every call,
+    which silently used the RECOLLECTED bundle's near-miss flags for the
+    second call instead of the original's - a real fidelity gap from the
+    Docker deployment, not just a style difference, since recollection
+    specifically targets the evidence `_describe_near_misses` inspects
+    (disk_low/lock_held). This activity's result is computed once by the
+    orchestrator and threaded into every `deep_rca_activity` call for
+    this cluster, never recomputed."""
     from culprit.api import deps
     from culprit.pipeline.orchestrator import _describe_near_misses
+
+    cluster = cluster_from_dict(input_["cluster"])
+    representative = _find_representative(cluster, input_["member_bundles"])
+
+    retrieval_store = deps.get_retrieval_store()
+    near_misses = _describe_near_misses(cluster, representative)
+    query = f"{cluster.fingerprint.error_code_normalized} {cluster.fingerprint.failing_target} {cluster.fingerprint.os_family.value}"
+    retrieval_context = retrieval_store.render_context(query) if retrieval_store else ""
+
+    return {"near_misses": near_misses, "retrieval_context": retrieval_context}
+
+
+@bp.activity_trigger(input_name="input_")
+def deep_rca_activity(input_: dict) -> dict:
+    """The deep-RCA half of `Pipeline._diagnose_one`. `near_misses`/
+    `retrieval_context` are always given (computed once by
+    `compute_rca_context_activity`, see its own docstring for why) -
+    this activity never recomputes them itself. Called a second time,
+    with `representative_bundle` set to the recollected bundle, after
+    `recollect_activity` finds new evidence - the same "re-diagnose
+    once" shape `_diagnose_one` already has, reusing the SAME
+    `near_misses`/`retrieval_context` both times, matching
+    `_diagnose_one` exactly."""
+    from culprit.api import deps
 
     cluster = cluster_from_dict(input_["cluster"])
     representative = (
@@ -184,12 +214,7 @@ def deep_rca_activity(input_: dict) -> dict:
     )
 
     rca_agent = deps.get_rca_agent()
-    retrieval_store = deps.get_retrieval_store()
-    near_misses = _describe_near_misses(cluster, representative)
-    query = f"{cluster.fingerprint.error_code_normalized} {cluster.fingerprint.failing_target} {cluster.fingerprint.os_family.value}"
-    retrieval_context = retrieval_store.render_context(query) if retrieval_store else ""
-
-    result = rca_agent.diagnose(cluster, representative, near_misses, retrieval_context)
+    result = rca_agent.diagnose(cluster, representative, input_["near_misses"], input_["retrieval_context"])
     return rca_result_to_dict(result)
 
 

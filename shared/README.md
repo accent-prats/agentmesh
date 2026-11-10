@@ -9,12 +9,6 @@ packaged library, it lives in the monorepo and is resolved via `PYTHONPATH`.
 
 ```
 shared/src/
-├── feature_flags/
-│   ├── __init__.py
-│   ├── client.py         # GrowthBookClient — wraps the GrowthBook Python SDK
-│   ├── dependencies.py   # get_feature_flags() FastAPI dependency
-│   └── middleware.py     # FlagMiddleware — builds per-request user attributes
-│
 └── llm/                  # Multi-provider AI client construction (added 2026-09-27)
     ├── __init__.py
     ├── catalog.py           # PROVIDER_CATALOG — every provider, its wire format,
@@ -29,24 +23,15 @@ shared/src/
 
 ---
 
-## Feature Flags (`shared/src/feature_flags/`)
+## Feature Flags — removed 2026-11-10
 
-Used today by Portal. See [docs/feature-flags/README.md](../docs/feature-flags/README.md) for
-the full setup and usage guide — this section is just the import surface.
-
-```python
-from shared.src.feature_flags import FlagMiddleware, GrowthBookClient, set_client, get_feature_flags
-```
-
-- `GrowthBookClient` / `set_client` / `get_client` — initialized once at app startup (see
-  `portal/api/main.py`'s lifespan handler), polls GrowthBook for flag definitions in the background.
-- `FlagMiddleware` — added to the FastAPI app, builds the per-request user attribute dict
-  (from the JWT) that GrowthBook targeting rules match against. It also enforces one flag
-  itself, directly in `dispatch()`: when `shared.maintenance.readonly-mode` is on, every write
-  request (`POST`/`PUT`/`PATCH`/`DELETE`) other than auth/health is rejected with `503` before
-  it reaches a route. See [docs/feature-flags/README.md](../docs/feature-flags/README.md) for
-  this and the rest of the flag list.
-- `get_feature_flags` — a FastAPI dependency any router can use to read `request.state.flags`.
+`shared/src/feature_flags/` (GrowthBookClient, FlagMiddleware, get_feature_flags) was deleted -
+management confirmed feature flagging isn't needed for this platform. It was Portal-only
+(`portal/api/main.py`'s lifespan handler and middleware stack); nothing else in the monorepo
+imported it. See [docs/feature-flags/README.md](../docs/feature-flags/README.md) for what used
+to be here, including the one flag (`shared.maintenance.readonly-mode`) that `FlagMiddleware`
+enforced directly rather than just exposing - removing the middleware removes that enforcement
+too, not just the flag read.
 
 ---
 

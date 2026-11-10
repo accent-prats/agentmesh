@@ -5,16 +5,14 @@
 # GrowthBook (feature flags) + its MongoDB were removed 2026-11-10 -
 # management confirmed feature flagging isn't needed. Culprit's own code
 # never depended on it (confirmed by code audit - zero references
-# anywhere in culprit/); only Portal wired it in
-# (shared/src/feature_flags, now unused/dead code, not deleted in case
-# it's wanted again later).
+# anywhere in culprit/); only Portal wired it in - that wiring
+# (shared/src/feature_flags) is deleted too, not left as dead code.
 # ─────────────────────────────────────────────────────────────
 
 x-api-env: &api-env
   DATABASE_URL:  postgresql+asyncpg://${DB_USER:-portal}:${DB_PASS:-portal}@postgres:5432/${DB_NAME:-portal}
   SECRET_KEY:    ${SECRET_KEY:-change-me-in-production}
   LOG_LEVEL:     ${LOG_LEVEL:-info}
-  ENVIRONMENT:                  ${ENVIRONMENT:-production}
 
 services:
 

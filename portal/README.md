@@ -199,7 +199,6 @@ The real model call happens directly from the consuming app to the provider — 
 | `PORTAL_ADMIN_EMAIL` | `admin@example.com` | Email for the auto-seeded first admin account |
 | `PORTAL_ADMIN_PASSWORD` | `ChangeMe123!` | Password for the auto-seeded first admin account — change this before any real deployment |
 | `CULPRIT_PUBLIC_URL` | `/culprit/` | URL the Culprit app card on the launcher points to (`portal/api/routers/apps.py`) |
-| `ENVIRONMENT` | `production` | Environment label passed to the feature-flag middleware (`shared/src/feature_flags`) |
 | `LOG_LEVEL` | `info` | `debug` \| `info` \| `warning` \| `error` |
 | `LOG_FORMAT` | `json` | `json` \| `console` — set `console` for human-readable local dev logs (`portal/logging_config.py`) |
 

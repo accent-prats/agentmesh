@@ -112,7 +112,21 @@ def diagnose_cluster_orchestrator_generator(context: df.DurableOrchestrationCont
     result = yield context.call_activity("evaluate_rules_activity", input_)
 
     if result is None:
-        result = yield context.call_activity("deep_rca_activity", input_)
+        # near_misses/retrieval_context are computed ONCE, against the
+        # pre-recollection representative, and reused verbatim for every
+        # deep_rca_activity call below - matching `Pipeline._diagnose_one`
+        # exactly (it computes both once and reuses them for the post-
+        # recollection re-diagnosis call too, never recomputing against
+        # the recollected bundle). Found in review 2026-11-10: an earlier
+        # version let deep_rca_activity recompute both fresh on every
+        # call, which silently fed the recollected bundle's near-miss
+        # flags into the second call instead of the original's - a real
+        # fidelity gap from the Docker deployment, not a style issue.
+        rca_context = yield context.call_activity("compute_rca_context_activity", input_)
+        deep_rca_input = {
+            **input_, "near_misses": rca_context["near_misses"], "retrieval_context": rca_context["retrieval_context"],
+        }
+        result = yield context.call_activity("deep_rca_activity", deep_rca_input)
 
         if result.get("missing_evidence"):
             representative = next(
@@ -131,7 +145,7 @@ def diagnose_cluster_orchestrator_generator(context: df.DurableOrchestrationCont
             if recollected.get("changed"):
                 result = yield context.call_activity(
                     "deep_rca_activity",
-                    {**input_, "representative_bundle": recollected["bundle"]},
+                    {**deep_rca_input, "representative_bundle": recollected["bundle"]},
                 )
                 # The recollected bundle replaces its entry in member_bundles
                 # before persistence, so save_machine_outcomes persists the

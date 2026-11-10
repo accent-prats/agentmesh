@@ -155,21 +155,28 @@ resource postgresFirewallAllowAzure 'Microsoft.DBforPostgreSQL/flexibleServers/f
   }
 }
 
-// Linux Consumption plan - the default, cheapest choice matching the
-// "pay only for actual pipeline runtime" framing in the proposal doc.
-// Swap `sku.name`/`sku.tier` to an Elastic Premium plan (e.g. "EP1") if
-// the scheduled timer's cold-start latency turns out to matter in
-// practice - that's a one-line change here, not a redeploy of anything
-// else in this template.
+// Linux Elastic Premium plan, not Consumption - found in review
+// 2026-11-10: this Function App is deployed as a custom container
+// (`functionApp.kind` below includes `container`, `linuxFxVersion` is a
+// `DOCKER|...` reference), and Azure Functions custom containers are
+// not supported on the classic Consumption (Dynamic/Y1) plan - only
+// Premium (Elastic Premium) or Dedicated (App Service) plans support a
+// Linux custom container. An earlier version of this template paired
+// a Consumption plan with a custom-container Function App, which would
+// have failed to run at all. EP1 is the smallest Elastic Premium tier -
+// still consumption-billed per the proposal's cost framing, just with a
+// plan type that actually supports this deployment shape.
 resource hostingPlan 'Microsoft.Web/serverfarms@2023-01-01' = {
   name: planName
   location: location
+  kind: 'elastic'
   sku: {
-    name: 'Y1'
-    tier: 'Dynamic'
+    name: 'EP1'
+    tier: 'ElasticPremium'
   }
   properties: {
     reserved: true
+    maximumElasticWorkerCount: 5
   }
 }
 
@@ -185,6 +192,13 @@ resource functionApp 'Microsoft.Web/sites@2023-01-01' = {
   }
   properties: {
     serverFarmId: hostingPlan.id
+    // Required because this app has only a user-assigned identity (no
+    // system-assigned one) - found in review 2026-11-10: without this,
+    // the @Microsoft.KeyVault(...) references below default to resolving
+    // via a system-assigned identity that doesn't exist here, and would
+    // fail to resolve at runtime, silently leaving CULPRIT_DATABASE_URL/
+    // ANTHROPIC_API_KEY unset.
+    keyVaultReferenceIdentity: identity.id
     siteConfig: {
       linuxFxVersion: 'DOCKER|<acr-or-registry>/culprit-serverless:latest'
       appSettings: [

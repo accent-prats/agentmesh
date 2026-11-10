@@ -7,15 +7,19 @@ Every Pydantic model here (EvidenceBundle, Cluster, RCAResult, PatchRun,
 MachineIdentity) already supports this losslessly via `.model_dump(mode=
 "json")` / `Model.model_validate(d)` - no new logic, just a single
 consistent call site so every activity in activities.py spells it the
-same way. `CollectionResult` is the one plain `@dataclass` in the set
-(culprit/collectors/base.py) and needs an explicit (de)serializer since
-dataclasses have no built-in JSON mode.
+same way.
+
+`CollectionResult` (culprit/collectors/base.py) never actually crosses an
+activity boundary as its own type - `recollect_activity` merges it into
+the representative's `EvidenceBundle` (via `normalize.merge_recollection`)
+before returning, so no `CollectionResult` (de)serializer is needed here;
+an earlier version of this module included one anyway, tested but with
+zero real callers - removed in review 2026-11-10.
 """
 from __future__ import annotations
 
-from culprit.collectors.base import CollectionResult
 from culprit.models.cluster import Cluster
-from culprit.models.evidence import EvidenceBundle, MachineIdentity, PatchOutcome, TimelineEvent
+from culprit.models.evidence import EvidenceBundle, MachineIdentity
 from culprit.models.patch_run import PatchRun
 from culprit.models.rca import RCAResult
 
@@ -62,27 +66,3 @@ def patch_run_to_dict(run: PatchRun) -> dict:
 
 def patch_run_from_dict(data: dict) -> PatchRun:
     return PatchRun.model_validate(data)
-
-
-def collection_result_to_dict(result: CollectionResult) -> dict:
-    return {
-        "events": [model_to_dict(e) for e in result.events],
-        "outcome": model_to_dict(result.outcome) if result.outcome is not None else None,
-        "error": result.error,
-        "patch_extension_status": result.patch_extension_status,
-        "checks_performed": result.checks_performed,
-        "checks_unavailable": result.checks_unavailable,
-        "checks_finding_counts": result.checks_finding_counts,
-    }
-
-
-def collection_result_from_dict(data: dict) -> CollectionResult:
-    return CollectionResult(
-        events=[TimelineEvent.model_validate(e) for e in data["events"]],
-        outcome=PatchOutcome.model_validate(data["outcome"]) if data.get("outcome") is not None else None,
-        error=data.get("error"),
-        patch_extension_status=data.get("patch_extension_status", []),
-        checks_performed=data.get("checks_performed", []),
-        checks_unavailable=data.get("checks_unavailable", []),
-        checks_finding_counts=data.get("checks_finding_counts", {}),
-    )

@@ -27,27 +27,32 @@ target infrastructure.
 ## What's been verified, and how
 
 - **The orchestrator control-flow logic is genuinely unit-tested**, not
-  just written and trusted: `tests/test_serverless_orchestrators.py`
-  drives both orchestrators as plain Python generators (Microsoft's own
-  documented pattern for testing Durable Functions orchestrators - no
-  live Functions host or Azure Storage emulator needed, since an
-  orchestrator is deterministic code that only ever yields activity
-  calls). 14 tests, including one that specifically guards against a
-  real regression class: a cluster's recollected representative bundle
-  must reach both the second deep-RCA call *and* persistence, not just
-  the RCA call while the stale pre-recollection bundle silently gets
-  persisted (the exact bug `pipeline/orchestrator.py::Pipeline.run`'s own
-  docstring documents fixing for the Docker deployment on 2026-10-19).
-  That test was sabotage-proven: temporarily reverted the fix, confirmed
-  the test fails, restored it.
+  just written and trusted: `tests/test_serverless_orchestrators.py` (7
+  tests) drives both orchestrators as plain Python generators
+  (Microsoft's own documented pattern for testing Durable Functions
+  orchestrators - no live Functions host or Azure Storage emulator
+  needed, since an orchestrator is deterministic code that only ever
+  yields activity calls). Two tests specifically guard against real
+  regression classes, both sabotage-proven (temporarily broke the fix,
+  confirmed the test fails, restored it, confirmed green again):
+  1. A cluster's recollected representative bundle must reach both the
+     second deep-RCA call *and* persistence, not just the RCA call while
+     the stale pre-recollection bundle silently gets persisted (the
+     exact bug `pipeline/orchestrator.py::Pipeline.run`'s own docstring
+     documents fixing for the Docker deployment on 2026-10-19).
+  2. `near_misses`/`retrieval_context` must be computed once (via
+     `compute_rca_context_activity`) and reused verbatim for the post-
+     recollection re-diagnosis call, not recomputed against the
+     recollected bundle - found in review 2026-11-10 as a real fidelity
+     gap from `Pipeline._diagnose_one`'s own behavior (it computes both
+     once and reuses them for the re-diagnosis call too).
 - **Serialization is verified against real model instances**
-  (`tests/test_serverless_serialization.py`), not just "the function
-  exists" - round-tripping a real `EvidenceBundle`/`Cluster`/`RCAResult`/
-  `PatchRun`/`CollectionResult` through `.model_dump(mode="json")` and
-  back.
+  (`tests/test_serverless_serialization.py`, 5 tests), not just "the
+  function exists" - round-tripping a real `EvidenceBundle`/`Cluster`/
+  `RCAResult`/`PatchRun` through `.model_dump(mode="json")` and back.
 - **The whole module tree imports cleanly** against the real `culprit`
   package (`python -c "import culprit.serverless.function_app"`),
-  registering all 15 functions (4 triggers + 2 orchestrators + 9
+  registering all 16 functions (4 triggers + 2 orchestrators + 10
   activities) with no import errors.
 - **Every Durable Functions / Azure Functions API used here was checked
   against the installed `azure-functions`/`azure-functions-durable`
@@ -60,9 +65,22 @@ target infrastructure.
   original function back out of it - that's why `run_pre_flight_scan`
   and `*_generator` exist as separate, undecorated functions rather than
   the decorated ones being called directly anywhere in this codebase.
-- **The full existing Culprit test suite stays green** (757 passed,
-  including the 21 new tests above) - the `collection.py` refactor and
-  this whole new package introduced no regression anywhere else.
+- **The full existing Culprit test suite stays green**: 755 passed (743
+  baseline + 12 new tests in this package) - no regression anywhere else
+  from the `collection.py` refactor or this new package. Re-verify this
+  number yourself before trusting it for long - it drifts as the suite
+  grows, and an earlier version of this README overclaimed it (said 757/21
+  when the real numbers were lower) - a mistake an independent review
+  caught by actually re-running the tests, not by reading the claim.
+- **An independent review (2026-11-10) found and this package then
+  fixed**: the `near_misses`/`retrieval_context` fidelity gap above, plus
+  two real Bicep deployment-blockers (a Consumption-plan + custom-
+  container mismatch, and a missing `keyVaultReferenceIdentity` that
+  would have silently broken Key Vault secret resolution) - see
+  `culprit/infra/main.bicep`'s own comments at both fixed spots. Also
+  removed an unused, dead `CollectionResult` (de)serializer pair from
+  `serialization.py` that review correctly flagged as having zero real
+  callers.
 
 ## What has NOT been verified, and what real Azure access would confirm
 
@@ -83,7 +101,15 @@ of the following has been run for real:
 - **The Bicep template (`culprit/infra/main.bicep`) has never been run
   through `az bicep build` or `az deployment group what-if`** - no `az`
   CLI was available here. Validate both before applying it to a real
-  resource group.
+  resource group. This caveat is not theoretical: an independent review
+  (2026-11-10), working by static read-through alone, found two real bugs
+  a `what-if` run would very likely have caught on the first try - a
+  Consumption-plan hosting plan paired with a custom-container Function
+  App (not a supported combination; fixed to Elastic Premium) and a
+  missing `keyVaultReferenceIdentity` that would have silently broken
+  both Key Vault secret references at runtime. Both are fixed now, but
+  the lesson stands: static review catches what it catches, and this
+  template still needs a real `what-if` before anyone trusts it fully.
 - **The native Event Grid trigger's subscription-validation handshake**
   is documented Azure Functions behavior (handled by the platform, not
   application code), but hasn't been confirmed against a real Event Grid

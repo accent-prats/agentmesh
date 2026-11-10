@@ -9,7 +9,6 @@ from __future__ import annotations
 
 from datetime import datetime, timezone
 
-from culprit.collectors.base import CollectionResult
 from culprit.models.cluster import Cluster, ClusterMember, Fingerprint
 from culprit.models.evidence import (
     EvidenceBundle,
@@ -26,8 +25,6 @@ from culprit.serverless.serialization import (
     bundle_to_dict,
     cluster_from_dict,
     cluster_to_dict,
-    collection_result_from_dict,
-    collection_result_to_dict,
     machine_from_dict,
     machine_to_dict,
     patch_run_from_dict,
@@ -101,24 +98,3 @@ def test_rca_result_round_trips():
 def test_patch_run_round_trips():
     r = _patch_run()
     assert patch_run_from_dict(patch_run_to_dict(r)) == r
-
-
-def test_collection_result_round_trips_including_its_dataclass_only_fields():
-    result = CollectionResult(
-        events=[TimelineEvent(ts=datetime(2026, 11, 1, tzinfo=timezone.utc), source=Source.GUEST_LINUX, kind="log_line", summary="disk full", raw_ref="ref-2")],
-        outcome=PatchOutcome(status="Failed"),
-        error="guest Run Command timed out",
-        patch_extension_status=[{"status": "Error"}],
-        checks_performed=["dpkg log"],
-        checks_unavailable=["subscription-manager status"],
-        checks_finding_counts={"dpkg log": 3},
-    )
-    restored = collection_result_from_dict(collection_result_to_dict(result))
-    assert restored == result
-
-
-def test_collection_result_round_trips_with_no_outcome():
-    result = CollectionResult(events=[], outcome=None, error=None)
-    restored = collection_result_from_dict(collection_result_to_dict(result))
-    assert restored.outcome is None
-    assert restored == result

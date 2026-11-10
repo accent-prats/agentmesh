@@ -1,4 +1,10 @@
-# Feature Flagging — GrowthBook
+# Feature Flagging — GrowthBook (removed 2026-11-10)
+
+> **This feature was removed** - management confirmed feature flagging isn't needed for this
+> platform. The `growthbook`/`mongo` containers, Portal's `FlagMiddleware`/`GrowthBookClient`
+> wiring, and `shared/src/feature_flags/` itself are all gone. Everything below describes the
+> setup as it existed before removal - kept for history, not as a live guide. See
+> [shared/README.md](../../shared/README.md) for the current state.
 
 > Self-hosted, open-source feature flagging and A/B experimentation for the AgentMesh platform.
 
