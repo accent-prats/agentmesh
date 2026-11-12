@@ -33,6 +33,10 @@ param postgresAdminPassword string
 @secure()
 param anthropicApiKey string = ''
 
+@description('Fernet key encrypting the Azure/Datadog settings Culprit stores at rest (culprit/security/crypto.py) - generate with: python -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())". Left empty, the app silently falls back to a hardcoded, publicly-known dev-only key - a real production risk, not a convenience default, so this should never be left empty outside a throwaway demo.')
+@secure()
+param culpritEncryptionKey string = ''
+
 @description('Image tag to deploy - defaults to :latest; set this explicitly on every real deployment once a CI pipeline exists, so a Function App restart cannot silently pick up a newer, untested image')
 param imageTag string = 'latest'
 
@@ -148,6 +152,24 @@ resource databaseUrlSecret 'Microsoft.KeyVault/vaults/secrets@2023-07-01' = {
   name: 'culprit-database-url'
   properties: {
     value: 'postgresql+psycopg://${postgresAdminLogin}:${postgresAdminPassword}@${postgres.properties.fullyQualifiedDomainName}/culprit'
+  }
+}
+
+// Found while preparing the manual (no-Bicep) deployment proposal
+// (2026-11-13): an earlier version of this template never set
+// CULPRIT_ENCRYPTION_KEY at all, silently leaving a real deployment on
+// the hardcoded dev-only fallback key (culprit/security/crypto.py) -
+// the same class of gap as the earlier missing Container Registry, just
+// security-shaped instead of deployment-shaped. Conditional, same
+// pattern as anthropicSecret: if the caller doesn't pass one, it's
+// absent here too and the app setting below is left blank, matching the
+// existing "degrade to insecure dev-only key" behavior rather than
+// pretending a value exists that doesn't.
+resource encryptionKeySecret 'Microsoft.KeyVault/vaults/secrets@2023-07-01' = if (!empty(culpritEncryptionKey)) {
+  parent: keyVault
+  name: 'culprit-encryption-key'
+  properties: {
+    value: culpritEncryptionKey
   }
 }
 
@@ -276,6 +298,10 @@ resource functionApp 'Microsoft.Web/sites@2023-01-01' = {
         {
           name: 'ANTHROPIC_API_KEY'
           value: empty(anthropicApiKey) ? '' : '@Microsoft.KeyVault(SecretUri=${anthropicSecret.properties.secretUri})'
+        }
+        {
+          name: 'CULPRIT_ENCRYPTION_KEY'
+          value: empty(culpritEncryptionKey) ? '' : '@Microsoft.KeyVault(SecretUri=${encryptionKeySecret.properties.secretUri})'
         }
       ]
     }
