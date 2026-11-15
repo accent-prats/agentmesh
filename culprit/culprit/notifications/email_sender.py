@@ -86,7 +86,7 @@ def build_report_digest(
     from culprit.reporting.notify import top_entries as select_top_entries
     from culprit.reporting.render import render_email_report_html
 
-    subject = f"Culprit · {report.run.scope_name} — {report.total_failed}/{report.total_machines} failed"
+    subject = f"PatchInsight · {report.run.scope_name} — {report.total_failed}/{report.total_machines} failed"
     html_body = render_email_report_html(
         report, top_entries=select_top_entries(report), note=note, requested_by=requested_by, tz_name=tz_name,
     )

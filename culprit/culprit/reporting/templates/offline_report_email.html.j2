@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Culprit &middot; {{ report.run.scope_name }}</title>
+<title>PatchInsight &middot; {{ report.run.scope_name }}</title>
 <style>
   body { margin:0; padding:24px; background:#ffffff; color:#111827; font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif; font-size:14px; line-height:1.5; }
   .header { background:#1C0A0F; color:#ffffff; padding:20px 24px; border-radius:10px; margin-bottom:20px; }
@@ -40,7 +40,7 @@
 <body>
 
 <div class="header">
-  <span class="brand">Culprit</span><span class="sub">Patch Failure RCA Agent</span>
+  <span class="brand">PatchInsight</span><span class="sub">Patch Failure RCA Agent</span>
   <h1>{{ report.run.scope_name }}</h1>
   <p class="meta">
     Run {{ report.run.run_id }} ({{ report.run.trigger_mode.value.replace('_', ' ')|title }}) &middot;

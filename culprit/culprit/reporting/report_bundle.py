@@ -27,8 +27,23 @@ from __future__ import annotations
 
 import io
 import zipfile
+from datetime import datetime, timezone
+from zoneinfo import ZoneInfo
 
 from culprit.models.report import FleetReport
+
+
+def offline_report_attachment_filename(report: FleetReport, tz_name: str) -> str:
+    """PatchInsight_RCA_<dd-mm-yy-hh-mm-ss>.zip - shared by both the
+    auto-send and manual-send email paths so the two never drift apart.
+    The timestamp is the run's own completion time (ended_at, falling
+    back to started_at), localized to the configured display timezone -
+    not "now" - so a report sent manually well after the run actually
+    completed still carries a meaningful timestamp, not the send time."""
+    when = report.run.ended_at or report.run.started_at or datetime.now(timezone.utc)
+    zone = ZoneInfo(tz_name)
+    when_local = (when if when.tzinfo else when.replace(tzinfo=timezone.utc)).astimezone(zone)
+    return f"PatchInsight_RCA_{when_local.strftime('%d-%m-%y-%H-%M-%S')}.zip"
 
 
 def build_offline_report_bundle(session, report: FleetReport) -> bytes:

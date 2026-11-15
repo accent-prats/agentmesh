@@ -121,7 +121,7 @@ def test_tcx_mailer_settings_default_view_is_unconfigured(client):
     assert body["configured"] is False
     assert body["password_configured"] is False
     assert body["default_recipients"] == []
-    assert body["from_name"] == "Culprit"
+    assert body["from_name"] == "PatchInsight"
 
 
 def test_tcx_mailer_settings_save_and_reload_masks_the_password(client):
@@ -570,10 +570,12 @@ def test_send_report_on_completion_sends_via_smtp_with_the_attachment(client, se
     sent = FakeSMTP.instances[0].sent_message
     assert sent is not None
     assert sent["To"] == "ops@example.com"
+    import re
+
     attachment_filenames = [
         part.get_filename() for part in sent.iter_attachments()
     ]
-    assert f"culprit-report-{seeded_run_id}.zip" in attachment_filenames
+    assert any(re.fullmatch(r"PatchInsight_RCA_\d{2}-\d{2}-\d{2}-\d{2}-\d{2}-\d{2}\.zip", n) for n in attachment_filenames)
 
     with get_session_factory()() as session:
         log = repository.list_email_log(session)
@@ -639,10 +641,12 @@ def test_send_report_on_completion_sends_via_oauth_with_the_attachment(client, s
     assert len(FakeSMTP.instances) == 1
     sent = FakeSMTP.instances[0].sent_message
     assert sent is not None
+    import re
+
     attachment_filenames = [
         part.get_filename() for part in sent.iter_attachments()
     ]
-    assert f"culprit-report-{seeded_run_id}.zip" in attachment_filenames
+    assert any(re.fullmatch(r"PatchInsight_RCA_\d{2}-\d{2}-\d{2}-\d{2}-\d{2}-\d{2}\.zip", n) for n in attachment_filenames)
 
     with get_session_factory()() as session:
         log = repository.list_email_log(session)

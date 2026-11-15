@@ -332,9 +332,11 @@ def test_send_email_attaches_the_offline_bundle_and_never_links_out(client, seed
     assert resp.status_code == 200
     assert resp.json()["ok"] is True
 
+    import re
+
     sent = FakeSMTP.instances[0].sent_message
     attachment_filenames = [part.get_filename() for part in sent.iter_attachments()]
-    assert f"culprit-report-{seeded_run_id}.zip" in attachment_filenames
+    assert any(re.fullmatch(r"PatchInsight_RCA_\d{2}-\d{2}-\d{2}-\d{2}-\d{2}-\d{2}\.zip", n) for n in attachment_filenames)
 
     html_part = sent.get_body(preferencelist=("html",)).get_content()
     assert "href=" not in html_part

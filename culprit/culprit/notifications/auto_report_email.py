@@ -61,7 +61,7 @@ def _build_subject_and_body(report: FleetReport, trigger_mode: TriggerMode, tz_n
     date_str = when_local.strftime("%Y-%m-%d")
 
     subject = (
-        f"Culprit Patch RCA — {run.scope_name} — {date_str} — "
+        f"PatchInsight Patch RCA — {run.scope_name} — {date_str} — "
         f"{report.total_failed}/{report.total_machines} failed"
     )
 
@@ -101,7 +101,7 @@ def send_report_on_completion(session_factory, report: FleetReport, trigger_mode
     from culprit.db import repository
     from culprit.models.email import EmailStatus
     from culprit.notifications.email_sender import resolve_active_email_config
-    from culprit.reporting.report_bundle import build_offline_report_bundle
+    from culprit.reporting.report_bundle import build_offline_report_bundle, offline_report_attachment_filename
 
     run_id = report.run.run_id
     try:
@@ -118,7 +118,7 @@ def send_report_on_completion(session_factory, report: FleetReport, trigger_mode
             tz_name = repository.load_display_timezone_settings(session).timezone
             subject, plain_text_body, html_body = _build_subject_and_body(report, trigger_mode, tz_name)
             report_bundle_bytes = build_offline_report_bundle(session, report)
-            attachments = [(f"culprit-report-{run_id}.zip", report_bundle_bytes)]
+            attachments = [(offline_report_attachment_filename(report, tz_name), report_bundle_bytes)]
 
             body = plain_text_body if method == "tcx_mailer" else html_body
             ok, message = send(cfg, recipients, subject, body, attachments)
