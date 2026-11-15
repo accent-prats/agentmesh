@@ -42,11 +42,11 @@ def test_console_landing_page(client):
     """The AgentMesh launcher's 'Launch' target - must render, and must
     call the demo trigger via a *relative* path (`runs/demo`, not
     `/runs/demo`) so it still resolves correctly when nginx serves this
-    app under a path prefix like /culprit/."""
+    app under a path prefix like /patchinsight/."""
     resp = client.get("/")
     assert resp.status_code == 200
     assert "text/html" in resp.headers["content-type"]
-    assert "Culprit" in resp.text
+    assert "PatchInsight" in resp.text
     assert "fetch('runs/demo'" in resp.text
     assert "fetch('/runs/demo'" not in resp.text
 
@@ -94,7 +94,7 @@ def test_trigger_demo_run_and_read_back_report(client):
 
     resp3 = client.get(f"/runs/{run_id}/report.html")
     assert resp3.status_code == 200
-    assert "Culprit" in resp3.text
+    assert "PatchInsight" in resp3.text
 
 
 def test_report_404_for_unknown_run(client):

@@ -14,13 +14,13 @@ router = APIRouter()
 _APP_REGISTRY = {
     "culprit": {
         "id": "culprit",
-        "name": "Culprit",
-        "full_name": "Culprit — Patch Failure RCA Agent",
+        "name": "PatchInsight",
+        "full_name": "PatchInsight — Patch Failure RCA Agent",
         "description": "Autonomous root-cause analysis for failed Azure Update Manager patch deployments — collapses hundreds of failures into a handful of distinct causes, settles the obvious ones with a deterministic rule engine, and hands the ambiguous tail to Claude for deep reasoning and remediation guidance.",
         "icon": "search",
         "color": "rose",
         "url_env": "CULPRIT_PUBLIC_URL",
-        "default_url": "/culprit/",
+        "default_url": "/patchinsight/",
         "hidden": False,
     },
 }

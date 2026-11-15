@@ -6,7 +6,7 @@
 
   <h1 class="text-2xl font-bold text-gray-900 tracking-tight">Runs</h1>
   <p class="text-sm text-gray-500 mt-1 mb-6 max-w-2xl">
-    Every maintenance run Culprit has diagnosed - which update job, when, how many machines it
+    Every maintenance run PatchInsight has diagnosed - which update job, when, how many machines it
     covered, and how many failed. Click a run for its full fleet report.
   </p>
 
@@ -78,7 +78,7 @@
           <td class="px-5 py-3.5">
             <span class="whitespace-nowrap text-[10px] font-semibold uppercase tracking-wide px-2 py-0.5 rounded-full bg-gray-50 text-gray-600 border border-gray-200">{{ run.trigger_mode.replace('_', ' ') }}</span>
           </td>
-          <td class="px-5 py-3.5 text-gray-600 whitespace-nowrap" title="Culprit's own lookback window for this scan{% if run.ended_at %} ({{ run.started_at | localtime }} - {{ run.ended_at | localtime }}){% endif %} - the scan itself ran at the end of this range, not any specific Azure Update Manager maintenance job's time.">{{ (run.created_at or run.started_at) | localtime }}</td>
+          <td class="px-5 py-3.5 text-gray-600 whitespace-nowrap" title="PatchInsight's own lookback window for this scan{% if run.ended_at %} ({{ run.started_at | localtime }} - {{ run.ended_at | localtime }}){% endif %} - the scan itself ran at the end of this range, not any specific Azure Update Manager maintenance job's time.">{{ (run.created_at or run.started_at) | localtime }}</td>
           <td class="px-5 py-3.5 text-right tabular-nums text-gray-600">{{ run.total_machines }}</td>
           <td class="px-5 py-3.5 text-right tabular-nums {{ 'text-red-600 font-semibold' if run.failed_machines else 'text-gray-400' }}">{{ run.failed_machines }}</td>
           <td class="px-5 py-3.5 text-right tabular-nums text-gray-600">{{ run.total_clusters }}</td>

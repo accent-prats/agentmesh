@@ -81,7 +81,7 @@ export default function Admin({ onBack }: Props) {
 
 // ── Users Tab ─────────────────────────────────────────────────────────────────
 
-const APP_LABELS: Record<string, string> = { culprit: 'Culprit' }
+const APP_LABELS: Record<string, string> = { culprit: 'PatchInsight' }
 const ALL_APPS = ['culprit']
 
 const ROLE_COLORS: Record<string, string> = {

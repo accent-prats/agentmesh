@@ -25,7 +25,7 @@ log = logging.getLogger(__name__)
 
 _DECRYPT_ERROR_DETAIL = (
     "Stored Azure settings could not be decrypted - CULPRIT_ENCRYPTION_KEY likely changed "
-    "since they were saved. Re-enter them on /culprit/settings."
+    "since they were saved. Re-enter them on /patchinsight/settings."
 )
 
 router = APIRouter(prefix="/runs", tags=["runs"])
