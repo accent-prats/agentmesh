@@ -30,10 +30,35 @@ _TRIGGER_LABELS = {
 }
 
 
-def _build_subject_and_body(report: FleetReport, trigger_mode: TriggerMode, tz_name: str) -> tuple[str, str, str]:
-    """Returns (subject, plain_text_body, html_body) - built once, used by
-    whichever method is active (tcx-mailer's `body` is plain text; SMTP/
-    OAuth's is HTML, same facts either way). Deliberately never includes a
+def _build_subject_and_body(report: FleetReport, trigger_mode: TriggerMode, tz_name: str) -> tuple[str, str]:
+    """Returns (subject, html_body) - one body, sent to every method the
+    same way.
+
+    **Two wrong theories, corrected 2026-11-16 against real sent emails**:
+    this function originally built a SEPARATE plain-text body for
+    tcx-mailer specifically, on the unverified assumption (never checked
+    against the real vendor behavior) that "tcx-mailer's body is plain
+    text, SMTP/OAuth's is HTML." A first real send showed the body
+    collapsed into one unformatted run-on block in Outlook; the first fix
+    attempt (switching that plain-text body's line joiner from a bare
+    "\\n" to "\\r\\n", theorizing a CRLF-vs-bare-LF mail-relay mismatch) was
+    deployed and tested against a second real send - it made no visible
+    difference at all. The real culprit: the delivered message's dividers
+    and labeled fields were joined by exactly ONE space each, including
+    across what should have been blank-line section breaks - the
+    signature of an HTML renderer collapsing every run of whitespace
+    (newlines included) to a single space, not of a transport that merely
+    drops `\\n` characters. tcx-mailer's own `send_email(body=...)` has no
+    content-type parameter at all (confirmed by reading both this
+    codebase's adapter and its vendor-matching test fixture) - whatever
+    the real vendor/Siemens relay does with that string is a fixed,
+    uninspectable choice on their end, not something this app can
+    negotiate. The one lever this app DOES control is the shape of the
+    string itself, and `api/routes_notifications.py::send_report_email`
+    (the pre-existing, already-field-tested manual "Send Report" button)
+    already sends the SAME html_body to every method, tcx-mailer included,
+    with no special case - this function now matches that already-proven
+    design instead of its own never-verified one. Deliberately never includes a
     "view live" link of any kind, even a conditional one - found 2026-11-02,
     against a real send: the user's "no broken links" requirement means NO
     link to a live server at all, full stop, not "a link when one happens
@@ -95,19 +120,18 @@ def _build_subject_and_body(report: FleetReport, trigger_mode: TriggerMode, tz_n
     lines.append("The full Fleet Report (root cause + recommended fix per cause) and Installation")
     lines.append("Report are in the attached zip - extract it and open report.html. Nothing in it")
     lines.append("needs network access.")
-    # \r\n, not a bare \n - found 2026-11-16 against a real sent email:
-    # every line break in a tcx-mailer-delivered message was silently
-    # collapsed, leaving the entire body as one unreadable run-on line in
-    # Outlook, even though non-newline Unicode (em dashes, etc.) survived
-    # the trip intact - a bare-LF body is exactly the known failure mode
-    # for a relay that constructs a raw RFC 2822 message expecting
-    # CRLF-terminated lines. SMTP/OAuth's own HTML path isn't affected -
-    # a browser-rendered <pre> block already respects a bare \n fine.
-    plain_text_body = "\r\n".join(lines)
+    # A real HTML <pre> block, not a plain-text string - see this function's
+    # own docstring for why a plain-text body (with either a bare "\n" or a
+    # "\r\n" joiner - both tried and both disproven against real sent
+    # emails) never survives whatever the tcx-mailer/Siemens relay does
+    # with it. <pre> preserves whitespace/line breaks by the HTML spec
+    # itself, independent of any stylesheet - the one thing every method
+    # (SMTP/OAuth's genuine multipart HTML, and now tcx-mailer's opaque
+    # body string) can rely on rendering the same way.
     html_body = "<pre style=\"font-family:inherit\">" + "\n".join(
         line.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;") for line in lines
     ) + "</pre>"
-    return subject, plain_text_body, html_body
+    return subject, html_body
 
 
 def send_report_on_completion(session_factory, report: FleetReport, trigger_mode: TriggerMode) -> None:
@@ -132,12 +156,11 @@ def send_report_on_completion(session_factory, report: FleetReport, trigger_mode
                 return
 
             tz_name = repository.load_display_timezone_settings(session).timezone
-            subject, plain_text_body, html_body = _build_subject_and_body(report, trigger_mode, tz_name)
+            subject, html_body = _build_subject_and_body(report, trigger_mode, tz_name)
             report_bundle_bytes = build_offline_report_bundle(session, report)
             attachments = [(offline_report_attachment_filename(report, tz_name), report_bundle_bytes)]
 
-            body = plain_text_body if method == "tcx_mailer" else html_body
-            ok, message = send(cfg, recipients, subject, body, attachments)
+            ok, message = send(cfg, recipients, subject, html_body, attachments)
 
             repository.save_email_log(
                 session, run_id=run_id, recipients=recipients, requested_by="system (auto-send on completion)",

@@ -512,6 +512,14 @@ def test_send_report_on_completion_sends_via_the_active_method_and_logs_it(clien
     # resolve". Pinned here regardless of whether public_url is configured
     # in this test environment.
     assert "http://" not in call["body"] and "https://" not in call["body"]
+    # Found 2026-11-16 against a real sent email: a prior version of this
+    # function special-cased tcx-mailer to receive a plain-text body
+    # instead of this same html_body - the delivered message collapsed
+    # into one unformatted run-on line because whatever renders it treats
+    # the string as HTML, where only real markup (not "\n"/"\r\n") creates
+    # a line break. Pin that tcx-mailer gets the exact same <pre>-wrapped
+    # HTML body as every other method, no special case.
+    assert "<pre" in call["body"]
 
     with get_session_factory()() as session:
         log = repository.list_email_log(session)
@@ -539,23 +547,30 @@ def test_build_subject_and_body_formats_the_window_cleanly_not_a_raw_repr(client
     messy_ended_at = datetime_module.datetime(2026, 11, 2, 12, 13, 48, 373324, tzinfo=datetime_module.timezone.utc)
     report = report.model_copy(update={"run": report.run.model_copy(update={"ended_at": messy_ended_at})})
 
-    _subject, plain_text_body, html_body = _build_subject_and_body(report, TriggerMode.SCHEDULED, "UTC")
-    for body in (plain_text_body, html_body):
-        assert "373324" not in body
-        assert ".373324" not in body
-    assert "2026-11-02 12:13" in plain_text_body
+    _subject, html_body = _build_subject_and_body(report, TriggerMode.SCHEDULED, "UTC")
+    assert "373324" not in html_body
+    assert ".373324" not in html_body
+    assert "2026-11-02 12:13" in html_body
 
 
-def test_tcx_mailer_plain_text_body_uses_crlf_so_it_does_not_collapse_into_one_line(client, seeded_run_id):
-    """Found 2026-11-16 against a real sent email: every line break in a
-    tcx-mailer-delivered message was silently collapsed in Outlook, leaving
-    the whole body as one unreadable run-on line, even though non-newline
-    Unicode (em dashes etc.) survived the trip intact - the signature of a
-    relay building a raw RFC 2822 message that expects CRLF-terminated
-    lines, not bare LF. Pins that the plain-text body (the one path that
-    actually goes through that relay - tcx-mailer's body is plain text,
-    SMTP/OAuth's is HTML) uses \\r\\n, and that it's structured with
-    distinct sections rather than one flat paragraph."""
+def test_auto_report_email_body_is_real_html_markup_not_a_plain_text_string(client, seeded_run_id):
+    """Found 2026-11-16 across two real sent emails: the first attempt at
+    this body was a plain-text string special-cased for tcx-mailer
+    (assumed, never verified, to need plain text while SMTP/OAuth got
+    HTML) - it arrived as one unformatted run-on line. The follow-up fix
+    (switching that plain-text string's line joiner from a bare "\\n" to
+    "\\r\\n", theorizing a CRLF-vs-bare-LF mail-relay mismatch) was tried
+    next and made no visible difference at all against a second real send.
+    The real signature in both screenshots - section dividers and labeled
+    fields joined by exactly one space each, even across blank-line
+    section breaks - is what an HTML renderer does to a run of whitespace
+    (newlines included), not what a transport merely dropping "\\n"
+    characters would produce. tcx-mailer's own send_email() has no
+    content-type parameter at all, so the only lever this app has is the
+    string's own shape: this pins that _build_subject_and_body returns a
+    single HTML body (a real <pre> block, which preserves whitespace by
+    the HTML spec itself) used for every method, tcx-mailer included, with
+    no separate plain-text variant anywhere."""
     from culprit.api.deps import get_session_factory
     from culprit.db import repository
     from culprit.models.patch_run import TriggerMode
@@ -564,19 +579,16 @@ def test_tcx_mailer_plain_text_body_uses_crlf_so_it_does_not_collapse_into_one_l
     with get_session_factory()() as session:
         report = repository.load_fleet_report(session, seeded_run_id)
 
-    _subject, plain_text_body, _html_body = _build_subject_and_body(report, TriggerMode.SCHEDULED, "UTC")
+    _subject, html_body = _build_subject_and_body(report, TriggerMode.SCHEDULED, "UTC")
 
-    assert "\r\n" in plain_text_body
-    # Every bare \n in the body is part of a \r\n pair - never a lone \n
-    # that a strict CRLF-expecting parser could fail to recognize as a
-    # real line break.
-    assert "\n" not in plain_text_body.replace("\r\n", "")
+    assert "<pre" in html_body and "</pre>" in html_body
+    assert "\r\n" not in html_body  # no leftover plain-text CRLF joiner
 
-    lines = plain_text_body.split("\r\n")
-    assert len(lines) > 10  # genuinely multi-line, not one long line
-    assert any(line.startswith("Run:") for line in lines)
-    assert any(line.startswith("Window:") for line in lines)
-    assert "TOP CAUSES" in lines
+    lines = html_body.split("\n")
+    assert len(lines) > 10  # genuinely multi-line, not one long string
+    assert any(line.lstrip().startswith("Run:") for line in lines)
+    assert any(line.lstrip().startswith("Window:") for line in lines)
+    assert "TOP CAUSES" in html_body
 
 
 # Found by review 2026-11-02: every existing test of send_report_on_completion/
