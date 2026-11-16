@@ -65,29 +65,45 @@ def _build_subject_and_body(report: FleetReport, trigger_mode: TriggerMode, tz_n
         f"{report.total_failed}/{report.total_machines} failed"
     )
 
+    divider = "-" * 46
+
     lines = [
-        f"Run: {run.run_id} ({_TRIGGER_LABELS.get(trigger_mode, trigger_mode.value)})",
-        f"Scope: {run.scope_name}",
-        f"Window: {_format_local(run.started_at)} – {_format_local(run.ended_at)}",
-        f"Machines scanned: {report.total_machines}",
-        f"Failed: {report.total_failed} across {report.total_clusters} distinct cause(s)",
-        f"Compliance: {report.compliance_pct}%",
+        f"PATCHINSIGHT PATCH RCA — {run.scope_name}",
+        divider,
+        "",
+        f"Run:               {run.run_id} ({_TRIGGER_LABELS.get(trigger_mode, trigger_mode.value)})",
+        f"Window:            {_format_local(run.started_at)} – {_format_local(run.ended_at)}",
+        f"Machines scanned:  {report.total_machines}",
+        f"Failed:            {report.total_failed} across {report.total_clusters} distinct cause(s)",
+        f"Compliance:        {report.compliance_pct}%",
     ]
     top = top_entries(report)
     if top:
         lines.append("")
-        lines.append("Top causes:")
+        lines.append("TOP CAUSES")
+        lines.append(divider)
         for entry in top:
             badge = f" ({entry.recurrence_badge})" if entry.recurrence_badge else ""
             lines.append(
-                f"  - {entry.cluster.size} machine(s) — {entry.result.title}{badge} "
-                f"(confidence {entry.result.confidence:.0%})"
+                f"  * {entry.cluster.size} machine(s) — {entry.result.title}{badge}"
             )
+            lines.append(f"    confidence {entry.result.confidence:.0%}")
+            lines.append("")
+        lines.pop()  # drop the trailing blank line after the last cause
     lines.append("")
+    lines.append(divider)
     lines.append("The full Fleet Report (root cause + recommended fix per cause) and Installation")
     lines.append("Report are in the attached zip - extract it and open report.html. Nothing in it")
     lines.append("needs network access.")
-    plain_text_body = "\n".join(lines)
+    # \r\n, not a bare \n - found 2026-11-16 against a real sent email:
+    # every line break in a tcx-mailer-delivered message was silently
+    # collapsed, leaving the entire body as one unreadable run-on line in
+    # Outlook, even though non-newline Unicode (em dashes, etc.) survived
+    # the trip intact - a bare-LF body is exactly the known failure mode
+    # for a relay that constructs a raw RFC 2822 message expecting
+    # CRLF-terminated lines. SMTP/OAuth's own HTML path isn't affected -
+    # a browser-rendered <pre> block already respects a bare \n fine.
+    plain_text_body = "\r\n".join(lines)
     html_body = "<pre style=\"font-family:inherit\">" + "\n".join(
         line.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;") for line in lines
     ) + "</pre>"

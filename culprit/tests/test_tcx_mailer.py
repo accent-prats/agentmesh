@@ -277,6 +277,29 @@ def test_send_tcx_mailer_resets_the_cached_token_before_every_call(fake_vendor):
     assert fake_vendor._TOKEN is None
 
 
+def test_send_tcx_mailer_uses_the_real_filename_not_a_random_temp_name(fake_vendor):
+    """Found 2026-11-16 against a real sent email: a recipient saw a random
+    `tmpXXXXXXXX.zip` attachment name instead of the intended
+    `PatchInsight_RCA_<timestamp>.zip` - the vendor's send_email() only
+    accepts file *paths*, not a separate display-name parameter, so
+    whatever `os.path.basename()` of that path is becomes the name the
+    recipient sees. The previous implementation only carried the file
+    *suffix* through `tempfile.NamedTemporaryFile`, which always
+    randomizes the base name - this pins that the real intended filename
+    is now what actually reaches the vendor call's own attachment path."""
+    from culprit.models.settings import TcxMailerSettingsInput
+    from culprit.notifications.tcx_mailer_adapter import send_tcx_mailer
+
+    cfg = TcxMailerSettingsInput(tenant="acme-prod", username="svc", password="p")
+    ok, _ = send_tcx_mailer(
+        cfg, ["a@b.com"], "subject", "body", attachments=[("PatchInsight_RCA_16-11-26-09-56-23.zip", b"zip-bytes-here")]
+    )
+    assert ok is True
+    paths = fake_vendor.send_calls[0]["attachments"]
+    assert len(paths) == 1
+    assert os.path.basename(paths[0]) == "PatchInsight_RCA_16-11-26-09-56-23.zip"
+
+
 def test_send_tcx_mailer_writes_and_cleans_up_attachment_temp_files(fake_vendor):
     from culprit.models.settings import TcxMailerSettingsInput
     from culprit.notifications.tcx_mailer_adapter import send_tcx_mailer
@@ -521,6 +544,39 @@ def test_build_subject_and_body_formats_the_window_cleanly_not_a_raw_repr(client
         assert "373324" not in body
         assert ".373324" not in body
     assert "2026-11-02 12:13" in plain_text_body
+
+
+def test_tcx_mailer_plain_text_body_uses_crlf_so_it_does_not_collapse_into_one_line(client, seeded_run_id):
+    """Found 2026-11-16 against a real sent email: every line break in a
+    tcx-mailer-delivered message was silently collapsed in Outlook, leaving
+    the whole body as one unreadable run-on line, even though non-newline
+    Unicode (em dashes etc.) survived the trip intact - the signature of a
+    relay building a raw RFC 2822 message that expects CRLF-terminated
+    lines, not bare LF. Pins that the plain-text body (the one path that
+    actually goes through that relay - tcx-mailer's body is plain text,
+    SMTP/OAuth's is HTML) uses \\r\\n, and that it's structured with
+    distinct sections rather than one flat paragraph."""
+    from culprit.api.deps import get_session_factory
+    from culprit.db import repository
+    from culprit.models.patch_run import TriggerMode
+    from culprit.notifications.auto_report_email import _build_subject_and_body
+
+    with get_session_factory()() as session:
+        report = repository.load_fleet_report(session, seeded_run_id)
+
+    _subject, plain_text_body, _html_body = _build_subject_and_body(report, TriggerMode.SCHEDULED, "UTC")
+
+    assert "\r\n" in plain_text_body
+    # Every bare \n in the body is part of a \r\n pair - never a lone \n
+    # that a strict CRLF-expecting parser could fail to recognize as a
+    # real line break.
+    assert "\n" not in plain_text_body.replace("\r\n", "")
+
+    lines = plain_text_body.split("\r\n")
+    assert len(lines) > 10  # genuinely multi-line, not one long line
+    assert any(line.startswith("Run:") for line in lines)
+    assert any(line.startswith("Window:") for line in lines)
+    assert "TOP CAUSES" in lines
 
 
 # Found by review 2026-11-02: every existing test of send_report_on_completion/

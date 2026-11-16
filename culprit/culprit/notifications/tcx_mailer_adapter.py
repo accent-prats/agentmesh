@@ -59,10 +59,10 @@ directly from IT's shared source, not guessed), both worked around here:
 from __future__ import annotations
 
 import os
+import shutil
 import tempfile
 import threading
 from contextlib import contextmanager
-from pathlib import Path
 
 try:
     import tcx_mailer.mailer as _vendor_mailer
@@ -135,8 +135,17 @@ def send_tcx_mailer(
     fully decrypted TcxMailerSettingsInput (db/repository.py::
     load_tcx_mailer_settings) - callers never pass a Fernet ciphertext here.
     `attachments` is (filename, content) pairs - the vendor function only
-    accepts file paths, so each is written to a temp file for the duration
-    of this call and always cleaned up afterward, never left on disk."""
+    accepts file paths, not a separate display-name parameter, so the
+    recipient sees whatever `os.path.basename()` of that path is. Each
+    attachment is written to its own real, intended filename inside one
+    shared temp directory (not `tempfile.NamedTemporaryFile`, which always
+    randomizes the base name) so the vendor call's path basename IS the
+    name we actually want recipients to see - found 2026-11-16 against a
+    real sent email: recipients were getting a random `tmpXXXXXXXX.zip`
+    instead of the intended `PatchInsight_RCA_<timestamp>.zip`, because
+    the previous version only preserved the file *suffix* from the given
+    filename, not the filename itself. The whole temp directory is always
+    cleaned up afterward, never left on disk."""
     if not _MAILER_AVAILABLE:
         return False, _NOT_INSTALLED_MESSAGE
     if not (cfg.tenant and cfg.username and cfg.password):
@@ -144,16 +153,16 @@ def send_tcx_mailer(
     if not to:
         return False, "No recipients given"
 
+    temp_dir: str | None = None
     temp_paths: list[str] = []
     try:
-        for filename, content in attachments or []:
-            suffix = Path(filename).suffix or ""
-            handle = tempfile.NamedTemporaryFile(suffix=suffix, delete=False)
-            try:
-                handle.write(content)
-            finally:
-                handle.close()
-            temp_paths.append(handle.name)
+        if attachments:
+            temp_dir = tempfile.mkdtemp()
+            for filename, content in attachments:
+                path = os.path.join(temp_dir, filename)
+                with open(path, "wb") as handle:
+                    handle.write(content)
+                temp_paths.append(path)
 
         with _vendor_env(cfg):
             _vendor_mailer.send_email(to=to, subject=subject, body=body, attachments=temp_paths)
@@ -161,11 +170,8 @@ def send_tcx_mailer(
     except Exception as exc:  # noqa: BLE001 - reporting the real error is the point of a send attempt
         return False, str(exc)[:480]
     finally:
-        for path in temp_paths:
-            try:
-                os.remove(path)
-            except OSError:
-                pass
+        if temp_dir is not None:
+            shutil.rmtree(temp_dir, ignore_errors=True)
 
 
 def test_tcx_mailer_credentials(cfg) -> tuple[bool, str]:
