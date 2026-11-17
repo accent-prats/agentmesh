@@ -147,6 +147,17 @@ services:
       # Default already matches the portal-api service name below; only
       # override for a non-standard topology.
       CULPRIT_PORTAL_INTERNAL_URL: ${CULPRIT_PORTAL_INTERNAL_URL:-http://portal-api:8000}
+      # Found missing entirely 2026-11-17: these three were read correctly
+      # by culprit/config.py but never wired through this file at all, so
+      # setting CULPRIT_SCHEDULER_ENABLED in a deployment's .env had zero
+      # effect no matter how many times the container was recreated - the
+      # Settings screen's "Scheduler not running" badge was reporting
+      # accurately on a value that could never actually reach the
+      # container's process environment. See main.py's lifespan handler
+      # and config.py's own Settings dataclass for what each one does.
+      CULPRIT_SCHEDULER_ENABLED: ${CULPRIT_SCHEDULER_ENABLED:-false}
+      CULPRIT_SCHEDULED_CRON: ${CULPRIT_SCHEDULED_CRON:-0 4 * * *}
+      CULPRIT_PREFLIGHT_INTERVAL_MINUTES: ${CULPRIT_PREFLIGHT_INTERVAL_MINUTES:-60}
       # Off by default (flipped 2026-10-14, opt-in instead of opt-out) -
       # the Console page's "Demo scenario" card and its POST /runs/demo
       # route (a synthetic fleet, no real credentials needed). A
