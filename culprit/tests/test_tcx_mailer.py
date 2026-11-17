@@ -516,10 +516,14 @@ def test_send_report_on_completion_sends_via_the_active_method_and_logs_it(clien
     # function special-cased tcx-mailer to receive a plain-text body
     # instead of this same html_body - the delivered message collapsed
     # into one unformatted run-on line because whatever renders it treats
-    # the string as HTML, where only real markup (not "\n"/"\r\n") creates
-    # a line break. Pin that tcx-mailer gets the exact same <pre>-wrapped
-    # HTML body as every other method, no special case.
-    assert "<pre" in call["body"]
+    # the string as HTML, where only real markup creates a line break.
+    # Pin that tcx-mailer gets the exact same branded HTML body as every
+    # other method (reporting/render.py::render_email_report_html, the
+    # same template the manual "Send Report" button already sends - see
+    # test_auto_report_email_body_is_the_shared_branded_template below),
+    # no special case and no separate hand-built string.
+    assert "Patch Failure RCA Agent" in call["body"]
+    assert "system (auto-send on completion)" in call["body"]
 
     with get_session_factory()() as session:
         log = repository.list_email_log(session)
@@ -538,7 +542,6 @@ def test_build_subject_and_body_formats_the_window_cleanly_not_a_raw_repr(client
 
     from culprit.api.deps import get_session_factory
     from culprit.db import repository
-    from culprit.models.patch_run import TriggerMode
     from culprit.notifications.auto_report_email import _build_subject_and_body
 
     with get_session_factory()() as session:
@@ -547,48 +550,42 @@ def test_build_subject_and_body_formats_the_window_cleanly_not_a_raw_repr(client
     messy_ended_at = datetime_module.datetime(2026, 11, 2, 12, 13, 48, 373324, tzinfo=datetime_module.timezone.utc)
     report = report.model_copy(update={"run": report.run.model_copy(update={"ended_at": messy_ended_at})})
 
-    _subject, html_body = _build_subject_and_body(report, TriggerMode.SCHEDULED, "UTC")
+    _subject, html_body = _build_subject_and_body(report, "UTC")
     assert "373324" not in html_body
     assert ".373324" not in html_body
     assert "2026-11-02 12:13" in html_body
 
 
-def test_auto_report_email_body_is_real_html_markup_not_a_plain_text_string(client, seeded_run_id):
-    """Found 2026-11-16 across two real sent emails: the first attempt at
-    this body was a plain-text string special-cased for tcx-mailer
-    (assumed, never verified, to need plain text while SMTP/OAuth got
-    HTML) - it arrived as one unformatted run-on line. The follow-up fix
-    (switching that plain-text string's line joiner from a bare "\\n" to
-    "\\r\\n", theorizing a CRLF-vs-bare-LF mail-relay mismatch) was tried
-    next and made no visible difference at all against a second real send.
-    The real signature in both screenshots - section dividers and labeled
-    fields joined by exactly one space each, even across blank-line
-    section breaks - is what an HTML renderer does to a run of whitespace
-    (newlines included), not what a transport merely dropping "\\n"
-    characters would produce. tcx-mailer's own send_email() has no
-    content-type parameter at all, so the only lever this app has is the
-    string's own shape: this pins that _build_subject_and_body returns a
-    single HTML body (a real <pre> block, which preserves whitespace by
-    the HTML spec itself) used for every method, tcx-mailer included, with
-    no separate plain-text variant anywhere."""
+def test_auto_report_email_body_is_the_shared_branded_template(client, seeded_run_id):
+    """Enhancement requested 2026-11-17 (not a bug): after the 2026-11-16
+    whitespace-collapse fix made the body readable again, the user asked
+    for it to look like the richer, branded email (header bar, stat
+    tiles, colored cause entries) they used to get, instead of the plain
+    hand-built `<pre>`-wrapped text block that fix shipped with. That
+    richer look already exists - it's reporting/render.py::
+    render_email_report_html, the exact template the manual "Send Report"
+    button (api/routes_notifications.py::send_report_email) already
+    sends - so this pins that _build_subject_and_body's html_body IS that
+    shared template's real output, not a second, separately hand-built
+    one that could drift out of sync with it again."""
     from culprit.api.deps import get_session_factory
     from culprit.db import repository
-    from culprit.models.patch_run import TriggerMode
     from culprit.notifications.auto_report_email import _build_subject_and_body
+    from culprit.reporting.notify import top_entries
+    from culprit.reporting.render import render_email_report_html
 
     with get_session_factory()() as session:
         report = repository.load_fleet_report(session, seeded_run_id)
 
-    _subject, html_body = _build_subject_and_body(report, TriggerMode.SCHEDULED, "UTC")
+    _subject, html_body = _build_subject_and_body(report, "UTC")
 
-    assert "<pre" in html_body and "</pre>" in html_body
-    assert "\r\n" not in html_body  # no leftover plain-text CRLF joiner
-
-    lines = html_body.split("\n")
-    assert len(lines) > 10  # genuinely multi-line, not one long string
-    assert any(line.lstrip().startswith("Run:") for line in lines)
-    assert any(line.lstrip().startswith("Window:") for line in lines)
-    assert "TOP CAUSES" in html_body
+    expected = render_email_report_html(
+        report, top_entries=top_entries(report), note="",
+        requested_by="system (auto-send on completion)", tz_name="UTC",
+    )
+    assert html_body == expected
+    assert "Patch Failure RCA Agent" in html_body
+    assert "<pre" not in html_body  # the old hand-built block is gone
 
 
 # Found by review 2026-11-02: every existing test of send_report_on_completion/
