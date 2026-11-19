@@ -58,13 +58,24 @@ def test_full_rca_report_zip_contains_every_page_and_static_asset(client, seeded
         assert f"runs/{seeded_run_id}/report.html" in names
         for vm_name in vm_names:
             assert f"runs/{seeded_run_id}/machines/{vm_name}.html" in names
-        # Found by review 2026-11-02 against the original version of this
-        # same design: a missing lucide.min.js silently breaks every "Show
-        # full error/status/timeline" disclosure across every bundled
-        # page - both static assets must travel with the bundle, not just
-        # the HTML.
-        assert "static/tailwind.js" in names
-        assert "static/lucide.min.js" in names
+
+        # Found 2026-11-20: the bundle used to ship tailwind.js/lucide.min.js
+        # as sibling files under static/, but double-clicking a page straight
+        # out of an unextracted zip (Windows Explorer's "preview a file
+        # inside a zip" path) only materializes that one clicked file, not
+        # its siblings two directories up - the external <script src=...>
+        # 404s silently and the page renders completely unstyled. Each page
+        # must now carry both libraries INLINE, and nothing should reference
+        # an external static/ path at all, so there's no sibling file left
+        # to fail to extract.
+        assert "static/" not in names, f"no sibling static/ files should ship any more: {names}"
+        fleet_html = zf.read(f"runs/{seeded_run_id}/report.html").decode("utf-8")
+        assert "static/tailwind.js" not in fleet_html
+        assert "static/lucide.min.js" not in fleet_html
+        # The tailwind.js/lucide.min.js source itself must actually be
+        # present, inlined - not just the external reference removed.
+        assert "(()=>{var qv=Object.create" in fleet_html, "tailwind.js was not inlined into the bundled page"
+        assert "sourceMappingURL=lucide.min.js.map" in fleet_html, "lucide.min.js was not inlined into the bundled page"
 
         # The bundled Fleet Report page's own relative link to its
         # installation report must resolve to a file this same zip
@@ -73,8 +84,16 @@ def test_full_rca_report_zip_contains_every_page_and_static_asset(client, seeded
         install_resp = client.get(f"/runs/{seeded_run_id}/installation-report")
         if install_resp.status_code == 200:
             assert f"runs/{seeded_run_id}/installation-report.html" in names
-            fleet_html = zf.read(f"runs/{seeded_run_id}/report.html").decode("utf-8")
             assert 'href="installation-report.html"' in fleet_html
+
+        # Every bundled machine page must be self-contained the same way -
+        # inlining is a post-render rewrite applied per-page, not just to
+        # the Fleet Report.
+        for vm_name in vm_names:
+            machine_html = zf.read(f"runs/{seeded_run_id}/machines/{vm_name}.html").decode("utf-8")
+            assert "static/tailwind.js" not in machine_html
+            assert "static/lucide.min.js" not in machine_html
+            assert "sourceMappingURL=lucide.min.js.map" in machine_html
 
 
 def test_full_rca_report_zip_filename_uses_the_run_id_and_a_clean_timestamp(client, seeded_run_id):

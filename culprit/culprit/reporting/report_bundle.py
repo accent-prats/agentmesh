@@ -26,6 +26,7 @@ and its content still looks nothing like a phishing kit.
 from __future__ import annotations
 
 import io
+import re
 import zipfile
 from datetime import datetime, timezone
 from pathlib import Path
@@ -52,6 +53,43 @@ def full_rca_report_bundle_filename(report: FleetReport, tz_name: str) -> str:
     return f"{report.run.run_id}_{when_local.strftime('%d-%m-%y-%H-%M-%S')}.zip"
 
 
+_SCRIPT_SRC_RE = re.compile(r'<script src="[^"]*static/(tailwind|lucide\.min)\.js"></script>')
+
+
+def _inline_static_scripts(html: str) -> str:
+    """Rewrites every `<script src=".../static/{tailwind,lucide.min}.js">`
+    tag (base.html.j2, at whatever nav_prefix depth the page was rendered
+    at) into a `<script>{the file's own content}</script>` block, so each
+    bundled page is fully self-contained with NO sibling files to resolve.
+
+    Found 2026-11-20 via the user's own real-world repro: double-clicking
+    `report.html` straight out of an unextracted `.zip` (Windows Explorer's
+    built-in "preview a file inside a zip" path, confirmed by the
+    `...zip.<hash>/runs/.../report.html` address bar it produces) only
+    materializes that ONE clicked file to a temp location - not its
+    sibling `static/` folder two directories up - so the external
+    `<script src="../../static/tailwind.js">` 404s silently and the whole
+    page falls back to unstyled default HTML. The user's own follow-up
+    screenshots (a real "Extract All" into a real folder) confirmed the
+    zip's actual CONTENTS were always complete and correctly sized - the
+    bug was never a missing/corrupt asset, it was this bundle depending on
+    sibling-file resolution at all, which no single-file-open path (zip
+    preview, a copied/moved report.html, a file shared on its own) can be
+    relied on to satisfy. Inlining removes that dependency entirely -
+    same self-containment principle `render_offline_report_email_html`
+    already applies to the email attachment, for a different original
+    reason (email-scanner behavior), but the same fix shape."""
+    for match in set(_SCRIPT_SRC_RE.findall(html)):
+        asset_name = f"{match}.js"
+        content = (_STATIC_DIR / asset_name).read_text(encoding="utf-8")
+        html = re.sub(
+            rf'<script src="[^"]*static/{re.escape(match)}\.js"></script>',
+            lambda _m, content=content: f"<script>{content}</script>",
+            html,
+        )
+    return html
+
+
 def build_full_rca_report_bundle(session, report: FleetReport) -> bytes:
     """Returns a multi-page, cross-linked zip (Fleet Report + Installation
     Report + every machine's own detail page, each with its own collected-
@@ -63,20 +101,23 @@ def build_full_rca_report_bundle(session, report: FleetReport) -> bytes:
     change to that function or its callers.
 
     This is the exact design the ORIGINAL (pre-2026-11-03) email bundle
-    used, resurrected here verbatim for this new, separate route: every
-    existing report page already links to its siblings with literal
-    RELATIVE paths that assume the live app's own route structure
+    used, resurrected here for this new, separate route: every existing
+    report page already links to its siblings with literal RELATIVE paths
+    that assume the live app's own route structure
     (`/runs/{run_id}/report.html`, `/runs/{run_id}/installation-report.html`,
     `/runs/{run_id}/machines/{vm_name}.html`). Reproducing that EXACT
     nested folder structure inside a zip means every one of those existing
     relative hrefs resolves correctly once the zip is extracted and
     `report.html` is opened via `file://`, with zero template changes.
-    Every static asset those pages depend on (base.html.j2 loads
-    `tailwind.js` for styling AND `lucide.min.js` for icons - a missing
-    lucide silently breaks every "Show full error/status/timeline"
-    disclosure, found by review 2026-11-02 against the original version
-    of this same code) is copied in alongside the pages - every file
-    actually present under reporting/static/, not one hardcoded name.
+
+    Unlike the original pre-2026-11-03 design, the static assets those
+    pages load (`tailwind.js` for styling, `lucide.min.js` for icons) are
+    NOT shipped as sibling files - see `_inline_static_scripts`'s own
+    docstring for why (a single-file-open path doesn't reliably bring
+    sibling files with it). Each page gets its own inlined copy instead,
+    via a post-render string rewrite that leaves every render_*_html
+    function (shared with the live app's own routes) completely
+    unchanged.
 
     No raw per-VM log files are included - this codebase never persists
     raw guest log text (TimelineEvent.raw_ref is an opaque pointer into
@@ -100,13 +141,16 @@ def build_full_rca_report_bundle(session, report: FleetReport) -> bytes:
 
     buffer = io.BytesIO()
     with zipfile.ZipFile(buffer, mode="w", compression=zipfile.ZIP_DEFLATED) as zf:
-        zf.writestr(f"runs/{run_id}/report.html", render_fleet_report_html_for_run(session, run_id, report))
+        zf.writestr(
+            f"runs/{run_id}/report.html",
+            _inline_static_scripts(render_fleet_report_html_for_run(session, run_id, report)),
+        )
 
         if repository.installation_report_exists(session, run_id):
             installation_report = repository.load_installation_report(session, run_id)
             zf.writestr(
                 f"runs/{run_id}/installation-report.html",
-                render_installation_report_html(installation_report, tz_name=tz_name),
+                _inline_static_scripts(render_installation_report_html(installation_report, tz_name=tz_name)),
             )
 
         # Every vm_name the Fleet Report's own machines/{vm}.html links
@@ -123,12 +167,7 @@ def build_full_rca_report_bundle(session, report: FleetReport) -> bytes:
                 detail.patch_extension_status, detail.timeline, detail.checks_performed,
                 detail.checks_unavailable, detail.sources_attempted, detail.checks_finding_counts, tz_name=tz_name,
             )
-            zf.writestr(f"runs/{run_id}/machines/{vm_name}.html", machine_html)
-
-        if _STATIC_DIR.is_dir():
-            for asset in sorted(_STATIC_DIR.iterdir()):
-                if asset.is_file():
-                    zf.writestr(f"static/{asset.name}", asset.read_bytes())
+            zf.writestr(f"runs/{run_id}/machines/{vm_name}.html", _inline_static_scripts(machine_html))
 
     return buffer.getvalue()
 
