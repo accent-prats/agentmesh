@@ -28,9 +28,109 @@ from __future__ import annotations
 import io
 import zipfile
 from datetime import datetime, timezone
+from pathlib import Path
 from zoneinfo import ZoneInfo
 
 from culprit.models.report import FleetReport
+
+_STATIC_DIR = Path(__file__).parent / "static"
+
+
+def full_rca_report_bundle_filename(report: FleetReport, tz_name: str) -> str:
+    """<run_id>_<dd-mm-yy-hh-mm-ss>.zip - user-requested 2026-11-19, for the
+    in-app "download the full RCA report" link (Fleet Report page), a
+    SEPARATE capability from the auto-send/manual-send email attachment
+    above - same timestamp convention as offline_report_attachment_filename
+    (the run's own completion time, localized to the configured display
+    timezone, not "now"), but keyed by run_id instead of the fixed
+    "PatchInsight_RCA" prefix, since this is downloaded by someone who
+    already knows which run they're looking at and wants the filename to
+    say so."""
+    when = report.run.ended_at or report.run.started_at or datetime.now(timezone.utc)
+    zone = ZoneInfo(tz_name)
+    when_local = (when if when.tzinfo else when.replace(tzinfo=timezone.utc)).astimezone(zone)
+    return f"{report.run.run_id}_{when_local.strftime('%d-%m-%y-%H-%M-%S')}.zip"
+
+
+def build_full_rca_report_bundle(session, report: FleetReport) -> bytes:
+    """Returns a multi-page, cross-linked zip (Fleet Report + Installation
+    Report + every machine's own detail page, each with its own collected-
+    evidence timeline) for the Fleet Report page's "Download full RCA
+    report" link - user-requested 2026-11-19. A SEPARATE capability from
+    `build_offline_report_bundle` above (the email attachment, deliberately
+    kept as a single flat script-free HTML file for email-scanner reasons
+    that don't apply to a direct, authenticated browser download) - no
+    change to that function or its callers.
+
+    This is the exact design the ORIGINAL (pre-2026-11-03) email bundle
+    used, resurrected here verbatim for this new, separate route: every
+    existing report page already links to its siblings with literal
+    RELATIVE paths that assume the live app's own route structure
+    (`/runs/{run_id}/report.html`, `/runs/{run_id}/installation-report.html`,
+    `/runs/{run_id}/machines/{vm_name}.html`). Reproducing that EXACT
+    nested folder structure inside a zip means every one of those existing
+    relative hrefs resolves correctly once the zip is extracted and
+    `report.html` is opened via `file://`, with zero template changes.
+    Every static asset those pages depend on (base.html.j2 loads
+    `tailwind.js` for styling AND `lucide.min.js` for icons - a missing
+    lucide silently breaks every "Show full error/status/timeline"
+    disclosure, found by review 2026-11-02 against the original version
+    of this same code) is copied in alongside the pages - every file
+    actually present under reporting/static/, not one hardcoded name.
+
+    No raw per-VM log files are included - this codebase never persists
+    raw guest log text (TimelineEvent.raw_ref is an opaque pointer into
+    the evidence store, not the log content itself); "collected logs"
+    here means the same evidence-timeline summaries each machine's own
+    page already shows live in the app, not a dump of log files. The
+    live app's own sidebar nav (Console/Runs/Settings) will not resolve
+    once extracted and opened outside the running app - only the links
+    BETWEEN this run's own pages (Fleet <-> Installation <-> each
+    machine) do, which is what "navigate to each VM's failure" actually
+    needs."""
+    from culprit.db import repository
+    from culprit.reporting.render import (
+        render_fleet_report_html_for_run,
+        render_installation_report_html,
+        render_machine_html,
+    )
+
+    run_id = report.run.run_id
+    tz_name = repository.load_display_timezone_settings(session).timezone
+
+    buffer = io.BytesIO()
+    with zipfile.ZipFile(buffer, mode="w", compression=zipfile.ZIP_DEFLATED) as zf:
+        zf.writestr(f"runs/{run_id}/report.html", render_fleet_report_html_for_run(session, run_id, report))
+
+        if repository.installation_report_exists(session, run_id):
+            installation_report = repository.load_installation_report(session, run_id)
+            zf.writestr(
+                f"runs/{run_id}/installation-report.html",
+                render_installation_report_html(installation_report, tz_name=tz_name),
+            )
+
+        # Every vm_name the Fleet Report's own machines/{vm}.html links
+        # point at - report.machine_rows is already the flat, one-row-per-
+        # machine view the report's own table is built from (models/
+        # report.py::FleetReport.machine_rows), so this is exactly the set
+        # of pages those links need to resolve.
+        for vm_name in {row.vm_name for row in report.machine_rows}:
+            detail = repository.get_machine_detail(session, run_id, vm_name)
+            if detail is None:
+                continue
+            machine_html = render_machine_html(
+                detail.cluster, detail.member, detail.result, detail.outcome, detail.collection_gaps,
+                detail.patch_extension_status, detail.timeline, detail.checks_performed,
+                detail.checks_unavailable, detail.sources_attempted, detail.checks_finding_counts, tz_name=tz_name,
+            )
+            zf.writestr(f"runs/{run_id}/machines/{vm_name}.html", machine_html)
+
+        if _STATIC_DIR.is_dir():
+            for asset in sorted(_STATIC_DIR.iterdir()):
+                if asset.is_file():
+                    zf.writestr(f"static/{asset.name}", asset.read_bytes())
+
+    return buffer.getvalue()
 
 
 def offline_report_attachment_filename(report: FleetReport, tz_name: str) -> str:
