@@ -13,7 +13,7 @@
       <h1 class="text-2xl font-bold text-gray-900 tracking-tight">Patch installation report</h1>
       <p class="text-sm text-gray-500 mt-1">
         {{ report.run.scope_name }} &middot; run {{ report.run.run_id }} &middot;
-        <span title="Culprit's own lookback window for this scan - the scan itself ran at the end of this range, not any specific Azure Update Manager maintenance job's time.">{{ report.run.started_at | localtime }}{% if report.run.ended_at %} &ndash; {{ report.run.ended_at | localtime }}{% endif %}</span>
+        <span title="PatchInsight's own lookback window for this scan - the scan itself ran at the end of this range, not any specific Azure Update Manager maintenance job's time.">{{ report.run.started_at | localtime }}{% if report.run.ended_at %} &ndash; {{ report.run.ended_at | localtime }}{% endif %}</span>
       </p>
     </div>
     <a href="report.html" class="shrink-0 inline-flex items-center gap-1.5 text-xs font-medium text-brand hover:text-brand-dark mt-1">
@@ -26,7 +26,7 @@
     <div class="bg-white px-4 py-3.5"><b id="stat-succeeded" class="block text-2xl font-bold text-emerald-600 tabular-nums">{{ report.succeeded_count }}</b><span class="block text-[11px] text-gray-400 mt-1">Successful</span></div>
     <div class="bg-white px-4 py-3.5"><b id="stat-failed" class="block text-2xl font-bold text-red-600 tabular-nums">{{ report.failed_count }}</b><span class="block text-[11px] text-gray-400 mt-1">Failed</span></div>
     <div class="bg-white px-4 py-3.5"><b id="stat-unresponsive" class="block text-2xl font-bold text-amber-600 tabular-nums">{{ report.unresponsive_count }}</b><span class="block text-[11px] text-gray-400 mt-1">Unresponsive or Shutdown</span></div>
-    <div class="bg-white px-4 py-3.5"><b id="stat-excluded" class="block text-2xl font-bold text-gray-500 tabular-nums">{{ report.excluded_count }}</b><span class="block text-[11px] text-gray-400 mt-1" title="A derived count (subscription total minus everyone who reported) - Culprit doesn't resolve which specific machines this is, so there's no row list for it.">Excluded <i data-lucide="info" class="w-2.5 h-2.5 inline -mt-0.5"></i></span></div>
+    <div class="bg-white px-4 py-3.5"><b id="stat-excluded" class="block text-2xl font-bold text-gray-500 tabular-nums">{{ report.excluded_count }}</b><span class="block text-[11px] text-gray-400 mt-1" title="A derived count (subscription total minus everyone who reported) - PatchInsight doesn't resolve which specific machines this is, so there's no row list for it.">Excluded <i data-lucide="info" class="w-2.5 h-2.5 inline -mt-0.5"></i></span></div>
   </div>
 
   <div class="flex flex-wrap items-center gap-3 mb-4">
@@ -59,7 +59,7 @@
           </th>
           <th class="px-5 py-3 text-left w-[18%]">Subscription</th>
           <th class="px-5 py-3 text-left w-[18%]">Resource group</th>
-          <th class="px-5 py-3 text-left w-[14%]">Root cause (Culprit)</th>
+          <th class="px-5 py-3 text-left w-[14%]">Root cause (PatchInsight)</th>
         </tr>
       </thead>
       <tbody id="ir-tbody">
@@ -126,8 +126,8 @@
   {% endif %}
 
   <p class="text-xs text-gray-400 mt-4 max-w-2xl">
-    "Unresponsive or Shutdown" is Culprit's label for a machine that never posted a patch result in the
-    window. "Excluded" is a derived count (subscription total minus everyone who reported) &mdash; Culprit
+    "Unresponsive or Shutdown" is PatchInsight's label for a machine that never posted a patch result in the
+    window. "Excluded" is a derived count (subscription total minus everyone who reported) &mdash; PatchInsight
     doesn't currently resolve which specific machines that is, so no rows are shown for it.
   </p>
 

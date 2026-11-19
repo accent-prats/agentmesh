@@ -6,7 +6,7 @@
 
   <h1 class="text-2xl font-bold text-gray-900 tracking-tight">Settings</h1>
   <p class="text-gray-500 text-sm mt-1.5 mb-8 max-w-2xl">
-    Azure and Datadog credentials Culprit uses to diagnose real patch failures.
+    Azure and Datadog credentials PatchInsight uses to diagnose real patch failures.
     Nothing here is required to run the demo scenario. The deep RCA agent's own AI provider is
     configured platform-wide from the AgentMesh Portal's Admin &rarr; AI Providers screen, not here.
   </p>
@@ -94,7 +94,7 @@
                   onchange="applyAzureAuthMode(true)" class="mt-0.5 accent-brand">
                 <span>
                   <span class="block text-sm text-gray-800">Managed identity</span>
-                  <span class="block text-xs text-gray-400">Uses this host's Azure system-assigned identity &mdash; no secret to store or rotate. Only works when Culprit runs on an Azure VM/App with an identity assigned.</span>
+                  <span class="block text-xs text-gray-400">Uses this host's Azure system-assigned identity &mdash; no secret to store or rotate. Only works when PatchInsight runs on an Azure VM/App with an identity assigned.</span>
                 </span>
               </label>
               <label class="flex items-start gap-2.5 cursor-pointer">
@@ -338,7 +338,7 @@
           <span id="email-status" class="shrink-0"></span>
         </div>
         <p class="text-sm text-gray-500 mt-2 mb-5">
-          How Culprit emails a run's report, and the default recipient list (DL) that action pre-fills from &mdash;
+          How PatchInsight emails a run's report, and the default recipient list (DL) that action pre-fills from &mdash;
           see the "Email report" button on any run's Fleet Report page.
         </p>
 
@@ -394,7 +394,7 @@
             </div>
             <div>
               <label class="block text-xs font-medium text-gray-600 mb-1.5">From name</label>
-              <input id="tcxmailer-from-name" placeholder="Culprit"
+              <input id="tcxmailer-from-name" placeholder="PatchInsight"
                 class="w-full border border-gray-300 rounded-lg px-3 py-2 text-sm focus:ring-2 focus:ring-brand focus:border-brand focus:outline-none">
             </div>
           </div>
@@ -475,7 +475,7 @@
             </div>
             <div>
               <label class="block text-xs font-medium text-gray-600 mb-1.5">From name</label>
-              <input id="smtp-from-name" placeholder="Culprit"
+              <input id="smtp-from-name" placeholder="PatchInsight"
                 class="w-full border border-gray-300 rounded-lg px-3 py-2 text-sm focus:ring-2 focus:ring-brand focus:border-brand focus:outline-none">
             </div>
           </div>
@@ -521,7 +521,7 @@
           <div class="grid grid-cols-2 gap-4">
             <div>
               <label class="block text-xs font-medium text-gray-600 mb-1.5">From name</label>
-              <input id="oauth-from-name" placeholder="Culprit"
+              <input id="oauth-from-name" placeholder="PatchInsight"
                 class="w-full border border-gray-300 rounded-lg px-3 py-2 text-sm focus:ring-2 focus:ring-brand focus:border-brand focus:outline-none">
             </div>
           </div>
@@ -676,10 +676,10 @@ function applyAzureAuthMode(clearFields) {
       document.getElementById('az-client').value = '';
       document.getElementById('az-secret').value = '';
     }
-    hint.textContent = "Culprit will authenticate as this host's Azure managed identity.";
+    hint.textContent = "PatchInsight will authenticate as this host's Azure managed identity.";
   } else {
     spFields.classList.remove('hidden');
-    hint.textContent = 'Culprit will authenticate using the service principal below.';
+    hint.textContent = 'PatchInsight will authenticate using the service principal below.';
   }
 }
 
@@ -712,14 +712,14 @@ function applyDatadogAuthMode(clearFields) {
       document.getElementById('dd-api').value = '';
       document.getElementById('dd-app').value = '';
     }
-    hint.textContent = 'Culprit will authenticate with the Personal Access Token below.';
+    hint.textContent = 'PatchInsight will authenticate with the Personal Access Token below.';
   } else {
     apiKeyFields.classList.remove('hidden');
     patFields.classList.add('hidden');
     if (clearFields) {
       document.getElementById('dd-pat').value = '';
     }
-    hint.textContent = 'Culprit will authenticate with the API key below.';
+    hint.textContent = 'PatchInsight will authenticate with the API key below.';
   }
 }
 
@@ -1086,7 +1086,7 @@ async function loadSmtp() {
   document.getElementById('smtp-encryption').value = view.encryption || 'starttls';
   document.getElementById('smtp-username').value = view.username || '';
   document.getElementById('smtp-from-address').value = view.from_address || '';
-  document.getElementById('smtp-from-name').value = view.from_name || 'Culprit';
+  document.getElementById('smtp-from-name').value = view.from_name || 'PatchInsight';
   document.getElementById('smtp-recipients').value = (view.default_recipients || []).join('\n');
   // The shared Email-tab badge is rendered by refreshEmailStatus() instead
   // (it's method-aware - this view alone isn't the whole picture once the
@@ -1102,7 +1102,7 @@ function smtpFormBody() {
     username: document.getElementById('smtp-username').value.trim(),
     password: document.getElementById('smtp-password').value,
     from_address: document.getElementById('smtp-from-address').value.trim(),
-    from_name: document.getElementById('smtp-from-name').value.trim() || 'Culprit',
+    from_name: document.getElementById('smtp-from-name').value.trim() || 'PatchInsight',
     default_recipients: document.getElementById('smtp-recipients').value
       .split(/[\n,]/).map(function (s) { return s.trim(); }).filter(Boolean),
   };
@@ -1135,7 +1135,7 @@ function oauthFormBody() {
     client_id: document.getElementById('oauth-client').value.trim(),
     username: document.getElementById('oauth-username').value.trim(),
     password: document.getElementById('oauth-password').value,
-    from_name: document.getElementById('oauth-from-name').value.trim() || 'Culprit',
+    from_name: document.getElementById('oauth-from-name').value.trim() || 'PatchInsight',
     default_recipients: document.getElementById('oauth-recipients').value
       .split(/[\n,]/).map(function (s) { return s.trim(); }).filter(Boolean),
   };
@@ -1146,7 +1146,7 @@ async function loadEmailOauth() {
   document.getElementById('oauth-tenant').value = view.tenant_id || '';
   document.getElementById('oauth-client').value = view.client_id || '';
   document.getElementById('oauth-username').value = view.username || '';
-  document.getElementById('oauth-from-name').value = view.from_name || 'Culprit';
+  document.getElementById('oauth-from-name').value = view.from_name || 'PatchInsight';
   document.getElementById('oauth-recipients').value = (view.default_recipients || []).join('\n');
   // Shared badge handled by refreshEmailStatus(), same reasoning as loadSmtp()'s own comment.
 }
@@ -1177,7 +1177,7 @@ function tcxMailerFormBody() {
     tenant: document.getElementById('tcxmailer-tenant').value.trim(),
     username: document.getElementById('tcxmailer-username').value.trim(),
     password: document.getElementById('tcxmailer-password').value,
-    from_name: document.getElementById('tcxmailer-from-name').value.trim() || 'Culprit',
+    from_name: document.getElementById('tcxmailer-from-name').value.trim() || 'PatchInsight',
     token_url: document.getElementById('tcxmailer-token-url').value.trim(),
     api_url: document.getElementById('tcxmailer-api-url').value.trim(),
     from_app: document.getElementById('tcxmailer-from-app').value.trim(),
@@ -1190,7 +1190,7 @@ async function loadTcxMailer() {
   const view = await (await fetch('settings/email/tcx-mailer')).json();
   document.getElementById('tcxmailer-tenant').value = view.tenant || '';
   document.getElementById('tcxmailer-username').value = view.username || '';
-  document.getElementById('tcxmailer-from-name').value = view.from_name || 'Culprit';
+  document.getElementById('tcxmailer-from-name').value = view.from_name || 'PatchInsight';
   document.getElementById('tcxmailer-token-url').value = view.token_url || '';
   document.getElementById('tcxmailer-api-url').value = view.api_url || '';
   document.getElementById('tcxmailer-from-app').value = view.from_app || '';

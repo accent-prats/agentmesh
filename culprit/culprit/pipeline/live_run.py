@@ -46,7 +46,7 @@ def execute_live_run(
     with session_factory() as session:
         azure_cfg = repository.load_azure_settings(session)
     if not azure_cfg.subscription_ids:
-        raise NoSubscriptionConfigured("No Azure subscription configured - set it on /culprit/settings first.")
+        raise NoSubscriptionConfigured("No Azure subscription configured - set it on /patchinsight/settings first.")
 
     # May raise ImportError (azure-identity not installed) or InvalidToken
     # (CULPRIT_ENCRYPTION_KEY rotated since settings were saved) - both are

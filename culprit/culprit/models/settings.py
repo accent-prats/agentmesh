@@ -217,7 +217,7 @@ class SmtpSettingsInput(BaseModel):
     # 3-valued field instead of two booleans that could disagree.
     encryption: Literal["none", "starttls", "ssl"] = "starttls"
     from_address: str = ""
-    from_name: str = "Culprit"
+    from_name: str = "PatchInsight"
     default_recipients: list[str] = Field(default_factory=list)
 
     @field_validator("from_address")
@@ -247,7 +247,7 @@ class SmtpSettingsView(BaseModel):
     password_configured: bool = False
     encryption: Literal["none", "starttls", "ssl"] = "starttls"
     from_address: str = ""
-    from_name: str = "Culprit"
+    from_name: str = "PatchInsight"
     default_recipients: list[str] = Field(default_factory=list)
     configured: bool = False
     last_tested_at: datetime | None = None
@@ -288,7 +288,7 @@ class EmailOAuthSettingsInput(BaseModel):
     # (an SMTP relay's AUTH identity and its From: header need not match).
     username: str = ""
     password: str = ""
-    from_name: str = "Culprit"
+    from_name: str = "PatchInsight"
     default_recipients: list[str] = Field(default_factory=list)
 
     # Found 2026-10-23 against a real preprod deployment: an admin entered
@@ -353,7 +353,7 @@ class EmailOAuthSettingsView(BaseModel):
     client_id: str = ""
     username: str = ""
     password_configured: bool = False
-    from_name: str = "Culprit"
+    from_name: str = "PatchInsight"
     default_recipients: list[str] = Field(default_factory=list)
     configured: bool = False
     last_tested_at: datetime | None = None
@@ -384,7 +384,7 @@ class TcxMailerSettingsInput(BaseModel):
     tenant: str = ""
     username: str = ""
     password: str = ""
-    from_name: str = "Culprit"
+    from_name: str = "PatchInsight"
     token_url: str = ""
     api_url: str = ""
     from_app: str = ""
@@ -405,7 +405,7 @@ class TcxMailerSettingsView(BaseModel):
     tenant: str = ""
     username: str = ""
     password_configured: bool = False
-    from_name: str = "Culprit"
+    from_name: str = "PatchInsight"
     token_url: str = ""
     api_url: str = ""
     from_app: str = ""

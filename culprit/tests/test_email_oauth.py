@@ -120,7 +120,7 @@ def test_email_oauth_settings_default_view_is_unconfigured(client):
     assert body["configured"] is False
     assert body["password_configured"] is False
     assert body["default_recipients"] == []
-    assert body["from_name"] == "Culprit"
+    assert body["from_name"] == "PatchInsight"
 
 
 def test_email_oauth_settings_save_and_reload_masks_the_password(client):

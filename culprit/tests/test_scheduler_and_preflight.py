@@ -5,6 +5,9 @@ its GET /preflight + chat-prediction read paths.
 """
 from __future__ import annotations
 
+import re
+from pathlib import Path
+
 import pytest
 from fastapi.testclient import TestClient
 
@@ -437,3 +440,40 @@ class _FakeAzureCfg:
     tenant_id = ""
     client_id = ""
     client_secret = ""
+
+
+def _culprit_api_service_block() -> str:
+    """Isolates just the `culprit-api:` service's text from the repo-root
+    docker-compose.yml - walks up from this test file rather than
+    hardcoding a parent-directory depth, so it still finds the file if
+    this test is ever moved."""
+    here = Path(__file__).resolve()
+    for candidate in here.parents:
+        compose_path = candidate / "docker-compose.yml"
+        if compose_path.exists():
+            text = compose_path.read_text(encoding="utf-8")
+            match = re.search(r"\n  culprit-api:\n(.*?)\n  [A-Za-z0-9_-]+:\n", text, re.DOTALL)
+            assert match, "could not isolate the culprit-api service block in docker-compose.yml"
+            return match.group(1)
+    pytest.fail("could not locate docker-compose.yml above this test file")
+
+
+def test_docker_compose_actually_wires_the_scheduler_env_vars_through():
+    """Found 2026-11-17 from a real production deployment: the user set
+    CULPRIT_SCHEDULER_ENABLED=true in a deployment's .env and recreated
+    the container, but the Settings screen's "Scheduler not running"
+    badge never changed - config.py correctly reads this env var, but
+    docker-compose.yml's culprit-api service never listed it under
+    `environment:` at all, so no value set in .env could ever reach the
+    container's actual process environment, no matter how many times it
+    was rebuilt. (This is a compose-file gap, not something a Python unit
+    test on config.py alone could ever have caught - config.py's own
+    os.environ.get() call works perfectly; the env var just never arrived
+    in the first place.) Pins that CULPRIT_SCHEDULER_ENABLED and its two
+    directly-related settings (CULPRIT_SCHEDULED_CRON,
+    CULPRIT_PREFLIGHT_INTERVAL_MINUTES - see main.py's lifespan handler,
+    which reads all three together) are explicitly passed through."""
+    block = _culprit_api_service_block()
+    assert "CULPRIT_SCHEDULER_ENABLED:" in block
+    assert "CULPRIT_SCHEDULED_CRON:" in block
+    assert "CULPRIT_PREFLIGHT_INTERVAL_MINUTES:" in block

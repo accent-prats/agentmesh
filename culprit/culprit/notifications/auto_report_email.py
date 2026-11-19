@@ -22,76 +22,64 @@ from culprit.models.report import FleetReport
 
 log = logging.getLogger(__name__)
 
-_TRIGGER_LABELS = {
-    TriggerMode.SCHEDULED: "Scheduled",
-    TriggerMode.AD_HOC: "Ad hoc",
-    TriggerMode.EVENT_DRIVEN: "Event-driven",
-    TriggerMode.PRE_FLIGHT: "Pre-flight",
-}
 
+def _build_subject_and_body(report: FleetReport, tz_name: str) -> tuple[str, str]:
+    """Returns (subject, html_body) - one body, sent to every method the
+    same way (see `send_report_on_completion` below).
 
-def _build_subject_and_body(report: FleetReport, trigger_mode: TriggerMode, tz_name: str) -> tuple[str, str, str]:
-    """Returns (subject, plain_text_body, html_body) - built once, used by
-    whichever method is active (tcx-mailer's `body` is plain text; SMTP/
-    OAuth's is HTML, same facts either way). Deliberately never includes a
-    "view live" link of any kind, even a conditional one - found 2026-11-02,
-    against a real send: the user's "no broken links" requirement means NO
-    link to a live server at all, full stop, not "a link when one happens
-    to resolve" - every fact here comes from `report`/`trigger_mode` and the
-    attached offline bundle, nothing that depends on this deployment's own
-    reachability."""
+    **History, in order, all against real sent emails**: this function
+    originally built a plain-text body special-cased for tcx-mailer, on
+    the never-verified assumption that tcx-mailer needed plain text while
+    SMTP/OAuth got HTML. A real send showed it collapsed into one
+    unformatted run-on block in Outlook. A first fix (switching that
+    plain-text body's line joiner from "\\n" to "\\r\\n") made no visible
+    difference - the real signature (dividers/labels joined by exactly one
+    space each, even across blank-line breaks) was an HTML renderer
+    collapsing whitespace, not a dropped-newline transport issue.
+    tcx-mailer's own `send_email(body=...)` has no content-type parameter
+    at all, so whatever the real vendor/Siemens relay does with that
+    string is a fixed, uninspectable choice - the only lever this app
+    controls is the string's own shape. A second fix (2026-11-16) switched
+    every method onto the same hand-built `<pre>`-wrapped HTML block
+    already used elsewhere, which worked (confirmed via a real send) but
+    looked plain next to the richer branded email the user remembered
+    getting before this auto-send feature existed.
+
+    **Current fix (2026-11-17, a styling enhancement, not a bug)**: reuses
+    `reporting/render.py::render_email_report_html` - the same branded,
+    stat-tile template `api/routes_notifications.py::send_report_email`
+    (the manual "Send Report" button) already sends, real HTML markup
+    (tables/divs, not a bare `<pre>` block) that happens to also satisfy
+    everything the whitespace-collapse investigation above established.
+    `trigger_mode` (Scheduled/Ad hoc/etc) is deliberately not shown here -
+    this template never showed it even before this auto-send feature
+    existed, and the user's own reference screenshot of "the version we
+    used to get" didn't have it either. Deliberately never includes a
+    "view live" link of any kind - found 2026-11-02, against a real send:
+    the user's "no broken links" requirement means NO link to a live
+    server at all - every fact here comes from `report` and the attached
+    offline bundle, nothing that depends on this deployment's own
+    reachability (`render_email_report_html` itself has no `report_url`
+    parameter for the same reason)."""
     from culprit.reporting.notify import top_entries
+    from culprit.reporting.render import render_email_report_html
 
     zone = ZoneInfo(tz_name)
-
-    def _format_local(dt: datetime | None) -> str:
-        # Same "%Y-%m-%d %H:%M" + tzname shape as reporting/timezone_display.py's
-        # `localtime` Jinja filter every report page already uses - found by
-        # review 2026-11-02: a bare str(datetime) here left real run windows
-        # reading like "2026-11-02 12:13:48.373324" (raw UTC, microseconds and
-        # all), nowhere near as clean as the subject line's own date_str.
-        if dt is None:
-            return "unknown"
-        localized = (dt if dt.tzinfo else dt.replace(tzinfo=timezone.utc)).astimezone(zone)
-        return f"{localized.strftime('%Y-%m-%d %H:%M')} {localized.tzname()}"
-
     run = report.run
     when = (run.ended_at or run.started_at or datetime.now(timezone.utc))
     when_local = (when if when.tzinfo else when.replace(tzinfo=timezone.utc)).astimezone(zone)
     date_str = when_local.strftime("%Y-%m-%d")
 
     subject = (
-        f"Culprit Patch RCA — {run.scope_name} — {date_str} — "
+        f"PatchInsight Patch RCA — {run.scope_name} — {date_str} — "
         f"{report.total_failed}/{report.total_machines} failed"
     )
 
-    lines = [
-        f"Run: {run.run_id} ({_TRIGGER_LABELS.get(trigger_mode, trigger_mode.value)})",
-        f"Scope: {run.scope_name}",
-        f"Window: {_format_local(run.started_at)} – {_format_local(run.ended_at)}",
-        f"Machines scanned: {report.total_machines}",
-        f"Failed: {report.total_failed} across {report.total_clusters} distinct cause(s)",
-        f"Compliance: {report.compliance_pct}%",
-    ]
-    top = top_entries(report)
-    if top:
-        lines.append("")
-        lines.append("Top causes:")
-        for entry in top:
-            badge = f" ({entry.recurrence_badge})" if entry.recurrence_badge else ""
-            lines.append(
-                f"  - {entry.cluster.size} machine(s) — {entry.result.title}{badge} "
-                f"(confidence {entry.result.confidence:.0%})"
-            )
-    lines.append("")
-    lines.append("The full Fleet Report (root cause + recommended fix per cause) and Installation")
-    lines.append("Report are in the attached zip - extract it and open report.html. Nothing in it")
-    lines.append("needs network access.")
-    plain_text_body = "\n".join(lines)
-    html_body = "<pre style=\"font-family:inherit\">" + "\n".join(
-        line.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;") for line in lines
-    ) + "</pre>"
-    return subject, plain_text_body, html_body
+    html_body = render_email_report_html(
+        report, top_entries=top_entries(report), note="",
+        requested_by="system (auto-send on completion)", tz_name=tz_name,
+    )
+    return subject, html_body
 
 
 def send_report_on_completion(session_factory, report: FleetReport, trigger_mode: TriggerMode) -> None:
@@ -101,7 +89,7 @@ def send_report_on_completion(session_factory, report: FleetReport, trigger_mode
     from culprit.db import repository
     from culprit.models.email import EmailStatus
     from culprit.notifications.email_sender import resolve_active_email_config
-    from culprit.reporting.report_bundle import build_offline_report_bundle
+    from culprit.reporting.report_bundle import build_offline_report_bundle, offline_report_attachment_filename
 
     run_id = report.run.run_id
     try:
@@ -116,12 +104,11 @@ def send_report_on_completion(session_factory, report: FleetReport, trigger_mode
                 return
 
             tz_name = repository.load_display_timezone_settings(session).timezone
-            subject, plain_text_body, html_body = _build_subject_and_body(report, trigger_mode, tz_name)
+            subject, html_body = _build_subject_and_body(report, tz_name)
             report_bundle_bytes = build_offline_report_bundle(session, report)
-            attachments = [(f"culprit-report-{run_id}.zip", report_bundle_bytes)]
+            attachments = [(offline_report_attachment_filename(report, tz_name), report_bundle_bytes)]
 
-            body = plain_text_body if method == "tcx_mailer" else html_body
-            ok, message = send(cfg, recipients, subject, body, attachments)
+            ok, message = send(cfg, recipients, subject, html_body, attachments)
 
             repository.save_email_log(
                 session, run_id=run_id, recipients=recipients, requested_by="system (auto-send on completion)",

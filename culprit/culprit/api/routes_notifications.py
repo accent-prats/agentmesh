@@ -23,7 +23,7 @@ def send_report_email(run_id: str, body: SendReportRequest) -> SendReportRespons
         is_email_method_configured,
         resolve_active_email_config,
     )
-    from culprit.reporting.report_bundle import build_offline_report_bundle
+    from culprit.reporting.report_bundle import build_offline_report_bundle, offline_report_attachment_filename
 
     with deps.get_session_factory()() as session:
         report = repository.load_fleet_report(session, run_id)
@@ -62,7 +62,7 @@ def send_report_email(run_id: str, body: SendReportRequest) -> SendReportRespons
         # self-contained offline bundle auto-send uses, so both paths carry
         # the same guarantee.
         report_bundle_bytes = build_offline_report_bundle(session, report)
-        attachments = [(f"culprit-report-{run_id}.zip", report_bundle_bytes)]
+        attachments = [(offline_report_attachment_filename(report, tz_name), report_bundle_bytes)]
         ok, message = send(cfg, recipients, subject, html_body, attachments)
 
         repository.save_email_log(

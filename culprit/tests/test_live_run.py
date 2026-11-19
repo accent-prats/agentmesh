@@ -262,4 +262,4 @@ def test_live_run_gives_a_clean_error_when_the_encryption_key_has_rotated(client
 
     assert resp.status_code == 500
     assert "CULPRIT_ENCRYPTION_KEY" in resp.json()["detail"]
-    assert "/culprit/settings" in resp.json()["detail"]
+    assert "/patchinsight/settings" in resp.json()["detail"]

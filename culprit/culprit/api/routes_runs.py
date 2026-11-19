@@ -25,7 +25,7 @@ log = logging.getLogger(__name__)
 
 _DECRYPT_ERROR_DETAIL = (
     "Stored Azure settings could not be decrypted - CULPRIT_ENCRYPTION_KEY likely changed "
-    "since they were saved. Re-enter them on /culprit/settings."
+    "since they were saved. Re-enter them on /patchinsight/settings."
 )
 
 router = APIRouter(prefix="/runs", tags=["runs"])
@@ -177,6 +177,37 @@ def get_report_html(run_id: str):
         # added and this route's own hand-rolled copy went stale).
         html = render_fleet_report_html_for_run(session, run_id, report)
     return HTMLResponse(html)
+
+
+@router.get("/{run_id}/full-report.zip")
+def get_full_rca_report_zip(run_id: str):
+    """The in-app "Download full RCA report" link on the Fleet Report page
+    - user-requested 2026-11-19, a SEPARATE capability from the auto-send/
+    manual-send email attachment (routes_notifications.py, notifications/
+    auto_report_email.py), which stays a single flat HTML file for
+    email-scanner reasons that don't apply to a direct, authenticated
+    browser download. See report_bundle.py::build_full_rca_report_bundle's
+    own docstring for the full design (a multi-page, cross-linked zip -
+    Fleet Report + Installation Report + every machine's own detail page -
+    resurrecting the original, pre-2026-11-03 email bundle's exact
+    design for this new route)."""
+    from fastapi import Response
+
+    from culprit.db import repository
+    from culprit.reporting.report_bundle import build_full_rca_report_bundle, full_rca_report_bundle_filename
+
+    with deps.get_session_factory()() as session:
+        report = repository.load_fleet_report(session, run_id)
+        if report is None:
+            raise HTTPException(status_code=404, detail=f"Run {run_id} not found")
+        tz_name = repository.load_display_timezone_settings(session).timezone
+        zip_bytes = build_full_rca_report_bundle(session, report)
+
+    filename = full_rca_report_bundle_filename(report, tz_name)
+    return Response(
+        content=zip_bytes, media_type="application/zip",
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+    )
 
 
 @router.get("/{run_id}/installation-report", response_model=InstallationReport)
