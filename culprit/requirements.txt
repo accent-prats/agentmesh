@@ -24,3 +24,16 @@ datadog-api-client>=2.23
 # the "oauth" extra in pyproject.toml, listed here too since this Docker
 # build installs from this file, not pyproject.toml's own optional-dependencies.
 msal>=1.28,<2
+
+# Real (non-SQLite) persistence for the serverless deployment
+# (culprit/serverless/, CULPRIT_DATABASE_URL=postgresql+psycopg://...) - the
+# default Docker Compose deployment never needed a Postgres driver at all
+# (config.py's own CULPRIT_DATABASE_URL default is sqlite:///culprit.db), so
+# this was never added here. Found live 2026-11-22 via a real deployment's
+# own Application Insights trace: discover_run_activity's create_engine()
+# call raised ModuleNotFoundError: No module named 'psycopg' the moment a
+# real CULPRIT_DATABASE_URL was set, immediately after the Dockerfile's
+# import-path fix (ea35098b/1306cfd2) and a URL-encoding fix both landed -
+# this was the next, separate real gap behind those two. [binary] avoids
+# needing libpq-dev / a C compiler in the container at build time.
+psycopg[binary]>=3.1
