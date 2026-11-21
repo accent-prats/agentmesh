@@ -40,6 +40,13 @@ param culpritEncryptionKey string = ''
 @description('Image tag to deploy - defaults to :latest; set this explicitly on every real deployment once a CI pipeline exists, so a Function App restart cannot silently pick up a newer, untested image')
 param imageTag string = 'latest'
 
+@description('Portal\'s internal, service-reachable base URL (e.g. the Portal App Service\'s own hostname, or a private-endpoint/VNet-reachable address) - lets this Function App resolve whichever AI provider the Portal admin has marked active (culprit/api/deps.py::get_rca_agent()) instead of a fixed ANTHROPIC_API_KEY. Found missing entirely 2026-11-22: a real deployment with this left empty can never reach Portal at all, silently falling back to ANTHROPIC_API_KEY/ANTHROPIC_AUTH_TOKEN and, if that is unset too, to the scripted demo RCA agent - the exact same class of gap docker-compose.yml had for CULPRIT_SCHEDULER_ENABLED.')
+param portalInternalUrl string = ''
+
+@description('Shared secret Culprit uses to mint a short-lived service JWT when calling Portal\'s /api/ai-providers/resolved-active endpoint (culprit/api/deps.py::_fetch_active_ai_provider_from_portal) - must match Portal\'s own CULPRIT_PORTAL_JWT_SECRET exactly, or every call fails auth and this falls back the same way as a missing portalInternalUrl. Stored in Key Vault, same pattern as the other secrets here.')
+@secure()
+param portalJwtSecret string = ''
+
 var storageAccountName = toLower(replace('${namePrefix}sa', '-', ''))
 var functionAppName = '${namePrefix}-pipeline'
 var appInsightsName = '${namePrefix}-insights'
@@ -173,6 +180,14 @@ resource encryptionKeySecret 'Microsoft.KeyVault/vaults/secrets@2023-07-01' = if
   }
 }
 
+resource portalJwtSecretSecret 'Microsoft.KeyVault/vaults/secrets@2023-07-01' = if (!empty(portalJwtSecret)) {
+  parent: keyVault
+  name: 'portal-jwt-secret'
+  properties: {
+    value: portalJwtSecret
+  }
+}
+
 resource postgres 'Microsoft.DBforPostgreSQL/flexibleServers@2023-06-01-preview' = {
   name: postgresServerName
   location: location
@@ -302,6 +317,14 @@ resource functionApp 'Microsoft.Web/sites@2023-01-01' = {
         {
           name: 'CULPRIT_ENCRYPTION_KEY'
           value: empty(culpritEncryptionKey) ? '' : '@Microsoft.KeyVault(SecretUri=${encryptionKeySecret.properties.secretUri})'
+        }
+        {
+          name: 'CULPRIT_PORTAL_INTERNAL_URL'
+          value: portalInternalUrl
+        }
+        {
+          name: 'CULPRIT_PORTAL_JWT_SECRET'
+          value: empty(portalJwtSecret) ? '' : '@Microsoft.KeyVault(SecretUri=${portalJwtSecretSecret.properties.secretUri})'
         }
       ]
     }
