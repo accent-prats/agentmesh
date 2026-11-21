@@ -28,6 +28,18 @@ RUN apt-get update && apt-get upgrade -y --no-install-recommends \
 # trees straight into /home/site/wwwroot, the one location the worker's
 # sys.path is guaranteed to include - PYTHONPATH is kept for any tooling
 # that does respect it, but nothing here still depends on it.
+#
+# The first attempt at this fix (2026-11-21) symlinked /app/culprit
+# itself into wwwroot and only swapped the error from "No module named
+# culprit" to "No module named culprit.serverless" - found via a second
+# Application Insights trace the morning of 2026-11-22. Root cause: this
+# repo's layout has an extra level of nesting PYTHONPATH's own two-entry
+# value already accounted for (PYTHONPATH=/app/culprit:/app puts
+# /app/culprit - not /app - first, specifically so the REAL importable
+# package at /app/culprit/culprit/ resolves as top-level `culprit`).
+# `shared` has no such extra nesting (COPY shared/ ./shared/ already
+# lands the real package at /app/shared), so only the culprit symlink's
+# target needed the extra /culprit.
 ENV AzureFunctionsJobHost__Logging__Console__IsEnabled=true \
     PYTHONPATH=/app/culprit:/app
 
@@ -51,5 +63,5 @@ COPY shared/ ./shared/
 RUN mkdir -p /home/site/wwwroot \
     && cp culprit/culprit/serverless/host.json /home/site/wwwroot/host.json \
     && cp culprit/culprit/serverless/function_app.py /home/site/wwwroot/function_app.py \
-    && ln -s /app/culprit /home/site/wwwroot/culprit \
+    && ln -s /app/culprit/culprit /home/site/wwwroot/culprit \
     && ln -s /app/shared /home/site/wwwroot/shared
