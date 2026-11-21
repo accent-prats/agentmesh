@@ -14,10 +14,20 @@ RUN apt-get update && apt-get upgrade -y --no-install-recommends \
     && rm -rf /var/lib/apt/lists/*
 
 # /home/site/wwwroot is where the Azure Functions host (baked into this
-# base image) looks for host.json/function_app.py - everything else (the
-# actual pipeline/collectors/models/reporting code) stays importable from
-# /app via PYTHONPATH below, the same layout culprit/Dockerfile already
-# uses for the Docker Compose deployment.
+# base image) looks for host.json/function_app.py. PYTHONPATH below is
+# NOT enough on its own: found live (2026-11-21), via a real deployment's
+# own Application Insights trace, that the Azure Functions Python worker
+# builds its own sys.path from a fixed set of locations (/home/site/
+# wwwroot, /home/site/wwwroot/.python_packages/lib/site-packages, plus
+# the worker's own bundled paths) and does NOT inherit this container's
+# PYTHONPATH env var - "from culprit.serverless import activities,
+# orchestrators" (function_app.py's own first import) raised
+# ModuleNotFoundError: No module named 'culprit' even though /app/culprit
+# existed and PYTHONPATH pointed at it, because /app was never actually
+# on the worker's sys.path. Fixed below by symlinking the real package
+# trees straight into /home/site/wwwroot, the one location the worker's
+# sys.path is guaranteed to include - PYTHONPATH is kept for any tooling
+# that does respect it, but nothing here still depends on it.
 ENV AzureFunctionsJobHost__Logging__Console__IsEnabled=true \
     PYTHONPATH=/app/culprit:/app
 
@@ -40,4 +50,6 @@ COPY shared/ ./shared/
 
 RUN mkdir -p /home/site/wwwroot \
     && cp culprit/culprit/serverless/host.json /home/site/wwwroot/host.json \
-    && cp culprit/culprit/serverless/function_app.py /home/site/wwwroot/function_app.py
+    && cp culprit/culprit/serverless/function_app.py /home/site/wwwroot/function_app.py \
+    && ln -s /app/culprit /home/site/wwwroot/culprit \
+    && ln -s /app/shared /home/site/wwwroot/shared
