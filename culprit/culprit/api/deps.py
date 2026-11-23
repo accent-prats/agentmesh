@@ -68,11 +68,12 @@ def get_rca_agent():
     shared by every app that needs an LLM call, not just this one. There is
     no default provider here: if no admin has ever picked one, or Portal
     isn't reachable at all (e.g. Culprit running standalone), this falls
-    back to the original env-var-only behavior
-    (ANTHROPIC_API_KEY/CULPRIT_RCA_MODEL) so a deployment that predates this
-    feature - or never touches it - behaves exactly as before. Only falls
-    through to the scripted demo agent when neither path has anything
-    usable.
+    back to env-var-only behavior: OPENAI_API_KEY first (built through the
+    same provider-catalog machinery the Portal path above uses), then the
+    original ANTHROPIC_API_KEY/ANTHROPIC_AUTH_TOKEN + CULPRIT_RCA_MODEL
+    behavior so a deployment that predates this feature - or never touches
+    it - behaves exactly as before. Only falls through to the scripted demo
+    agent when none of those has anything usable.
 
     Deliberately **not** `@lru_cache`d, unlike get_session_factory() and
     get_retrieval_store() - the config this reads now lives in a different
@@ -112,6 +113,33 @@ def get_rca_agent():
             log.info("RCA agent: using Portal-active provider=%s model=%s base_url=%s", resolved["provider"], model, resolved["base_url"] or spec.default_base_url)
             return DeepRCAAgent(client=client, model=model)
 
+    # Found live 2026-11-23 on the serverless deployment (patchrca-fa, no
+    # Portal at all - see portal_internal_url's own docstring for why that
+    # lookup is skipped entirely there): this fallback used to only ever
+    # check ANTHROPIC_API_KEY/ANTHROPIC_AUTH_TOKEN, so a deployment whose
+    # admin picked OpenAI (no Portal to remember that choice, so set
+    # directly as an env var instead) silently got an Anthropic client
+    # anyway - `DeepRCAAgent(client=None)` builds its own `anthropic.Anthropic()`
+    # from whatever ANTHROPIC_API_KEY happened to be sitting in app settings
+    # (here, an unrelated leftover value), producing a confusing
+    # "AuthenticationError: Invalid bearer token" with no hint that the
+    # wrong provider was ever in play. OPENAI_API_KEY is checked first,
+    # built via the exact same build_client()/PROVIDER_CATALOG machinery
+    # the Portal-active-provider success path above already uses - so a
+    # standalone deployment's choice of provider is driven by whichever
+    # key is actually present, instead of always preferring Anthropic.
+    openai_api_key = os.environ.get("OPENAI_API_KEY")
+    if openai_api_key:
+        from shared.src.llm.catalog import PROVIDER_CATALOG
+        from shared.src.llm.factory import build_client
+        from culprit.pipeline.rca_agent import DeepRCAAgent
+
+        spec = PROVIDER_CATALOG["openai"]
+        model = os.environ.get("CULPRIT_RCA_MODEL") or spec.default_model
+        client = build_client("openai", api_key=openai_api_key)
+        log.info("RCA agent: no Portal-active provider, using OPENAI_API_KEY env fallback (model=%s)", model)
+        return DeepRCAAgent(client=client, model=model)
+
     if os.environ.get("ANTHROPIC_API_KEY") or os.environ.get("ANTHROPIC_AUTH_TOKEN"):
         from culprit.pipeline.rca_agent import DeepRCAAgent
 
@@ -137,12 +165,13 @@ def get_rca_agent():
     # cycle until it's fixed, not just once at startup.
     log.warning(
         "No AI provider configured (neither a Portal-active provider nor "
-        "ANTHROPIC_API_KEY/ANTHROPIC_AUTH_TOKEN) - using the SCRIPTED demo RCA "
-        "agent for this run. It does not read collected evidence at all and "
-        "always returns the same fixed, low-confidence 'insufficient evidence' "
-        "result for anything other than a MaintenanceWindowExceeded error code. "
-        "Set ANTHROPIC_API_KEY/ANTHROPIC_AUTH_TOKEN or configure an AI provider "
-        "in Portal before trusting this deployment's RCA output."
+        "OPENAI_API_KEY nor ANTHROPIC_API_KEY/ANTHROPIC_AUTH_TOKEN) - using the "
+        "SCRIPTED demo RCA agent for this run. It does not read collected "
+        "evidence at all and always returns the same fixed, low-confidence "
+        "'insufficient evidence' result for anything other than a "
+        "MaintenanceWindowExceeded error code. Set OPENAI_API_KEY or "
+        "ANTHROPIC_API_KEY/ANTHROPIC_AUTH_TOKEN, or configure an AI provider "
+        "in Portal, before trusting this deployment's RCA output."
     )
     from culprit.demo.scripted_rca import ScriptedRCAAgent
 
