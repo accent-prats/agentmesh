@@ -21,6 +21,22 @@ and defines every trigger binding, one per existing TriggerMode:
   subscription-validation handshake itself, so - unlike today's manual
   webhook receiver (`scheduler/events.py`) - there is no handshake code
   to write here at all.
+- `get_azure_settings_http`/`put_azure_settings_http` (HTTP) - a stand-in
+  for the Settings screen's own Azure tab (api/routes_settings.py's
+  `GET`/`PUT /settings/azure`), which this deployment has no way to reach
+  otherwise - the Console/Settings web UI was explicitly scoped out of
+  this migration (the proposal's own "Phase 3", not part of this core
+  deliverable). Found live 2026-11-23: discover_run_activity's own
+  `{"skip": "no_subscription_configured"}` branch fired on a real run,
+  and the obvious fix - "just configure it on the Settings page" - landed
+  on the wrong database entirely: the existing Docker Compose deployment
+  reads from its own local `sqlite:////app/data/culprit.db` (config.py's
+  CULPRIT_DATABASE_URL default), completely separate from this Function
+  App's own Postgres database - configuring one has zero effect on the
+  other. These two routes call the exact same repository functions
+  (`save_azure_settings`/`azure_settings_view`) the real Settings API
+  already uses, just reachable here until the real Console/Settings UI
+  gets its own serverless home.
 """
 from __future__ import annotations
 
@@ -89,6 +105,61 @@ async def trigger_live_run_http(req: func.HttpRequest, client) -> func.HttpRespo
     )
     log.info("Ad hoc trigger started orchestration %s", instance_id)
     return client.create_check_status_response(req, instance_id)
+
+
+@app.route(route="admin/settings/azure", methods=["GET"])
+def get_azure_settings_http(req: func.HttpRequest) -> func.HttpResponse:
+    """Stand-in for `GET /settings/azure` - see module docstring for why
+    this exists at all. Returns the exact same AzureSettingsView shape
+    the real Settings screen reads, so a caller can confirm what actually
+    landed in THIS deployment's own database."""
+    from culprit.api import deps
+    from culprit.db import repository
+
+    with deps.get_session_factory()() as session:
+        view = repository.azure_settings_view(session)
+
+    return func.HttpResponse(
+        view.model_dump_json(),
+        status_code=200,
+        headers={"Content-Type": "application/json"},
+    )
+
+
+@app.route(route="admin/settings/azure", methods=["PUT"])
+def put_azure_settings_http(req: func.HttpRequest) -> func.HttpResponse:
+    """Stand-in for `PUT /settings/azure` - see module docstring. Body is
+    the same AzureSettingsInput shape the real Settings form submits:
+    {"subscription_ids": [...], "log_analytics_workspace_id": "...",
+    "tenant_id": "...", "client_id": "...", "client_secret": "...",
+    "clear_credentials": false} - every field optional, same
+    leave-alone-if-blank rules as the real form (see
+    repository.py::save_azure_settings's own docstring)."""
+    import json
+
+    from culprit.api import deps
+    from culprit.db import repository
+    from culprit.models.settings import AzureSettingsInput
+
+    try:
+        body = req.get_json()
+    except ValueError:
+        return func.HttpResponse(
+            json.dumps({"error": "request body must be JSON"}),
+            status_code=400,
+            headers={"Content-Type": "application/json"},
+        )
+
+    cfg = AzureSettingsInput(**body)
+    with deps.get_session_factory()() as session:
+        repository.save_azure_settings(session, cfg)
+        view = repository.azure_settings_view(session)
+
+    return func.HttpResponse(
+        view.model_dump_json(),
+        status_code=200,
+        headers={"Content-Type": "application/json"},
+    )
 
 
 @app.event_grid_trigger(arg_name="event")
