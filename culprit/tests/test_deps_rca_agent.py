@@ -149,6 +149,65 @@ class TestPortalHasNothingConfigured:
         assert any("SCRIPTED demo RCA agent" in r.message for r in caplog.records)
 
 
+class TestOpenAIEnvVarFallback:
+    """Found live 2026-11-23 on the serverless deployment (patchrca-fa, no
+    Portal deployed at all): the legacy env-var fallback only ever checked
+    ANTHROPIC_API_KEY/ANTHROPIC_AUTH_TOKEN, so an admin who set OPENAI_API_KEY
+    directly (no Portal to remember the choice) silently got an Anthropic
+    client built from whatever ANTHROPIC_API_KEY happened to be sitting in
+    app settings instead - a confusing AuthenticationError with no hint the
+    wrong provider was ever in play."""
+
+    def test_an_empty_provider_falls_back_to_openai_when_set(self, monkeypatch):
+        _with_portal_secret(monkeypatch)
+        monkeypatch.setattr("httpx.get", lambda *a, **k: FakeHttpResponse({"provider": ""}))
+        monkeypatch.setenv("OPENAI_API_KEY", "sk-openai-x")
+        monkeypatch.delenv("CULPRIT_RCA_MODEL", raising=False)
+
+        agent = deps_module.get_rca_agent()
+
+        assert isinstance(agent, DeepRCAAgent)
+        assert agent.model == "gpt-5"  # the openai catalog entry's own default_model
+
+    def test_openai_env_var_fallback_is_logged_too(self, monkeypatch, caplog):
+        _with_portal_secret(monkeypatch)
+        monkeypatch.setattr("httpx.get", lambda *a, **k: FakeHttpResponse({"provider": ""}))
+        monkeypatch.setenv("OPENAI_API_KEY", "sk-openai-x")
+
+        with caplog.at_level("INFO"):
+            deps_module.get_rca_agent()
+
+        assert any("OPENAI_API_KEY" in r.message and "env fallback" in r.message for r in caplog.records)
+
+    def test_openai_is_tried_before_anthropic_when_both_are_set(self, monkeypatch):
+        """Neither env var implies the other is wrong to also be present -
+        e.g. a leftover ANTHROPIC_API_KEY from before this deployment
+        switched providers. OPENAI_API_KEY must win so the admin's actual
+        current choice is honored, not whichever var happens to be checked
+        first in source order."""
+        _with_portal_secret(monkeypatch)
+        monkeypatch.setattr("httpx.get", lambda *a, **k: FakeHttpResponse({"provider": ""}))
+        monkeypatch.setenv("OPENAI_API_KEY", "sk-openai-x")
+        monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant-leftover")
+
+        agent = deps_module.get_rca_agent()
+
+        assert isinstance(agent, DeepRCAAgent)
+        assert agent.model == "gpt-5"
+        from shared.src.llm.openai_compatible import OpenAICompatibleClient
+        assert isinstance(agent.client, OpenAICompatibleClient)
+
+    def test_an_explicit_rca_model_overrides_the_catalog_default(self, monkeypatch):
+        _with_portal_secret(monkeypatch)
+        monkeypatch.setattr("httpx.get", lambda *a, **k: FakeHttpResponse({"provider": ""}))
+        monkeypatch.setenv("OPENAI_API_KEY", "sk-openai-x")
+        monkeypatch.setenv("CULPRIT_RCA_MODEL", "gpt-5-mini")
+
+        agent = deps_module.get_rca_agent()
+
+        assert agent.model == "gpt-5-mini"
+
+
 class TestPortalUnreachable:
     def test_a_network_failure_falls_back_gracefully_rather_than_raising(self, monkeypatch):
         _with_portal_secret(monkeypatch)
