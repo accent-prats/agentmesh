@@ -39,6 +39,18 @@ class ProviderSpec:
     # afterwards (see rca_agent.py) - they just don't get the extra
     # belt-and-suspenders the strict flag buys on top of that.
     supports_strict_tool_schema: bool = False
+    # Found live 2026-11-23: OpenAI's Chat Completions API rejects
+    # `max_tokens` outright for its reasoning-tier models (the entire gpt-5
+    # family, o1/o3) with a 400 "Unsupported parameter: 'max_tokens' is not
+    # supported with this model. Use 'max_completion_tokens' instead." -
+    # `max_completion_tokens` is accepted across every OpenAI/Azure OpenAI
+    # model (reasoning-tier or not), so this is safe to set unconditionally
+    # for both real-OpenAI-surface providers rather than tracked per model.
+    # Left False for the other "openai_compatible" providers (xAI Grok,
+    # Qwen, DeepSeek, Ollama, LM Studio) - third-party/self-hosted servers
+    # that mirror the pre-o1-era wire format and may not recognize the
+    # renamed field at all.
+    uses_max_completion_tokens: bool = False
 
     @property
     def requires_base_url(self) -> bool:
@@ -61,6 +73,7 @@ PROVIDER_CATALOG: dict[str, ProviderSpec] = {
         label="OpenAI", kind="openai_compatible", default_model="gpt-5",
         default_base_url="https://api.openai.com/v1",
         supports_strict_tool_schema=True,
+        uses_max_completion_tokens=True,
         model_options=("gpt-5", "gpt-5-mini", "gpt-5-nano", "gpt-4o", "gpt-4o-mini"),
     ),
     "azure_openai": ProviderSpec(
@@ -68,6 +81,7 @@ PROVIDER_CATALOG: dict[str, ProviderSpec] = {
         default_base_url="",  # the resource endpoint, e.g. https://<resource>.openai.azure.com - has no sane default
         is_azure=True,
         supports_strict_tool_schema=True,
+        uses_max_completion_tokens=True,
         # Same underlying models as OpenAI - what actually routes the call
         # is the deployment name below, not this field, but Azure resource
         # deployments are conventionally named after (or set to) one of these.

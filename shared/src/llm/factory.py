@@ -48,6 +48,7 @@ def build_client(
             api_version=api_version,
             deployment=deployment,
             supports_strict_tool_schema=spec.supports_strict_tool_schema,
+            uses_max_completion_tokens=spec.uses_max_completion_tokens,
         )
 
     raise UnknownProvider(f"Provider {provider!r} has an unrecognized kind: {spec.kind!r}")

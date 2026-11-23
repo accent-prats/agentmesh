@@ -86,6 +86,7 @@ class OpenAICompatibleClient:
         api_version: str = "",
         deployment: str = "",
         supports_strict_tool_schema: bool = False,
+        uses_max_completion_tokens: bool = False,
         timeout: float = 600.0,
     ):
         if not base_url:
@@ -96,6 +97,7 @@ class OpenAICompatibleClient:
         self.api_version = api_version or _DEFAULT_AZURE_API_VERSION
         self.deployment = deployment
         self.supports_strict_tool_schema = supports_strict_tool_schema
+        self.uses_max_completion_tokens = uses_max_completion_tokens
         # Found 2026-10-16 from a real production traceback: the old flat
         # `timeout: float = 60.0` applied the same 60s to every phase
         # (connect/write/pool *and* read), and it was the read phase that
@@ -154,9 +156,16 @@ class OpenAICompatibleClient:
         if self.supports_strict_tool_schema and tool_schema.get("strict"):
             function["strict"] = True
 
+        # Found live 2026-11-23: OpenAI's reasoning-tier models (the gpt-5
+        # family, o1/o3) reject `max_tokens` outright with a 400 -
+        # `max_completion_tokens` is the field they require, and it's
+        # accepted across every OpenAI/Azure OpenAI model regardless of
+        # tier, so this just picks whichever key this provider needs (see
+        # ProviderSpec.uses_max_completion_tokens's own docstring).
+        token_field = "max_completion_tokens" if self.uses_max_completion_tokens else "max_tokens"
         payload = {
             "model": model,
-            "max_tokens": max_tokens,
+            token_field: max_tokens,
             "messages": [{"role": "system", "content": system}, *messages],
             "tools": [{"type": "function", "function": function}],
             # Forces exactly one call to this tool - the same "call this
