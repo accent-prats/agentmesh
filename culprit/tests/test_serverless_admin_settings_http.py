@@ -12,10 +12,23 @@ Function App uses its own Postgres instance). These two HTTP routes are
 the only way to get real settings into that second database at all right
 now, so they're tested directly against the real repository functions
 they wrap, not mocked away.
+
+Routed at `settings/azure`, NOT `admin/settings/azure` - a first deploy
+under the `admin/` prefix loaded both functions "in error: The specified
+route conflicts with one or more built in routes" (confirmed live via
+Application Insights the same day) because the Azure Functions host
+reserves the whole `admin/*` route prefix for its own built-in management
+API, host-wide, regardless of `routePrefix` config. There's no local
+Functions host in this test environment to re-trigger that exact
+failure, so `test_route_is_not_under_the_reserved_admin_prefix` guards it
+statically instead, directly against the source these decorators are
+written in.
 """
 from __future__ import annotations
 
 import json
+import re
+from pathlib import Path
 
 import azure.functions as func
 import pytest
@@ -27,12 +40,26 @@ def _make_request(method: str, body: dict | None) -> func.HttpRequest:
     body_bytes = json.dumps(body).encode("utf-8") if body is not None else b""
     return func.HttpRequest(
         method=method,
-        url="https://patchrca-fa.azurewebsites.net/api/admin/settings/azure",
+        url="https://patchrca-fa.azurewebsites.net/api/settings/azure",
         headers={},
         params={},
         route_params={},
         body=body_bytes,
     )
+
+
+def test_route_is_not_under_the_reserved_admin_prefix():
+    from culprit.serverless import function_app
+
+    source = Path(function_app.__file__).read_text()
+    routes = re.findall(r'@app\.route\(route="([^"]+)"', source)
+    assert routes, "expected at least one @app.route(route=...) in function_app.py"
+    for route in routes:
+        assert not route.startswith("admin/"), (
+            f"route {route!r} is under the reserved admin/* prefix - the "
+            "Functions host owns that prefix for its own management API "
+            "and will refuse to load a user function routed there"
+        )
 
 
 @pytest.fixture
@@ -85,7 +112,7 @@ def test_put_azure_settings_http_with_malformed_json_returns_400_not_a_crash(ses
 
     req = func.HttpRequest(
         method="PUT",
-        url="https://patchrca-fa.azurewebsites.net/api/admin/settings/azure",
+        url="https://patchrca-fa.azurewebsites.net/api/settings/azure",
         headers={},
         params={},
         route_params={},

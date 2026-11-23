@@ -36,7 +36,15 @@ and defines every trigger binding, one per existing TriggerMode:
   other. These two routes call the exact same repository functions
   (`save_azure_settings`/`azure_settings_view`) the real Settings API
   already uses, just reachable here until the real Console/Settings UI
-  gets its own serverless home.
+  gets its own serverless home. Routed at `settings/azure`, NOT
+  `admin/settings/azure` - the Azure Functions host itself reserves the
+  entire `admin/*` route prefix for its own built-in management API
+  (`admin/host/status`, `admin/functions/{name}`, etc.); a first attempt
+  at `admin/settings/azure` loaded with both functions showing
+  "is in error: The specified route conflicts with one or more built in
+  routes" in Application Insights - this prefix is reserved host-wide,
+  regardless of `routePrefix` config, so no user HTTP trigger can ever
+  use it.
 """
 from __future__ import annotations
 
@@ -107,7 +115,7 @@ async def trigger_live_run_http(req: func.HttpRequest, client) -> func.HttpRespo
     return client.create_check_status_response(req, instance_id)
 
 
-@app.route(route="admin/settings/azure", methods=["GET"])
+@app.route(route="settings/azure", methods=["GET"])
 def get_azure_settings_http(req: func.HttpRequest) -> func.HttpResponse:
     """Stand-in for `GET /settings/azure` - see module docstring for why
     this exists at all. Returns the exact same AzureSettingsView shape
@@ -126,7 +134,7 @@ def get_azure_settings_http(req: func.HttpRequest) -> func.HttpResponse:
     )
 
 
-@app.route(route="admin/settings/azure", methods=["PUT"])
+@app.route(route="settings/azure", methods=["PUT"])
 def put_azure_settings_http(req: func.HttpRequest) -> func.HttpResponse:
     """Stand-in for `PUT /settings/azure` - see module docstring. Body is
     the same AzureSettingsInput shape the real Settings form submits:
