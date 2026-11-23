@@ -162,6 +162,18 @@ class TestCatalog:
         assert PROVIDER_CATALOG["deepseek"].supports_strict_tool_schema is False
         assert PROVIDER_CATALOG["qwen"].supports_strict_tool_schema is False
 
+    def test_only_the_real_openai_surfaces_require_max_completion_tokens(self):
+        """Found live 2026-11-23: a real gpt-5 call 400'd with "Unsupported
+        parameter: 'max_tokens' is not supported with this model. Use
+        'max_completion_tokens' instead." - true for OpenAI and Azure
+        OpenAI's reasoning-tier models, but NOT a safe assumption for the
+        other openai_compatible providers, which may not recognize the
+        renamed field at all."""
+        assert PROVIDER_CATALOG["openai"].uses_max_completion_tokens is True
+        assert PROVIDER_CATALOG["azure_openai"].uses_max_completion_tokens is True
+        for provider in ("grok", "qwen", "deepseek", "ollama", "lmstudio"):
+            assert PROVIDER_CATALOG[provider].uses_max_completion_tokens is False, provider
+
 
 # ── factory ────────────────────────────────────────────────────────────────
 
@@ -177,6 +189,11 @@ class TestFactory:
         assert isinstance(client, OpenAICompatibleClient)
         assert client.base_url == "https://api.openai.com/v1"
         assert client.is_azure is False
+        assert client.uses_max_completion_tokens is True
+
+    def test_deepseek_client_does_not_use_max_completion_tokens(self):
+        client = build_client("deepseek", api_key="k")
+        assert client.uses_max_completion_tokens is False
 
     def test_azure_openai_client_carries_deployment_and_api_version(self):
         client = build_client(
@@ -235,6 +252,37 @@ class TestOpenAICompatibleClient:
 
         assert response.content[0].name == "submit_rca_finding"
         assert response.content[0].input == '{"cause_family": "capacity"}'  # a raw string - the caller parses it
+
+    def test_default_payload_uses_the_legacy_max_tokens_field(self, monkeypatch):
+        """Backward compat for third-party/self-hosted openai_compatible
+        providers (Grok, Qwen, DeepSeek, Ollama, LM Studio) that mirror the
+        pre-o1-era wire format and may not recognize the renamed field."""
+        captured: dict = {}
+        self._fake_stream(monkeypatch, captured, {
+            "choices": [{"message": {"tool_calls": [{"function": {"name": "submit_rca_finding", "arguments": "{}"}}]}}],
+        })
+        client = OpenAICompatibleClient(api_key="k", base_url="https://api.deepseek.com/v1")
+        client.messages.create(model="deepseek-chat", max_tokens=42, thinking=None, system="s", tools=[_TOOL_SCHEMA], messages=[])
+        assert captured["json"]["max_tokens"] == 42
+        assert "max_completion_tokens" not in captured["json"]
+
+    def test_uses_max_completion_tokens_when_the_provider_requires_it(self, monkeypatch):
+        """Found live 2026-11-23: OpenAI's Chat Completions API rejects
+        `max_tokens` outright for its reasoning-tier models (the gpt-5
+        family, o1/o3) with a 400 "Unsupported parameter: 'max_tokens' is
+        not supported with this model. Use 'max_completion_tokens'
+        instead." - the exact error a real serverless deployment hit the
+        first time this code path was ever exercised against a live gpt-5
+        call (culprit/api/deps.py::get_rca_agent's new OPENAI_API_KEY
+        fallback, see test_deps_rca_agent.py::TestOpenAIEnvVarFallback)."""
+        captured: dict = {}
+        self._fake_stream(monkeypatch, captured, {
+            "choices": [{"message": {"tool_calls": [{"function": {"name": "submit_rca_finding", "arguments": "{}"}}]}}],
+        })
+        client = OpenAICompatibleClient(api_key="k", base_url="https://api.openai.com/v1", uses_max_completion_tokens=True)
+        client.messages.create(model="gpt-5", max_tokens=42, thinking=None, system="s", tools=[_TOOL_SCHEMA], messages=[])
+        assert captured["json"]["max_completion_tokens"] == 42
+        assert "max_tokens" not in captured["json"]
 
     def test_strict_is_omitted_when_the_provider_does_not_support_it(self, monkeypatch):
         captured: dict = {}
