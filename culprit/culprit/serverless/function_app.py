@@ -45,6 +45,25 @@ and defines every trigger binding, one per existing TriggerMode:
   routes" in Application Insights - this prefix is reserved host-wide,
   regardless of `routePrefix` config, so no user HTTP trigger can ever
   use it.
+- `get_tcx_mailer_settings_http`/`put_tcx_mailer_settings_http` (HTTP) -
+  the same stand-in pattern as the Azure settings routes above, this time
+  for the Settings screen's Email tab (`GET`/`PUT /settings/email/tcx-mailer`
+  in api/routes_settings.py). Found live 2026-11-24, once the pipeline
+  itself was finally confirmed working end-to-end: `notify_activity` ->
+  `send_report_on_completion` resolves email config from THIS deployment's
+  own database (same one `get_azure_settings_http` above writes to, not
+  the VM-hosted deployment's SQLite file) via
+  `email_sender.py::resolve_active_email_config` - with nothing ever
+  saved there, it has no default recipients and
+  `send_report_on_completion` skips quietly (logged, not an error) rather
+  than ever actually sending anything. `EmailMethodSettingsView`'s own
+  default is already `"tcx_mailer"` - this deployment's real, only
+  supported send path - so no separate `/settings/email/method` route is
+  needed here; only the tcx-mailer method's own settings (tenant/username/
+  password/default_recipients) were ever genuinely missing. Routed at
+  `settings/email/tcx-mailer`, calling the exact same
+  `save_tcx_mailer_settings`/`tcx_mailer_settings_view` repository
+  functions the real Settings API already uses.
 """
 from __future__ import annotations
 
@@ -162,6 +181,75 @@ def put_azure_settings_http(req: func.HttpRequest) -> func.HttpResponse:
     with deps.get_session_factory()() as session:
         repository.save_azure_settings(session, cfg)
         view = repository.azure_settings_view(session)
+
+    return func.HttpResponse(
+        view.model_dump_json(),
+        status_code=200,
+        headers={"Content-Type": "application/json"},
+    )
+
+
+@app.route(route="settings/email/tcx-mailer", methods=["GET"])
+def get_tcx_mailer_settings_http(req: func.HttpRequest) -> func.HttpResponse:
+    """Stand-in for `GET /settings/email/tcx-mailer` - see module docstring
+    for why this exists at all. Returns the exact same TcxMailerSettingsView
+    shape the real Settings screen reads, so a caller can confirm what
+    actually landed in THIS deployment's own database (never the raw
+    password - `password_configured` only)."""
+    from culprit.api import deps
+    from culprit.db import repository
+
+    with deps.get_session_factory()() as session:
+        view = repository.tcx_mailer_settings_view(session)
+
+    return func.HttpResponse(
+        view.model_dump_json(),
+        status_code=200,
+        headers={"Content-Type": "application/json"},
+    )
+
+
+@app.route(route="settings/email/tcx-mailer", methods=["PUT"])
+def put_tcx_mailer_settings_http(req: func.HttpRequest) -> func.HttpResponse:
+    """Stand-in for `PUT /settings/email/tcx-mailer` - see module
+    docstring. Body is the same TcxMailerSettingsInput shape the real
+    Settings form submits: {"tenant": "...", "username": "...",
+    "password": "...", "from_name": "PatchInsight", "token_url": "...",
+    "api_url": "...", "from_app": "...", "default_recipients": [...]} -
+    every field optional, same leave-alone-if-blank rule for `password` as
+    the real form (see repository.py::save_tcx_mailer_settings's own
+    docstring). `default_recipients` must look like email addresses -
+    invalid entries return 400 via the same Pydantic validator the real
+    form uses."""
+    import json
+
+    from pydantic import ValidationError
+
+    from culprit.api import deps
+    from culprit.db import repository
+    from culprit.models.settings import TcxMailerSettingsInput
+
+    try:
+        body = req.get_json()
+    except ValueError:
+        return func.HttpResponse(
+            json.dumps({"error": "request body must be JSON"}),
+            status_code=400,
+            headers={"Content-Type": "application/json"},
+        )
+
+    try:
+        cfg = TcxMailerSettingsInput(**body)
+    except ValidationError as exc:
+        return func.HttpResponse(
+            json.dumps({"error": str(exc)}),
+            status_code=400,
+            headers={"Content-Type": "application/json"},
+        )
+
+    with deps.get_session_factory()() as session:
+        repository.save_tcx_mailer_settings(session, cfg)
+        view = repository.tcx_mailer_settings_view(session)
 
     return func.HttpResponse(
         view.model_dump_json(),

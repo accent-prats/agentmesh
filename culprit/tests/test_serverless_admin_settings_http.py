@@ -23,6 +23,14 @@ Functions host in this test environment to re-trigger that exact
 failure, so `test_route_is_not_under_the_reserved_admin_prefix` guards it
 statically instead, directly against the source these decorators are
 written in.
+
+Also covers `get_tcx_mailer_settings_http`/`put_tcx_mailer_settings_http` -
+the same stand-in pattern, for the Settings screen's Email tab this time.
+Found live 2026-11-24, once the pipeline itself was finally confirmed
+working end-to-end: `notify_activity` had nowhere to read a recipient
+list or tcx-mailer credential from in THIS deployment's own database
+either, so every completed run's auto-send step quietly skipped ("no
+default recipients configured") rather than ever sending an email.
 """
 from __future__ import annotations
 
@@ -36,11 +44,11 @@ import pytest
 from culprit.db.engine import make_engine, make_session_factory
 
 
-def _make_request(method: str, body: dict | None) -> func.HttpRequest:
+def _make_request(method: str, body: dict | None, path: str = "settings/azure") -> func.HttpRequest:
     body_bytes = json.dumps(body).encode("utf-8") if body is not None else b""
     return func.HttpRequest(
         method=method,
-        url="https://patchrca-fa.azurewebsites.net/api/settings/azure",
+        url=f"https://patchrca-fa.azurewebsites.net/api/{path}",
         headers={},
         params={},
         route_params={},
@@ -119,4 +127,66 @@ def test_put_azure_settings_http_with_malformed_json_returns_400_not_a_crash(ses
         body=b"not valid json",
     )
     resp = function_app.put_azure_settings_http(req)
+    assert resp.status_code == 400
+
+
+def test_get_tcx_mailer_settings_http_returns_the_empty_default_view_when_nothing_is_saved(session_factory):
+    from culprit.serverless import function_app
+
+    resp = function_app.get_tcx_mailer_settings_http(_make_request("GET", None, path="settings/email/tcx-mailer"))
+    assert resp.status_code == 200
+    body = json.loads(resp.get_body())
+    assert body["default_recipients"] == []
+    assert body["configured"] is False
+
+
+def test_put_tcx_mailer_settings_http_saves_recipients_and_they_are_readable_back(session_factory):
+    from culprit.serverless import function_app
+
+    put_resp = function_app.put_tcx_mailer_settings_http(_make_request(
+        "PUT",
+        {
+            "tenant": "arcserve",
+            "username": "patchinsight-svc",
+            "password": "real-secret",
+            "default_recipients": ["oncall@arcserve.com", "patchinsight-alerts@arcserve.com"],
+        },
+        path="settings/email/tcx-mailer",
+    ))
+    assert put_resp.status_code == 200
+    put_body = json.loads(put_resp.get_body())
+    assert put_body["default_recipients"] == ["oncall@arcserve.com", "patchinsight-alerts@arcserve.com"]
+    assert put_body["tenant"] == "arcserve"
+    assert put_body["configured"] is True
+    assert "password" not in put_body  # never echoed back raw
+
+    # A completely separate GET call must see the same thing - proves this
+    # actually persisted to the database rather than just echoing the input.
+    get_resp = function_app.get_tcx_mailer_settings_http(_make_request("GET", None, path="settings/email/tcx-mailer"))
+    get_body = json.loads(get_resp.get_body())
+    assert get_body["default_recipients"] == ["oncall@arcserve.com", "patchinsight-alerts@arcserve.com"]
+    assert get_body["password_configured"] is True
+
+
+def test_put_tcx_mailer_settings_http_rejects_a_recipient_that_does_not_look_like_an_email(session_factory):
+    from culprit.serverless import function_app
+
+    resp = function_app.put_tcx_mailer_settings_http(_make_request(
+        "PUT", {"default_recipients": ["not-an-email-address"]}, path="settings/email/tcx-mailer",
+    ))
+    assert resp.status_code == 400
+
+
+def test_put_tcx_mailer_settings_http_with_malformed_json_returns_400_not_a_crash(session_factory):
+    from culprit.serverless import function_app
+
+    req = func.HttpRequest(
+        method="PUT",
+        url="https://patchrca-fa.azurewebsites.net/api/settings/email/tcx-mailer",
+        headers={},
+        params={},
+        route_params={},
+        body=b"not valid json",
+    )
+    resp = function_app.put_tcx_mailer_settings_http(req)
     assert resp.status_code == 400
